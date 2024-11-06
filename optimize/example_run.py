@@ -73,7 +73,7 @@ def main(config):
                             optimizer_fn=config.optimizer_fn,
                             lr_scheduler=config.lr_scheduler, lr_kw=config.lr_kw,
                             no_adc=config.no_adc, loss_fn=config.loss_fn, shift_no_fit=config.shift_no_fit,
-                            link_vdrift_eField=config.link_vdrift_eField, batch_memory=config.batch_memory, skip_pixels=config.skip_pixels,
+                            link_vdrift_eField=config.link_vdrift_eField,
                             set_target_vals=config.set_target_vals, vary_init=config.vary_init, seed_init=config.seed_init,
                             config = config, profile_gradient=config.profile_gradient, epoch_size=len(tracks_dataloader), keep_in_memory=config.keep_in_memory)
     param_fit.make_target_sim(seed=config.seed, fixed_range=config.fixed_range)
@@ -177,10 +177,6 @@ if __name__ == '__main__':
                         help="Explicitly set values of target. Syntax is <param1> <val1> <param2> <val2>...")
     parser.add_argument("--link-vdrift-eField", dest="link_vdrift_eField", default=False, action="store_true",
                         help="Link vdrift and eField in fitting")
-    parser.add_argument("--batch_memory", dest="batch_memory", type=int, default=None,
-                        help="Optimize the pixel chunk size to reach the specified GPU memory per batch, in MiB")
-    parser.add_argument("--skip_pixels", dest="skip_pixels", default=False, action="store_true",
-                        help="Iterating only over the pixels of each track (no cartesian product of all pixels x all tracks)")
     parser.add_argument("--profile_gradient", dest="profile_gradient", default=False, action="store_true",
                         help="To profile the gradient and loss instead of making an actual fit.")
     parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')

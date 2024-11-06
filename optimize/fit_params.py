@@ -59,7 +59,7 @@ class ParamFitter:
                  loss_fn=None, readout_noise_target=True, readout_noise_guess=False, 
                  out_label="", norm_scheme="divide", max_clip_norm_val=None, optimizer_fn="Adam",
                 #  fit_diffs=False,
-                 no_adc=False, shift_no_fit=[], link_vdrift_eField=False, batch_memory=None, skip_pixels = False,
+                 no_adc=False, shift_no_fit=[], link_vdrift_eField=False,
                  set_target_vals=[], vary_init=False, seed_init=30, profile_gradient = False, epoch_size=1, keep_in_memory=False,
                  config = {}):
         if optimizer_fn == "Adam":
@@ -73,8 +73,6 @@ class ParamFitter:
         self.no_adc = no_adc
         self.shift_no_fit = shift_no_fit
         self.link_vdrift_eField = link_vdrift_eField
-        self.batch_memory = batch_memory
-        self.skip_pixels = skip_pixels
 
         self.out_label = out_label
         self.norm_scheme = norm_scheme
@@ -122,12 +120,10 @@ class ParamFitter:
                 self.target_val_dict[param_name] = float(param_val)
 
         # Simulation object for target
-        # self.sim_target = sim_with_grad(track_chunk=track_chunk, pixel_chunk=pixel_chunk, readout_noise=readout_noise_target, skip_pixels=self.skip_pixels)
         # self.sim_target.load_detector_properties(detector_props, pixel_layouts)
         #TODO: take care of link_vdrift_eField
 
         # Simulation object for iteration -- this is where gradient updates will happen
-        # self.sim_iter = sim_with_grad(track_chunk=track_chunk, pixel_chunk=pixel_chunk, readout_noise=readout_noise_guess, skip_pixels=self.skip_pixels)
         # self.sim_iter.load_detector_properties(detector_props, pixel_layouts)
 
         # Normalize parameters to init at 1, or random, or set to checkpointed values
@@ -157,7 +153,6 @@ class ParamFitter:
         self.norm_params = ref_params.replace(**{key: 1. for key in self.relevant_params_list})
          
         # # Placeholder simulation -- parameters will be set by un-normalizing sim_iter
-        # self.sim_physics = sim_with_grad(track_chunk=track_chunk, pixel_chunk=pixel_chunk, readout_noise=readout_noise_guess, skip_pixels=self.skip_pixels)
         # self.sim_physics.load_detector_properties(detector_props, pixel_layouts)
 
         # for param in self.relevant_params_list:
