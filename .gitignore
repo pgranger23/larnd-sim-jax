@@ -1,0 +1,15 @@
+*.egg-info
+build
+dist
+*.ipynb_checkpoints*
+__pycache__
+*.mypy_cache
+*.virtual_documents
+docs/build
+*.pdf
+target*/
+*.yaml
+*.pkl
+*.png
+*.h5
+.history

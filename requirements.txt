@@ -1,0 +1,7 @@
+numpy
+numba
+h5py
+tqdm
+optax
+flax
+matplotlib
