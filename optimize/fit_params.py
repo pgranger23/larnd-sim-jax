@@ -412,7 +412,7 @@ class ParamFitter:
 
 
                     for param in self.relevant_params_list:
-                        self.training_history[param+"_grad"].append(getattr(grads, param))
+                        self.training_history[param+"_grad"].append(getattr(grads, param).item())
                     #TODO: Add norm clipping in the optimizer
                     # if self.max_clip_norm_val is not None:
                     #     if self.fit_diffs:
@@ -421,9 +421,9 @@ class ParamFitter:
                     #     else:
                     #         torch.nn.utils.clip_grad_norm_([getattr(self.sim_iter, param) for param in self.relevant_params_list],
                     #                                     self.max_clip_norm_val)
-                    self.training_history['losses_iter'].append(loss_val)
+                    self.training_history['losses_iter'].append(loss_val.item())
                     for param in self.relevant_params_list:
-                        self.training_history[param+"_iter"].append(getattr(self.current_params, param))
+                        self.training_history[param+"_iter"].append(getattr(self.current_params, param).item())
 
                     #     else:
                     #         if len(self.training_history['losses_iter']) > 0:

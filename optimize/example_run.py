@@ -33,6 +33,9 @@ def make_param_list(config):
 def main(config):
     jax.config.update('jax_platform_name', 'gpu')
     jax.config.update("jax_debug_nans", False)
+
+    logger.info(f"Jax devices: {jax.devices()}")
+
     if config.print_input:
         logger.info(f"fit label: {config.out_label}")
 
