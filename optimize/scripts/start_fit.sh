@@ -9,7 +9,7 @@
 #SBATCH --mem-per-cpu=8g
 #SBATCH --gpus-per-node=a100:1
 #SBATCH --time=3:00:00
-## SBATCH --array=1,2,3,4,5
+#SBATCH --array=1,2,3,4,5
 
 #BASE DECLARATIONS
 
@@ -20,7 +20,7 @@ fi
 TARGET_SEED=$SLURM_ARRAY_TASK_ID
 PARAMS=optimize/scripts/param_list.yaml
 BATCH_SIZE=200
-ITERATIONS=8000
+ITERATIONS=5000
 DATA_SEED=1
 INPUT_FILE=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim-output.h5
 SIF_FILE=/sdf/group/neutrino/pgranger/larnd-sim-jax.sif

@@ -64,9 +64,15 @@ def get_adc_values(params, pixels_signals):
         # Then linearly interpolate for the intersection point.
         dq = (q_sum[idx_pix, idx_t + 1]-q_sum[idx_pix, idx_t])
 
+        # debug.print("dq: {dq}", dq=dq)
+
         eps = 1e-4 #Any smaller value leads to NaN in gradients
+        # eps = 1e-2 #Any smaller value leads to NaN in gradients
         # idx_val = jnp.where(dq < eps*params.DISCRIMINATION_THRESHOLD, 0, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/(dq+1e-3*params.DISCRIMINATION_THRESHOLD))
-        idx_val = jnp.where(dq < eps*params.DISCRIMINATION_THRESHOLD, 0, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/jnp.where(dq < eps*params.DISCRIMINATION_THRESHOLD, 1, dq))
+        idx_val = jnp.where(idx_t == 0, 0, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/jnp.where(dq < eps*params.DISCRIMINATION_THRESHOLD, 1, dq))
+        # idx_val = jnp.where(idx_t == 0, 0, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/jnp.where((idx_t == 0) | (dq <= eps*params.DISCRIMINATION_THRESHOLD), q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD, dq))
+
+        # debug.print("idx_val: {idx_val}", idx_val=idx_val)
 
         ic = jnp.zeros((q_sum.shape[0],))
         ic = ic.at[idx_pix].set(idx_val)

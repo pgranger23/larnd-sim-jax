@@ -6,7 +6,7 @@ import pickle
 import numpy as np
 from .utils import get_id_map, all_sim, embed_adc_list
 from .ranges import ranges
-from larndsim.sim_jax import simulate, params_loss, loss, simulate_parametrized, params_loss_parametrized
+from larndsim.sim_jax import simulate, params_loss, mse_loss, simulate_parametrized, params_loss_parametrized
 from larndsim.consts_jax import build_params_class, load_detector_properties
 from larndsim.softdtw_jax import SoftDTW
 import logging
@@ -196,8 +196,8 @@ class ParamFitter:
         #TODO: Modify this part
         # Set up loss function -- can pass in directly, or choose a named one
         if loss_fn is None or loss_fn == "space_match":
-            self.loss_fn = loss
-            self.loss_fn_kw = { }
+            self.loss_fn = mse_loss
+            self.loss_fn_kw = {}
             logger.info("Using space match loss")
         elif loss_fn == "SDTW":
             self.loss_fn = self.calc_sdtw
@@ -341,7 +341,7 @@ class ParamFitter:
         total_iter = 0
         with tqdm(total=pbar_total) as pbar:
             for epoch in range(epochs):
-                # if epoch == 3: libcudart.cudaProfilerStart()
+                if epoch == 2: libcudart.cudaProfilerStart()
                 # Losses for each batch -- used to compute epoch loss
                 losses_batch=[]
 
@@ -400,7 +400,6 @@ class ParamFitter:
                         (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
                     else:
                         (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
-                    print(f"Loss: {loss_val} ; ADC loss: {aux['adc_loss']} ; Time loss: {aux['time_loss']}")
 
                     if not self.profile_gradient:
                         updates, self.opt_state = self.optimizer.update(extract_relevant_params(grads, self.relevant_params_list), self.opt_state)
@@ -470,7 +469,7 @@ class ParamFitter:
                     if iterations is not None:
                         if total_iter >= iterations:
                             break
-            # libcudart.cudaProfilerStop()
+            libcudart.cudaProfilerStop()
 
     #TODO: Finish this thing
     def calc_sdtw(self, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, fields):
@@ -484,14 +483,17 @@ class ParamFitter:
         mask_ref = ticks_ref.flatten() > 0
         adc_loss = self.dstw.pairwise(adcs.flatten()[mask], ref.flatten()[mask_ref])
 
+        # time_loss = self.dstw.pairwise(ticks.flatten()[mask], ticks_ref.flatten()[mask_ref])
+        time_loss = 0
+
         # adc_loss = adc_loss/len(sorted_adcs)/len(sorted_ref)
 
         # sorted_ticks = ticks[jnp.argsort(pixels)]
         # sorted_ticks_ref = ticks_ref[jnp.argsort(pixels_ref)]
 
         # time_loss = self.dstw.pairwise(sorted_ticks, sorted_ticks_ref)/1000
-        time_loss = 0
-        loss = adc_loss + time_loss
+
+        loss = jnp.log(adc_loss) + jnp.log(time_loss)
         aux = {
             'adc_loss': adc_loss,
             'time_loss': time_loss

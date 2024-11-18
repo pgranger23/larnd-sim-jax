@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import jit, lax
+from jax import jit, lax, debug
 import numpy as np
 from numpy.lib import recfunctions as rfn
 from functools import partial
@@ -116,7 +116,7 @@ def set_pixel_plane(params, tracks, fields):
     tracks[:, fields.index('pixel_plane')] = pixel_plane
     return tracks
 
-def loss(adcs, pIDs, ticks, adcs_ref, pIDs_ref, ticks_ref, fields):
+def loss(adcs, pIDs, ticks, adcs_ref, pIDs_ref, ticks_ref):
     # return jnp.sqrt(jnp.sum((tracks[:, fields.index("n_electrons")] - tracks_ref[:, fields.index("n_electrons")])**2))
     #TODO: Put back something that is actually good here!
     all_pixels = jnp.concatenate([pIDs, pIDs_ref])
@@ -164,6 +164,44 @@ def loss(adcs, pIDs, ticks, adcs_ref, pIDs_ref, ticks_ref, fields):
     }
 
     return adc_loss + time_loss, aux
+
+@jit
+def chamfer_distance_3d(pos_a, pos_b):
+    """
+    Compute the Chamfer Distance between two sets of 3D points (x, y, t).
+    
+    Parameters:
+        pos_a: jnp.ndarray of shape (N, 3), positions and times of hits in distribution A.
+        pos_b: jnp.ndarray of shape (M, 3), positions and times of hits in distribution B.
+    
+    Returns:
+        A scalar representing the Chamfer Distance between the two point sets.
+    """
+    # Compute Euclidean distances in 3D between all pairs of points
+    dists_a_to_b = jnp.sum((pos_a[:, None, :] - pos_b[None, :, :])**2, axis=2)
+    dists_b_to_a = jnp.sum((pos_b[:, None, :] - pos_a[None, :, :])**2, axis=2)
+    
+    # Find minimum distance from each point in pos_a to pos_b and vice versa
+    min_dists_a_to_b = jnp.min(dists_a_to_b, axis=1)
+    min_dists_b_to_a = jnp.min(dists_b_to_a, axis=1)
+    
+    # Calculate Chamfer Distance as the average of these minimum distances
+    chamfer_dist = jnp.mean(min_dists_a_to_b) + jnp.mean(min_dists_b_to_a)
+    return chamfer_dist
+
+def mse_loss(adcs, pIDs, ticks, adcs_ref, pIDs_ref, ticks_ref):
+    all_pixels = jnp.concatenate([pIDs, pIDs_ref])
+    unique_pixels = jnp.sort(jnp.unique(all_pixels))
+    nb_pixels = unique_pixels.shape[0]
+    pix_renumbering = jnp.searchsorted(unique_pixels, pIDs)
+
+    pix_renumbering_ref = jnp.searchsorted(unique_pixels, pIDs_ref)
+
+    signals = jnp.zeros((nb_pixels, adcs.shape[1]))
+    signals = signals.at[pix_renumbering, :].add(adcs)
+    signals = signals.at[pix_renumbering_ref, :].add(-adcs_ref)
+    adc_loss = jnp.sum(signals**2)
+    return adc_loss, dict()
 
 def pad_size(cur_size, tag):
     global size_history_dict
@@ -249,7 +287,7 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, fields
     wfs = jnp.zeros((unique_pixels.shape[0], nticks_wf))
 
     
-    start_ticks = (t0/params.t_sampling + 0.5).astype(int) - signals.shape[1]
+    start_ticks = t0 - signals.shape[1]
 
     wfs = accumulate_signals_parametrized(wfs, signals, pix_renumbering, start_ticks)
     # return signals, pix_renumbering, wfs, start_ticks, unique_pixels
@@ -265,7 +303,8 @@ def simulate_parametrized(params, tracks, fields, rngkey = 0):
     padded_size = pad_size(unique_pixels.shape[0], "unique_pixels")
 
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
- 
+    #TODO: TEMPORARY, DESTROYS ALL PERFORMANCE
+    # unique_pixels = unique_pixels[unique_pixels >= 0]
 
     return simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, fields)
     
@@ -297,14 +336,14 @@ def simulate(params, response, tracks, fields, rngkey = 0):
     # return wfs, unique_pixels
     # return adcs, unique_pixels, ticks, wfs[:, 1:], t0, currents_idx, electrons, pix_renumbering, start_ticks
 
-def params_loss(params, response, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=loss, **loss_kwargs):
+def params_loss(params, response, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_loss, **loss_kwargs):
     adcs, pixels, ticks = simulate(params, response, tracks, fields, rngkey)
-    loss_val, aux = loss_fn(adcs, pixels, ticks, ref, pixels_ref, ticks_ref, fields, **loss_kwargs)
+    loss_val, aux = loss_fn(adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
     return loss_val, aux
 
-def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=loss, **loss_kwargs):
+def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_loss, **loss_kwargs):
     adcs, pixels, ticks = simulate_parametrized(params, tracks, fields, rngkey)
-    loss_val, aux = loss_fn(adcs, pixels, ticks, ref, pixels_ref, ticks_ref, fields, **loss_kwargs)
+    loss_val, aux = loss_fn(adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
     return loss_val, aux
 
 def update_params(params, params_init, grads, to_propagate, lr):
