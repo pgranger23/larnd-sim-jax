@@ -8,6 +8,7 @@ from jax.profiler import annotate_function
 from jax import jit, lax, random, debug
 from jax.nn import sigmoid
 from functools import partial
+from larndsim.consts_jax import get_vdrift
 
 import logging
 
@@ -215,7 +216,7 @@ def current_mc(params, electrons, pixels_coord, fields):
 
     z_anode = jnp.take(params.tpc_borders, electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 0]
 
-    t0 = jnp.abs(electrons[:, fields.index('z')] - z_anode) / params.vdrift
+    t0 = jnp.abs(electrons[:, fields.index('z')] - z_anode) / get_vdrift(params)
 
     t0_tick = (t0/params.t_sampling + 0.5).astype(int)
 
@@ -228,7 +229,7 @@ def current_lut(params, response, electrons, pixels_coord, fields):
     x_dist = abs(electrons[:, fields.index('x')] - pixels_coord[..., 0])
     y_dist = abs(electrons[:, fields.index('y')] - pixels_coord[..., 1])
     z_anode = jnp.take(params.tpc_borders, electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 0]
-    t0 = jnp.abs(electrons[:, fields.index('z')] - z_anode) / params.vdrift
+    t0 = jnp.abs(electrons[:, fields.index('z')] - z_anode) / get_vdrift(params)
     
     i = (x_dist/params.response_bin_size).astype(int)
     j = (y_dist/params.response_bin_size).astype(int)

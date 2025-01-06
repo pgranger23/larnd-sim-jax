@@ -72,6 +72,8 @@ class Params_template:
     RESET_NOISE_CHARGE: float = struct.field(pytree_node=False)
     UNCORRELATED_NOISE_CHARGE: float = struct.field(pytree_node=False)
 
+    ELECTRON_MOBILITY_PARAMS: tuple = struct.field(pytree_node=False)
+
 def build_params_class(params_with_grad):
     template_fields = dataclasses.fields(Params_template)
     # Removing the pytree_node=False for the variables requiring gradient calculation
@@ -84,6 +86,33 @@ def build_params_class(params_with_grad):
     base_class = type("Params", (object, ), {field.name: field for field in template_fields})
     base_class.__annotations__ = {field.name: field.type for field in template_fields}
     return struct.dataclass(base_class)
+
+@jax.jit
+def get_vdrift(params):
+    """
+    Calculation of the electron mobility w.r.t temperature and electric
+    field.
+    References:
+        - https://lar.bnl.gov/properties/trans.html (summary)
+        - https://doi.org/10.1016/j.nima.2016.01.073 (parameterization)
+        
+    Args:
+        efield (float): electric field in kV/cm
+        temperature (float): temperature
+        
+    Returns:
+        float: electron mobility in cm^2/kV/us
+    """
+    a0, a1, a2, a3, a4, a5 = params.ELECTRON_MOBILITY_PARAMS
+
+    num = a0 + a1 * params.eField + a2 * pow(params.eField, 1.5) + a3 * pow(params.eField, 2.5)
+    denom = 1 + (a1 / a0) * params.eField + a4 * pow(params.eField, 2) + a5 * pow(params.eField, 3)
+    temp_corr = pow(params.temperature / 89, -1.5)
+
+    mu = num / denom * temp_corr / 1000 #* V / kV
+
+    return mu*params.eField
+
 
 def load_detector_properties(params_cls, detprop_file, pixel_file):
         """
@@ -135,6 +164,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
             "ADC_COUNTS": 2**8,
             "RESET_NOISE_CHARGE": 0,
             "UNCORRELATED_NOISE_CHARGE": 0,
+            "ELECTRON_MOBILITY_PARAMS": (551.6, 7158.3, 4440.43, 4.29, 43.63, 0.2053)
         }
 
         mm2cm = 0.1

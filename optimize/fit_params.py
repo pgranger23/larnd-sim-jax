@@ -251,7 +251,7 @@ class ParamFitter:
 
     def clip_values(self, mini=0.01, maxi=100):
         cur_norm_values = extract_relevant_params(self.norm_params, self.relevant_params_list)
-        cur_norm_values = {key: max(mini, min(maxi, val)) for key, val in cur_norm_values.items()}
+        cur_norm_values = {key: jnp.array(max(mini, min(maxi, val))) for key, val in cur_norm_values.items()}
         self.norm_params = self.norm_params.replace(**cur_norm_values)
 
     def update_params(self):

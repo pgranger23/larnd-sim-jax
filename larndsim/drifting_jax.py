@@ -6,6 +6,7 @@ electrons towards the anode.
 import jax.numpy as jnp
 from jax import jit
 from functools import partial
+from larndsim.consts_jax import get_vdrift
 
 import logging
 
@@ -38,21 +39,21 @@ def drift(params, tracks, fields):
     
     tracks = tracks.at[:, fields.index("pixel_plane")].set(pixel_plane)
 
-    drift_time = drift_distance / params.vdrift
+    drift_time = drift_distance / get_vdrift(params)
     lifetime_red = jnp.exp(-drift_time / params.lifetime)
 
     #TODO: investigate using jnp.where instead of masking all values
     tracks = tracks.at[:, fields.index("n_electrons")].set(
         tracks[:, fields.index("n_electrons")] * lifetime_red * mask)
     tracks = tracks.at[:, fields.index("long_diff")].set(
-        jnp.sqrt((drift_time + 0.5 / params.vdrift) * 2 * params.long_diff))
+        jnp.sqrt((drift_time + 0.5 / get_vdrift(params)) * 2 * params.long_diff))
     tracks = tracks.at[:, fields.index("tran_diff")].set(
-        jnp.sqrt((drift_time + 0.5 / params.vdrift) * 2 * params.tran_diff))
+        jnp.sqrt((drift_time + 0.5 / get_vdrift(params)) * 2 * params.tran_diff))
     tracks = tracks.at[:, fields.index("t")].set(
         tracks[:, fields.index("t")] + drift_time * mask + tracks[:, fields.index("t0")])
     tracks = tracks.at[:, fields.index("t_start")].set(
-        tracks[:, fields.index("t_start")] + ((jnp.minimum(drift_start, drift_end) / params.vdrift) * mask) + tracks[:, fields.index("t0")])
+        tracks[:, fields.index("t_start")] + ((jnp.minimum(drift_start, drift_end) / get_vdrift(params)) * mask) + tracks[:, fields.index("t0")])
     tracks = tracks.at[:, fields.index("t_end")].set(
-        tracks[:, fields.index("t_end")] + ((jnp.maximum(drift_start, drift_end) / params.vdrift) * mask) + tracks[:, fields.index("t0")])
+        tracks[:, fields.index("t_end")] + ((jnp.maximum(drift_start, drift_end) / get_vdrift(params)) * mask) + tracks[:, fields.index("t0")])
 
     return tracks
