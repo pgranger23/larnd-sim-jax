@@ -6,7 +6,8 @@ import pickle
 import numpy as np
 from .utils import get_id_map, all_sim, embed_adc_list
 from .ranges import ranges
-from larndsim.sim_jax import simulate, params_loss, mse_loss, simulate_parametrized, params_loss_parametrized
+from larndsim.sim_jax import simulate, simulate_parametrized
+from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc
 from larndsim.consts_jax import build_params_class, load_detector_properties
 from larndsim.softdtw_jax import SoftDTW
 import logging
@@ -14,6 +15,7 @@ import torch
 import optax
 import jax
 import jax.numpy as jnp
+from time import time
 from jax import value_and_grad
 
 from tqdm import tqdm
@@ -56,7 +58,7 @@ class ParamFitter:
     def __init__(self, relevant_params, track_fields, track_chunk, pixel_chunk,
                  detector_props, pixel_layouts, load_checkpoint = None,
                  lr=None, optimizer=None, lr_scheduler=None, lr_kw=None, 
-                 loss_fn=None, readout_noise_target=True, readout_noise_guess=False, 
+                 loss_fn=None, loss_fn_kw=None, readout_noise_target=True, readout_noise_guess=False, 
                  out_label="", norm_scheme="divide", max_clip_norm_val=None, optimizer_fn="Adam",
                 #  fit_diffs=False,
                  no_adc=False, shift_no_fit=[], link_vdrift_eField=False,
@@ -149,8 +151,8 @@ class ParamFitter:
                     initial_params[param] = init_val
 
         self.current_params = ref_params.replace(**initial_params)
-        self.params_normalization = ref_params.replace(**initial_params)
-        self.norm_params = ref_params.replace(**{key: 1. for key in self.relevant_params_list})
+        self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
+        self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
          
         # # Placeholder simulation -- parameters will be set by un-normalizing sim_iter
         # self.sim_physics.load_detector_properties(detector_props, pixel_layouts)
@@ -193,24 +195,37 @@ class ParamFitter:
         
         self.opt_state = self.optimizer.init(extract_relevant_params(self.norm_params, self.relevant_params_list))
 
-        #TODO: Modify this part
+        loss_functions = {
+            "mse_adc": (mse_adc, {}),
+            "mse_time": (mse_time, {}),
+            "mse_time_adc": (mse_time_adc, {'alpha': 0.5}),
+            "chamfer_3d": (chamfer_3d, {}),
+            "sdtw_adc": (sdtw_adc, {'gamma': 1.}),
+            "sdtw_time": (sdtw_time, {'gamma': 1.}),
+            "sdtw_time_adc": (sdtw_time_adc, {'gamma': 1., 'alpha': 0.5})
+        }
+
         # Set up loss function -- can pass in directly, or choose a named one
         if loss_fn is None or loss_fn == "space_match":
-            self.loss_fn = mse_loss
-            self.loss_fn_kw = {}
-            logger.info("Using space match loss")
+            loss_fn = "mse_adc"
         elif loss_fn == "SDTW":
-            self.loss_fn = self.calc_sdtw
+            loss_fn = "sdtw_adc"
+    
+        if isinstance(loss_fn, str):
+            if loss_fn not in loss_functions:
+                raise ValueError(f"Loss function {loss_fn} not supported")
+            self.loss_fn, self.loss_fn_kw = loss_functions[loss_fn]
+            if loss_fn_kw is not None:
+                self.loss_fn_kw.update(loss_fn_kw) #Adding the user defined kwargs
+            logger.info(f"Using loss function {loss_fn} with kwargs {self.loss_fn_kw}")
 
-            loss_fn_kw = {
-                            'gamma' : 1
-                            }
-            self.loss_fn_kw = {}
-            self.dstw = SoftDTW(**loss_fn_kw)
         else:
             self.loss_fn = loss_fn
             self.loss_fn_kw = {}
             logger.info("Using custom loss function")
+
+        if loss_fn in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']: #Need to setup the sdtw class for the loss function
+            self.loss_fn_kw['dstw'] = SoftDTW(**self.loss_fn_kw)
 
         if is_continue:
             self.training_history = history
@@ -224,6 +239,7 @@ class ParamFitter:
                 self.training_history[param + '_target'] = []
                 self.training_history[param + '_init'] = [getattr(self.current_params, param)]
                 # self.training_history[param + '_lr'] = [lr_dict[param]]
+            self.training_history['step_time'] = []
             for param in self.shift_no_fit:
                 self.training_history[param + '_target'] = []
 
@@ -253,6 +269,11 @@ class ParamFitter:
         cur_norm_values = extract_relevant_params(self.norm_params, self.relevant_params_list)
         cur_norm_values = {key: jnp.array(max(mini, min(maxi, val))) for key, val in cur_norm_values.items()}
         self.norm_params = self.norm_params.replace(**cur_norm_values)
+
+    def clip_values_from_range(self):
+        self.norm_params = self.norm_params.replace(
+            **{key: jnp.array(max(ranges[key]['down']/getattr(self.params_normalization, key), min(ranges[key]['up']/getattr(self.params_normalization, key), getattr(self.norm_params, key)))) for key in self.relevant_params_list}
+            )
 
     def update_params(self):
         self.current_params = self.norm_params.replace(**{key: getattr(self.norm_params, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list})
@@ -326,7 +347,7 @@ class ParamFitter:
             nb_steps = int(epochs**(1./nb_var_params))
             logger.info(f"Each parameter will be scanned with {nb_steps} steps")
             grids_1d = [list(range(nb_steps))]*nb_var_params
-            steps_grids = np.meshgrid(*grids_1d)
+            steps_grids = list(np.meshgrid(*grids_1d))
 
             for i, param in enumerate(self.relevant_params_list):
                 lower = ranges[param]['down']
@@ -341,7 +362,7 @@ class ParamFitter:
         total_iter = 0
         with tqdm(total=pbar_total) as pbar:
             for epoch in range(epochs):
-                if epoch == 2: libcudart.cudaProfilerStart()
+                # if epoch == 2: libcudart.cudaProfilerStart()
                 # Losses for each batch -- used to compute epoch loss
                 losses_batch=[]
 
@@ -352,6 +373,7 @@ class ParamFitter:
                     logger.info(f"Stepping parameter values: {new_param_values}")
                     self.current_params = self.current_params.replace(**new_param_values)
                 for i, selected_tracks_bt_torch in enumerate(dataloader):
+                    start_time = time()
                     # Zero gradients
                     # self.optimizer.zero_grad()
 
@@ -405,13 +427,16 @@ class ParamFitter:
                         updates, self.opt_state = self.optimizer.update(extract_relevant_params(grads, self.relevant_params_list), self.opt_state)
                         self.current_params = update_params(self.norm_params, updates)
                         self.norm_params = update_params(self.norm_params, updates)
+                        #TODO: Fix values clipping to work for negative values
                         #Clipping param values
-                        self.clip_values()
+                        self.clip_values_from_range()
                         self.update_params()
 
+                    stop_time = time()
 
                     for param in self.relevant_params_list:
                         self.training_history[param+"_grad"].append(getattr(grads, param).item())
+                    self.training_history['step_time'].append(stop_time - start_time)
                     #TODO: Add norm clipping in the optimizer
                     # if self.max_clip_norm_val is not None:
                     #     if self.fit_diffs:
@@ -469,34 +494,4 @@ class ParamFitter:
                     if iterations is not None:
                         if total_iter >= iterations:
                             break
-            libcudart.cudaProfilerStop()
-
-    #TODO: Finish this thing
-    def calc_sdtw(self, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, fields):
-        # Assumes pixels are sorted
-        # sorted_adcs = adcs.flatten()[jnp.argsort(ticks.flatten())]
-        # sorted_ref = ref.flatten()[jnp.argsort(ticks_ref.flatten())]
-        # adc_loss = self.dstw.pairwise(sorted_adcs, sorted_ref)
-
-
-        mask = ticks.flatten() > 0
-        mask_ref = ticks_ref.flatten() > 0
-        adc_loss = self.dstw.pairwise(adcs.flatten()[mask], ref.flatten()[mask_ref])
-
-        # time_loss = self.dstw.pairwise(ticks.flatten()[mask], ticks_ref.flatten()[mask_ref])
-        time_loss = 0
-
-        # adc_loss = adc_loss/len(sorted_adcs)/len(sorted_ref)
-
-        # sorted_ticks = ticks[jnp.argsort(pixels)]
-        # sorted_ticks_ref = ticks_ref[jnp.argsort(pixels_ref)]
-
-        # time_loss = self.dstw.pairwise(sorted_ticks, sorted_ticks_ref)/1000
-
-        loss = jnp.log(adc_loss) + jnp.log(time_loss)
-        aux = {
-            'adc_loss': adc_loss,
-            'time_loss': time_loss
-        }
-
-        return loss, aux
+            # libcudart.cudaProfilerStop()

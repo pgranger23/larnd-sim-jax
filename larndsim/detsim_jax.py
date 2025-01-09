@@ -220,7 +220,7 @@ def current_mc(params, electrons, pixels_coord, fields):
 
     t0_tick = (t0/params.t_sampling + 0.5).astype(int)
 
-    t0 = t0 - t0_tick*params.t_sampling # Only taking the part of the ticks
+    t0 = t0 - t0_tick*params.t_sampling # Only taking the floating part of the ticks
 
     return t0_tick, current_model(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis])*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))*params.e_charge
 

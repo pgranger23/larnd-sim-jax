@@ -74,6 +74,11 @@ class Params_template:
 
     ELECTRON_MOBILITY_PARAMS: tuple = struct.field(pytree_node=False)
 
+    #Shifts of the TPC with respect to the true positions
+    shift_x: float = struct.field(pytree_node=False)
+    shift_y: float = struct.field(pytree_node=False)
+    shift_z: float = struct.field(pytree_node=False)
+
 def build_params_class(params_with_grad):
     template_fields = dataclasses.fields(Params_template)
     # Removing the pytree_node=False for the variables requiring gradient calculation
@@ -134,6 +139,9 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
             "lifetime": 2.2e3,
             "long_diff": 4.0e-6,
             "tran_diff": 8.8e-6,
+            "shift_x": 0.,
+            "shift_y": 0.,
+            "shift_z": 0.,
             "box": 1,
             "birks": 2,
             "lArDensity": 1.38,

@@ -75,7 +75,7 @@ def main(config):
                             # fit_diffs=config.fit_diffs,
                             optimizer_fn=config.optimizer_fn,
                             lr_scheduler=config.lr_scheduler, lr_kw=config.lr_kw,
-                            no_adc=config.no_adc, loss_fn=config.loss_fn, shift_no_fit=config.shift_no_fit,
+                            no_adc=config.no_adc, loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
                             link_vdrift_eField=config.link_vdrift_eField,
                             set_target_vals=config.set_target_vals, vary_init=config.vary_init, seed_init=config.seed_init,
                             config = config, profile_gradient=config.profile_gradient, epoch_size=len(tracks_dataloader), keep_in_memory=config.keep_in_memory)
@@ -168,6 +168,8 @@ if __name__ == '__main__':
                         help="Number of iterations to run. Overrides epochs.")
     parser.add_argument("--loss_fn", dest="loss_fn", default=None,
                         help="Loss function to use. Named options are SDTW and space_match.")
+    parser.add_argument("--loss_fn_kw", dest="loss_fn_kw", default=None, type=json.loads,
+                        help="Loss function keyword arguments.")
     parser.add_argument("--max_batch_len", dest="max_batch_len", default=None, type=float,
                         help="Max dx [cm] per batch. If passed, will add tracks to batch until overflow, splitting where needed")
     parser.add_argument("--max_nbatch", dest="max_nbatch", default=None, type=int,

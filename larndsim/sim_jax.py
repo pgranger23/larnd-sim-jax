@@ -165,44 +165,6 @@ def loss(adcs, pIDs, ticks, adcs_ref, pIDs_ref, ticks_ref):
 
     return adc_loss + time_loss, aux
 
-@jit
-def chamfer_distance_3d(pos_a, pos_b):
-    """
-    Compute the Chamfer Distance between two sets of 3D points (x, y, t).
-    
-    Parameters:
-        pos_a: jnp.ndarray of shape (N, 3), positions and times of hits in distribution A.
-        pos_b: jnp.ndarray of shape (M, 3), positions and times of hits in distribution B.
-    
-    Returns:
-        A scalar representing the Chamfer Distance between the two point sets.
-    """
-    # Compute Euclidean distances in 3D between all pairs of points
-    dists_a_to_b = jnp.sum((pos_a[:, None, :] - pos_b[None, :, :])**2, axis=2)
-    dists_b_to_a = jnp.sum((pos_b[:, None, :] - pos_a[None, :, :])**2, axis=2)
-    
-    # Find minimum distance from each point in pos_a to pos_b and vice versa
-    min_dists_a_to_b = jnp.min(dists_a_to_b, axis=1)
-    min_dists_b_to_a = jnp.min(dists_b_to_a, axis=1)
-    
-    # Calculate Chamfer Distance as the average of these minimum distances
-    chamfer_dist = jnp.mean(min_dists_a_to_b) + jnp.mean(min_dists_b_to_a)
-    return chamfer_dist
-
-def mse_loss(adcs, pIDs, ticks, adcs_ref, pIDs_ref, ticks_ref):
-    all_pixels = jnp.concatenate([pIDs, pIDs_ref])
-    unique_pixels = jnp.sort(jnp.unique(all_pixels))
-    nb_pixels = unique_pixels.shape[0]
-    pix_renumbering = jnp.searchsorted(unique_pixels, pIDs)
-
-    pix_renumbering_ref = jnp.searchsorted(unique_pixels, pIDs_ref)
-
-    signals = jnp.zeros((nb_pixels, adcs.shape[1]))
-    signals = signals.at[pix_renumbering, :].add(adcs)
-    signals = signals.at[pix_renumbering_ref, :].add(-adcs_ref)
-    adc_loss = jnp.sum(signals**2)
-    return adc_loss, dict()
-
 def pad_size(cur_size, tag):
     global size_history_dict
 
@@ -228,9 +190,25 @@ def pad_size(cur_size, tag):
     return new_size
 
 @partial(jit, static_argnames=['fields'])
+def shift_tracks(params, tracks, fields):
+    shifted_tracks = tracks.at[:, fields.index("x_start")].subtract(params.shift_x)
+    shifted_tracks = shifted_tracks.at[:, fields.index("x_end")].subtract(params.shift_x)
+    shifted_tracks = shifted_tracks.at[:, fields.index("x")].subtract(params.shift_x)
+    shifted_tracks = shifted_tracks.at[:, fields.index("y_start")].subtract(params.shift_y)
+    shifted_tracks = shifted_tracks.at[:, fields.index("y_end")].subtract(params.shift_y)
+    shifted_tracks = shifted_tracks.at[:, fields.index("y")].subtract(params.shift_y)
+    shifted_tracks = shifted_tracks.at[:, fields.index("z_start")].subtract(params.shift_z)
+    shifted_tracks = shifted_tracks.at[:, fields.index("z_end")].subtract(params.shift_z)
+    shifted_tracks = shifted_tracks.at[:, fields.index("z")].subtract(params.shift_z)
+    return shifted_tracks
+
+
+@partial(jit, static_argnames=['fields'])
 def simulate_drift(params, tracks, fields, rngkey):
+    #Shifting tracks
+    new_tracks = shift_tracks(params, tracks, fields)
     #Quenching and drifting
-    new_tracks = quench(params, tracks, 2, fields)
+    new_tracks = quench(params, new_tracks, 2, fields)
     new_tracks = drift(params, new_tracks, fields)
 
     #Simulating the electron generation according to the diffusion coefficients
@@ -335,16 +313,6 @@ def simulate(params, response, tracks, fields, rngkey = 0):
     
     # return wfs, unique_pixels
     # return adcs, unique_pixels, ticks, wfs[:, 1:], t0, currents_idx, electrons, pix_renumbering, start_ticks
-
-def params_loss(params, response, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_loss, **loss_kwargs):
-    adcs, pixels, ticks = simulate(params, response, tracks, fields, rngkey)
-    loss_val, aux = loss_fn(adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
-    return loss_val, aux
-
-def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_loss, **loss_kwargs):
-    adcs, pixels, ticks = simulate_parametrized(params, tracks, fields, rngkey)
-    loss_val, aux = loss_fn(adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
-    return loss_val, aux
 
 def update_params(params, params_init, grads, to_propagate, lr):
     modified_values = {}
