@@ -21,22 +21,22 @@ def jax_from_structured(tracks):
     tracks_np = rfn.structured_to_unstructured(tracks, copy=True, dtype=np.float32)
     return jnp.array(tracks_np)
 
-def load_data(fname):
+def load_data(fname, invert_xz=True):
     import h5py
     with h5py.File(fname, 'r') as f:
         tracks = np.array(f['segments'])
+    if invert_xz:
+        x_start = np.copy(tracks['x_start'] )
+        x_end = np.copy(tracks['x_end'])
+        x = np.copy(tracks['x'])
 
-    x_start = np.copy(tracks['x_start'] )
-    x_end = np.copy(tracks['x_end'])
-    x = np.copy(tracks['x'])
+        tracks['x_start'] = np.copy(tracks['z_start'])
+        tracks['x_end'] = np.copy(tracks['z_end'])
+        tracks['x'] = np.copy(tracks['z'])
 
-    tracks['x_start'] = np.copy(tracks['z_start'])
-    tracks['x_end'] = np.copy(tracks['z_end'])
-    tracks['x'] = np.copy(tracks['z'])
-
-    tracks['z_start'] = x_start
-    tracks['z_end'] = x_end
-    tracks['z'] = x
+        tracks['z_start'] = x_start
+        tracks['z_end'] = x_end
+        tracks['z'] = x
 
     selected_tracks = tracks
     dtype = selected_tracks.dtype
@@ -247,7 +247,7 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     
 
     wfs = accumulate_signals(wfs, currents_idx, electrons_renumbered[:, fields.index("n_electrons")], response, pix_renumbering, start_ticks, params.signal_length)
-    integral, ticks = get_adc_values(params, wfs[:, 1:]*params.e_charge)
+    integral, ticks = get_adc_values(params, wfs[:, 1:])
 
     adcs = digitize(params, integral)
     return adcs, unique_pixels, ticks
@@ -320,9 +320,9 @@ def update_params(params, params_init, grads, to_propagate, lr):
         modified_values[key] = getattr(params, key) - getattr(params_init, key)**2 * getattr(grads, key)*lr
     return params.replace(**modified_values)
 
-def prepare_tracks(params, tracks_file):
+def prepare_tracks(params, tracks_file, invert_xz=True):
     
-    tracks, dtype = load_data(tracks_file)
+    tracks, dtype = load_data(tracks_file, invert_xz)
     fields = dtype.names
 
     tracks = set_pixel_plane(params, tracks, fields)

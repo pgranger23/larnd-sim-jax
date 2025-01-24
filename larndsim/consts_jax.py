@@ -95,7 +95,7 @@ def build_params_class(params_with_grad):
 @jax.jit
 def get_vdrift(params):
     """
-    Calculation of the electron mobility w.r.t temperature and electric
+    Calculation of the electron drift velocity w.r.t temperature and electric
     field.
     References:
         - https://lar.bnl.gov/properties/trans.html (summary)
@@ -106,7 +106,7 @@ def get_vdrift(params):
         temperature (float): temperature
         
     Returns:
-        float: electron mobility in cm^2/kV/us
+        float: electron drift velocity in cm/us
     """
     a0, a1, a2, a3, a4, a5 = params.ELECTRON_MOBILITY_PARAMS
 
@@ -162,7 +162,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
             "electron_sampling_resolution": 0.001,
             "signal_length": 150,
             "MAX_ADC_VALUES": 10,
-            "DISCRIMINATION_THRESHOLD": 7e3*1.602e-19,
+            "DISCRIMINATION_THRESHOLD": 7e3,
             "ADC_HOLD_DELAY": 15,
             "CLOCK_CYCLE": 0.1,
             "GAIN": 4e-3,

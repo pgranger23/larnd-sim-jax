@@ -19,7 +19,7 @@ def digitize(params, integral_list):
     Returns:
         numpy.ndarray: list of ADC values for each pixel
     """
-    adcs = jnp.minimum((jnp.maximum((integral_list*params.GAIN/params.e_charge+params.V_PEDESTAL - params.V_CM), 0) \
+    adcs = jnp.minimum((jnp.maximum((integral_list*params.GAIN+params.V_PEDESTAL - params.V_CM), 0) \
                         * params.ADC_COUNTS/(params.V_REF-params.V_CM)+0.5), params.ADC_COUNTS)
 
     return adcs
@@ -43,7 +43,7 @@ def get_adc_values(params, pixels_signals):
     #Baseline level of noise on integrated charge
     #TODO: Deal better with the rng
     key = random.PRNGKey(42)
-    q_sum_base = random.normal(key, (pixels_signals.shape[0],)) * params.RESET_NOISE_CHARGE * params.e_charge
+    q_sum_base = random.normal(key, (pixels_signals.shape[0],)) * params.RESET_NOISE_CHARGE
 
     # Charge
     q = pixels_signals*params.t_sampling
@@ -62,16 +62,20 @@ def get_adc_values(params, pixels_signals):
         idx_t = idx_t.ravel()
         idx_pix = jnp.arange(0, q_sum.shape[0])
         # Then linearly interpolate for the intersection point.
-        dq = (q_sum[idx_pix, idx_t + 1]-q_sum[idx_pix, idx_t])
+        # inv_dq = jnp.where(q_sum[idx_pix, idx_t + 1] != q_sum[idx_pix, idx_t], 1./(q_sum[idx_pix, idx_t + 1]-q_sum[idx_pix, idx_t]), 0.)
 
-        # debug.print("dq: {dq}", dq=dq)
+        
 
         eps = 1e-4 #Any smaller value leads to NaN in gradients
+        dq = jnp.where(q_sum[idx_pix, idx_t + 1] == q_sum[idx_pix, idx_t], q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD, q_sum[idx_pix, idx_t + 1] - q_sum[idx_pix, idx_t])
+
         # eps = 1e-2 #Any smaller value leads to NaN in gradients
         # idx_val = jnp.where(dq < eps*params.DISCRIMINATION_THRESHOLD, 0, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/(dq+1e-3*params.DISCRIMINATION_THRESHOLD))
-        idx_val = jnp.where(idx_t == 0, 0, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/jnp.where(dq < eps*params.DISCRIMINATION_THRESHOLD, 1, dq))
+        # idx_val = jnp.where(idx_t == 0, 0, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/jnp.where(dq < eps*params.DISCRIMINATION_THRESHOLD, 1, dq))
+        # idx_val = jnp.where(idx_t == 0, idx_t, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/jnp.maximum(dq, eps*params.DISCRIMINATION_THRESHOLD))
         # idx_val = jnp.where(idx_t == 0, 0, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/jnp.where((idx_t == 0) | (dq <= eps*params.DISCRIMINATION_THRESHOLD), q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD, dq))
-
+        # idx_val = idx_t
+        idx_val = idx_t + 1 - (q_sum[idx_pix, idx_t+1] - params.DISCRIMINATION_THRESHOLD)/dq
         # debug.print("idx_val: {idx_val}", idx_val=idx_val)
 
         ic = jnp.zeros((q_sum.shape[0],))
@@ -96,7 +100,7 @@ def get_adc_values(params, pixels_signals):
 
         # Uncorrelated noise
         key, = random.split(key, 1)
-        extra_noise = random.normal(key, (pixels_signals.shape[0],))  * params.UNCORRELATED_NOISE_CHARGE * params.e_charge
+        extra_noise = random.normal(key, (pixels_signals.shape[0],))  * params.UNCORRELATED_NOISE_CHARGE
 
         # Only include noise if nonzero
         adc = jnp.where(q_vals_no_noise != 0, q_vals + extra_noise, q_vals_no_noise)
@@ -108,9 +112,9 @@ def get_adc_values(params, pixels_signals):
 
         # Setup for next loop: baseline noise set to based on adc passing disc. threshold
         key, = random.split(key, 1)
-        q_adc_pass = random.normal(key, (pixels_signals.shape[0],)) * params.RESET_NOISE_CHARGE * params.e_charge
+        q_adc_pass = random.normal(key, (pixels_signals.shape[0],)) * params.RESET_NOISE_CHARGE
         key, = random.split(key, 1)
-        q_adc_fail = random.normal(key, (pixels_signals.shape[0],)) * params.UNCORRELATED_NOISE_CHARGE * params.e_charge
+        q_adc_fail = random.normal(key, (pixels_signals.shape[0],)) * params.UNCORRELATED_NOISE_CHARGE
         q_sum_base = jnp.where(cond_adc, q_adc_fail, q_adc_pass)
 
         # Remove charge already counted
@@ -133,6 +137,5 @@ def get_adc_values(params, pixels_signals):
     # _, (full_adc, full_ticks) = find_hit(init_loop, 0)
     # full_adc = jnp.repeat(full_adc[:, jnp.newaxis], params.MAX_ADC_VALUES, axis=1).T
     # full_ticks = jnp.repeat(full_ticks[:, jnp.newaxis], params.MAX_ADC_VALUES, axis=1).T
-    # full_adc_ticks_list = jnp.stack(full_adc_ticks_list, axis=1)
 
     return full_adc.T, full_ticks.T

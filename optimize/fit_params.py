@@ -177,7 +177,7 @@ class ParamFitter:
             if lr is None:
                 raise ValueError("Need to specify lr for params")
             else:
-                self.learning_rates = {par: lr_scheduler_fn(lr, **lr_kw) for par in self.relevant_params_list}
+                self.learning_rates = {par: lr_scheduler_fn(lr, transition_steps=epoch_size, **lr_kw) for par in self.relevant_params_list}
         else:
             self.learning_rates = {key: lr_scheduler_fn(float(value), transition_steps=epoch_size, **lr_kw) for key, value in self.relevant_params_dict.items()}
         
@@ -185,10 +185,20 @@ class ParamFitter:
 
         if optimizer is None:
             self.optimizer = optax.chain(
-                optax.clip(self.max_clip_norm_val),
+                optax.clip_by_global_norm(self.max_clip_norm_val),
                 optax.multi_transform({key: self.optimizer_fn(value) for key, value in self.learning_rates.items()},
                             {key: key for key in self.relevant_params_list})
             )
+
+            # self.optimizer = optax.apply_if_finite(
+            #     optax.chain(
+            #         optax.clip_by_global_norm(self.max_clip_norm_val),
+            #         optax.multi_transform(
+            #             {key: self.optimizer_fn(value) for key, value in self.learning_rates.items()},
+            #             {key: key for key in self.relevant_params_list}
+            #         )
+            #     ), max_consecutive_errors = 5
+            # )
         else:
             raise ValueError("Passing directly optimizer is not supported")
             # self.optimizer = optimizer
@@ -284,7 +294,11 @@ class ParamFitter:
 
         self.target_params = {}
 
-        if self.target_val_dict is not None:
+        if self.profile_gradient:
+            logger.info("Using the fitter in a gradient profile mode. Setting targets to nominal values")
+            for param in self.relevant_params_list:
+                self.target_params[param] = ranges[param]['nom']
+        elif self.target_val_dict is not None:
             if set(self.relevant_params_list + self.shift_no_fit) != set(self.target_val_dict.keys()):
                 logger.debug(set(self.relevant_params_list + self.shift_no_fit))
                 logger.debug(set(self.target_val_dict.keys()))
@@ -362,7 +376,7 @@ class ParamFitter:
         total_iter = 0
         with tqdm(total=pbar_total) as pbar:
             for epoch in range(epochs):
-                # if epoch == 2: libcudart.cudaProfilerStart()
+                if epoch == 2: libcudart.cudaProfilerStart()
                 # Losses for each batch -- used to compute epoch loss
                 losses_batch=[]
 
@@ -422,20 +436,25 @@ class ParamFitter:
                         (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
                     else:
                         (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
-
+                    scaled_grads = {key: getattr(grads, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list}
                     if not self.profile_gradient:
-                        updates, self.opt_state = self.optimizer.update(extract_relevant_params(grads, self.relevant_params_list), self.opt_state)
-                        self.current_params = update_params(self.norm_params, updates)
-                        self.norm_params = update_params(self.norm_params, updates)
-                        #TODO: Fix values clipping to work for negative values
-                        #Clipping param values
-                        self.clip_values_from_range()
-                        self.update_params()
+                        leaves = jax.tree_util.tree_leaves(grads)
+                        hasNaN = any(jnp.isnan(leaf).any() for leaf in leaves)
+                        if hasNaN:
+                            logger.warning("Got NaN gradients!")
+                        else:
+                            updates, self.opt_state = self.optimizer.update(scaled_grads, self.opt_state)
+                            # self.current_params = update_params(self.norm_params, updates)
+                            self.norm_params = update_params(self.norm_params, updates)
+                            #TODO: Fix values clipping to work for negative values
+                            #Clipping param values
+                            self.clip_values_from_range()
+                            self.update_params()
 
                     stop_time = time()
 
                     for param in self.relevant_params_list:
-                        self.training_history[param+"_grad"].append(getattr(grads, param).item())
+                        self.training_history[param+"_grad"].append(scaled_grads[param].item())
                     self.training_history['step_time'].append(stop_time - start_time)
                     #TODO: Add norm clipping in the optimizer
                     # if self.max_clip_norm_val is not None:
@@ -479,7 +498,7 @@ class ParamFitter:
                         if total_iter % print_freq == 0:
                             for param in self.relevant_params_list:
                                 # logger.info(f"{param} {getattr(self.current_params,param)} {getattr(grads, param)} {updates[param]}")
-                                logger.info(f"{param} {getattr(self.current_params,param)} {getattr(grads, param)}")
+                                logger.info(f"{param} {getattr(self.current_params,param)} {scaled_grads[param]}")
                             
                         if total_iter % save_freq == 0:
                             with open(f'fit_result/history_{param}_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
@@ -494,4 +513,4 @@ class ParamFitter:
                     if iterations is not None:
                         if total_iter >= iterations:
                             break
-            # libcudart.cudaProfilerStop()
+            libcudart.cudaProfilerStop()

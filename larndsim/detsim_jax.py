@@ -6,7 +6,9 @@ on the pixels
 import jax.numpy as jnp
 from jax.profiler import annotate_function
 from jax import jit, lax, random, debug
+from jax.lax import stop_gradient
 from jax.nn import sigmoid
+from jax.scipy.stats import norm
 from functools import partial
 from larndsim.consts_jax import get_vdrift
 
@@ -118,6 +120,15 @@ def get_pixel_coordinates(params, xpitch, ypitch, plane):
     pix_y = ypitch * params.pixel_pitch + borders[..., 1, 0] + params.pixel_pitch/2
     return jnp.stack([pix_x, pix_y], axis=-1)
 
+@jit
+def get_hit_z(params, ticks, plane):
+    """
+    Returns the z position of the hit given the time tick with the right sign for the drift direction
+    """
+    z_anode = jnp.take(params.tpc_borders, plane.astype(int), axis=0)[..., 2, 0]
+    z_high = jnp.take(params.tpc_borders, plane.astype(int), axis=0)[..., 2, 1]
+    return z_anode + ticks * params.t_sampling*get_vdrift(params) * jnp.sign(z_high - z_anode)
+
 
 # @annotate_function
 @partial(jit, static_argnames=['fields'])
@@ -133,6 +144,57 @@ def generate_electrons(tracks, fields, rngkey=0):
     electrons = electrons.at[:, fields.index('z')].set(electrons[:, fields.index('z')] + rnd_pos[:, 2])
 
     return electrons
+
+# @partial(jit, static_argnames=['num_bins'])
+# def adaptive_sampling_gaussian_pdf_3d(sigma, num_bins):
+#     """
+#     Generate electron packets using a 3D Gaussian PDF with adaptive binning.
+
+#     Args:
+#         sigma: Standard deviation of the Gaussian distribution (array of shape (3,)).
+#         num_bins: Number of bins for adaptive sampling (same for each dimension).
+
+#     Returns:
+#         bin_centers: 3D tuple of bin centers (x, y, z).
+#         amplitudes: 3D array of electron amplitudes for each grid point.
+#     """
+#     # Create adaptive bin edges using the Gaussian CDF for each dimension
+#     edges_x = norm.ppf(jnp.linspace(0.001, 0.999, num_bins + 1), loc=0, scale=stop_gradient(sigma[0]))
+#     edges_y = norm.ppf(jnp.linspace(0.001, 0.999, num_bins + 1), loc=0, scale=stop_gradient(sigma[1]))
+#     edges_z = norm.ppf(jnp.linspace(0.001, 0.999, num_bins + 1), loc=0, scale=stop_gradient(sigma[2]))
+
+#     # Compute bin centers
+#     centers_x = 0.5 * (edges_x[:-1] + edges_x[1:])
+#     centers_y = 0.5 * (edges_y[:-1] + edges_y[1:])
+#     centers_z = 0.5 * (edges_z[:-1] + edges_z[1:])
+#     grid_x, grid_y, grid_z = jnp.meshgrid(centers_x, centers_y, centers_z, indexing='ij')
+
+#     # Evaluate Gaussian PDF at bin centers for each dimension
+#     pdf_x = jnp.exp(-0.5 * (grid_x / sigma[0])**2) / (sigma[0] * jnp.sqrt(2 * jnp.pi))
+#     pdf_y = jnp.exp(-0.5 * (grid_y / sigma[1])**2) / (sigma[1] * jnp.sqrt(2 * jnp.pi))
+#     pdf_z = jnp.exp(-0.5 * (grid_z / sigma[2])**2) / (sigma[2] * jnp.sqrt(2 * jnp.pi))
+    
+#     # Combine PDFs (assuming independence)
+#     pdf = pdf_x * pdf_y * pdf_z
+
+#     # Scale the PDF to match the total number of electrons
+#     amplitudes = pdf / jnp.sum(pdf)
+
+#     return (centers_x, centers_y, centers_z), amplitudes
+
+# @partial(jit, static_argnames=['fields'])
+# def generate_electrons_distrib(tracks, fields):
+    
+#     sigmas = jnp.stack([tracks[:, fields.index("tran_diff")],
+#                         tracks[:, fields.index("tran_diff")],
+#                         tracks[:, fields.index("long_diff")]], axis=1)
+#     rnd_pos = random.normal(key, (tracks.shape[0], 3))*sigmas
+#     electrons = tracks.copy()
+#     electrons = electrons.at[:, fields.index('x')].set(electrons[:, fields.index('x')] + rnd_pos[:, 0])
+#     electrons = electrons.at[:, fields.index('y')].set(electrons[:, fields.index('y')] + rnd_pos[:, 1])
+#     electrons = electrons.at[:, fields.index('z')].set(electrons[:, fields.index('z')] + rnd_pos[:, 2])
+
+#     return electrons
 
 # @annotate_function
 @partial(jit, static_argnames=['fields'])
@@ -222,7 +284,7 @@ def current_mc(params, electrons, pixels_coord, fields):
 
     t0 = t0 - t0_tick*params.t_sampling # Only taking the floating part of the ticks
 
-    return t0_tick, current_model(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis])*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))*params.e_charge
+    return t0_tick, current_model(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis])*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))
 
 @partial(jit, static_argnames=['fields'])
 def current_lut(params, response, electrons, pixels_coord, fields):

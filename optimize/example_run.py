@@ -17,6 +17,7 @@ from .dataio import TracksDataset
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+# jax.config.update('jax_log_compiles', True)
 
 def make_param_list(config):
     if len(config.param_list) == 1 and os.path.splitext(config.param_list[0])[1] == ".yaml":
@@ -65,6 +66,7 @@ def main(config):
     # For readout noise: no_noise overrides if explicitly set to True. Otherwise, turn on noise
     # individually for target and guess
     param_list = make_param_list(config)
+    logger.info(f"Param list: {param_list}")
     param_fit = ParamFitter(param_list, dataset.get_track_fields(),
                             track_chunk=config.track_chunk, pixel_chunk=config.pixel_chunk,
                             detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,

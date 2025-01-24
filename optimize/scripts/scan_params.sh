@@ -9,7 +9,8 @@
 #SBATCH --mem-per-cpu=8g
 #SBATCH --gpus-per-node=a100:1
 #SBATCH --time=1:00:00
-#SBATCH --array=1
+##SBATCH --array=0
+#SBATCH --array=0,1,2,3,4,5,6,7,8
 
 #BASE DECLARATIONS
 
@@ -18,9 +19,9 @@ if [ -z "$SLURM_ARRAY_TASK_ID" ]; then
 fi
 
 TARGET_SEED=$SLURM_ARRAY_TASK_ID
-PARAMS=optimize/scripts/param_list.yaml
-BATCH_SIZE=400
-ITERATIONS=1500
+# PARAMS=optimize/scripts/param_list.yaml
+BATCH_SIZE=800
+ITERATIONS=1000
 DATA_SEED=1
 INPUT_FILE=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim-output.h5
 SIF_FILE=/sdf/group/neutrino/pgranger/larnd-sim-jax.sif
@@ -29,14 +30,15 @@ UUID=$(uuidgen)
 
 nvidia-smi
 
-# export JAX_LOG_COMPILES=1
+PARAMS=("Ab" "kb" "eField" "tran_diff" "long_diff" "lifetime" "shift_x" "shift_y" "shift_z")
+PARAM=${PARAMS[$SLURM_ARRAY_TASK_ID]}
+
 # singularity exec --bind /sdf,$SCRATCH python-jax.sif python3 -m optimize.example_run \
 # apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop python3 -m optimize.example_run \
 apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} python3 -m optimize.example_run \
-    --print_input \
     --data_sz -1 \
     --max_nbatch 40 \
-    --params ${PARAMS} \
+    --params ${PARAM} \
     --input_file ${INPUT_FILE} \
     --track_len_sel 2 \
     --max_abs_costheta_sel 0.966 \
@@ -60,7 +62,7 @@ apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} python3 -m op
     --signal_length 191 \
     --mode 'parametrized' \
     --profile_gradient \
-    --loss_fn space_match
+    --loss_fn chamfer_3d
     # --loss_fn SDTW \
     # --lut_file /home/pgranger/larnd-sim/jit_version/original/build/lib/larndsim/bin/response_44.npy
     # --keep_in_memory
