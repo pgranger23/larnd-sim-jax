@@ -44,8 +44,6 @@ def chop_tracks(tracks, fields, precision=0.001):
         new_tracks[:, fields.index("y")] = 0.5*(new_tracks[:, fields.index("y_start")] + new_tracks[:, fields.index("y_end")])
         new_tracks[:, fields.index("z")] = 0.5*(new_tracks[:, fields.index("z_start")] + new_tracks[:, fields.index("z_end")])
 
-        # orig_track = np.full((new_tracks.shape[0], 1), i)
-        # new_tracks = np.hstack([new_tracks, orig_track])
         return new_tracks
     
     tracks = tracks.numpy()
@@ -69,7 +67,7 @@ def chop_tracks(tracks, fields, precision=0.001):
 class TracksDataset(Dataset):
     def __init__(self, filename, ntrack, max_nbatch=None, swap_xz=True, seed=3, random_ntrack=False, track_len_sel=2., 
                  max_abs_costheta_sel=0.966, min_abs_segz_sel=15., track_z_bound=28., max_batch_len=None, print_input=False,
-                 chopped=True, pad=True):
+                 chopped=True, pad=True, electron_sampling_resolution=0.001):
 
         with h5py.File(filename, 'r') as f:
             tracks = np.array(f['segments'])
@@ -183,7 +181,7 @@ class TracksDataset(Dataset):
                 tot_data_length += tot_length
             
             if chopped:
-                fit_tracks = [torch.tensor(chop_tracks(batch, self.track_fields)) for batch in batches]
+                fit_tracks = [torch.tensor(chop_tracks(batch, self.track_fields, electron_sampling_resolution)) for batch in batches]
             else:
                 fit_tracks = batches
             logger.info(f"-- The used data includes a total track length of {tot_data_length} cm.")

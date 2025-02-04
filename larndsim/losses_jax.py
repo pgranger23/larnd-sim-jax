@@ -4,9 +4,6 @@ import jax
 from larndsim.sim_jax import pad_size, simulate, simulate_parametrized
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
-from larndsim.consts_jax import get_vdrift
-from larndsim.softdtw_jax import SoftDTW
-
 
 def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     all_pixels = jnp.concatenate([pIDs, pIDs_ref])
@@ -105,15 +102,6 @@ def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref):
 
     loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, pixel_z_masked, adcs_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, pixel_z_masked_ref, adcs_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
 
-    # batched_hits, unique_event_ids = batch_hits(params, adcs, pixels, ticks)
-    # batched_hits_ref, unique_event_ids_ref = batch_hits(params, ref, pixels_ref, ticks_ref)
-
-    # matching_event_ids, idx, idx_ref = jnp.intersect1d(unique_event_ids, unique_event_ids_ref, return_indices=True)
-
-    # loss_events = chamfer_distance_batch(batched_hits_ref[idx_ref, :, :], batched_hits[idx, :, :], batched_hits_ref[idx_ref, :, -1], batched_hits[idx, :, -1])
-    # #TODO: Check why the mean lead to issues
-    # loss = jnp.median(loss_events)
-
     return loss, dict()
 
 def sdtw_loss(adcs, ref, dstw):
@@ -147,75 +135,6 @@ def get_hits_space_coords(params, pIDs, ticks):
 
     return pixel_x, pixel_y, pixel_z, eventID
 
-@jax.named_scope("batch_hits")
-def batch_hits(params, adcs, pIDs, ticks):
-    pixel_x, pixel_y, pixel_z, eventID = get_hits_space_coords(params, pIDs, ticks)
-    with jax.named_scope("masking"):
-        mask = adcs.flatten() > 0
-        pixel_x_masked = jnp.repeat(pixel_x, 10)[mask]
-        pixel_y_masked = jnp.repeat(pixel_y, 10)[mask]
-        pixel_z_masked = pixel_z[mask]
-        eventID_masked = jnp.repeat(eventID, 10)[mask]
-        adcs_masked = adcs.flatten()[mask]
-
-    unique_event_ids, event_start_indices = jnp.unique(eventID_masked, return_index=True)
-    num_events = unique_event_ids.shape[0]
-    # Compute the number of hits per event
-    hits_per_event = jnp.diff(jnp.append(event_start_indices, eventID_masked.shape[0]))
-    # Determine maximum hits per event for padding
-
-    max_hits_per_event = jnp.max(hits_per_event)
-    padded_size = pad_size(max_hits_per_event, "batch_hits")
-    max_hits_per_event = padded_size
-   
-    # Create scatter indices to place hits into batch array
-    with jax.named_scope("batching"):
-        max_range = jnp.arange(max_hits_per_event, dtype=int)
-        event_hit_ranges = max_range[None, :] < hits_per_event[:, None]
-        hit_indices = jnp.where(event_hit_ranges, max_range[None, :], -1).flatten()
-        valid_hit_indices = hit_indices[hit_indices >= 0]
-        
-        event_indices = jnp.repeat(jnp.arange(num_events, dtype=int), hits_per_event)
-        
-        #Initialize padded array
-        batched_hits = jnp.full((num_events, max_hits_per_event, 4), 0.)
-        # masks = jnp.zeros((num_events, max_hits_per_event), dtype=int)
-        
-        batched_hits = batched_hits.at[event_indices, valid_hit_indices, 0].set(pixel_x_masked)
-        batched_hits = batched_hits.at[event_indices, valid_hit_indices, 1].set(pixel_y_masked)
-        batched_hits = batched_hits.at[event_indices, valid_hit_indices, 2].set(pixel_z_masked)
-        batched_hits = batched_hits.at[event_indices, valid_hit_indices, 3].set(adcs_masked)
-
-    # masks = masks.at[event_indices, valid_hit_indices].set(1)
-
-    return batched_hits, unique_event_ids
-
-@jit
-@jax.named_scope("chamfer_distance_batch")
-def chamfer_distance_batch(points1, points2, mask1, mask2):
-    """
-    Computes the Chamfer distance for each event independently using masks.
-    Args:
-        points1, points2: Arrays of shape (B, P, D) and (B, Q, D) for batched events.
-        mask1, mask2: Binary masks for valid points (shape (B, P) and (B, Q)).
-    Returns:
-        Chamfer distance for each event.
-    """
-    def chamfer_event(p1, p2, m1, m2):
-        dists = jnp.sum((p1[:, None, :] - p2[None, :, :]) ** 2, axis=-1)
-
-        valid_dists1 = jnp.where(m2[None, :], dists, 1e10)
-        valid_dists2 = jnp.where(m1[:, None], dists, 1e10)
-
-        min_dist1 = jnp.min(valid_dists1, axis=1)
-        min_dist2 = jnp.min(valid_dists2, axis=0)
-
-        mean_dist1 = jnp.sum(min_dist1 * m1)# / jnp.sum(m1)
-        mean_dist2 = jnp.sum(min_dist2 * m2)# / jnp.sum(m2)
-
-        return mean_dist1 + mean_dist2
-    return vmap(chamfer_event)(points1, points2, mask1, mask2)
-
 @jit
 def cleaning_outputs(params, ref, adcs):
     #Cleaning up baselines to avoid big leaps
@@ -239,3 +158,72 @@ def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields,
     
     loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
     return loss_val, aux
+
+#Code commented below is unused but I still want to keep it for future reference
+
+# def batch_hits(params, adcs, pIDs, ticks):
+#     pixel_x, pixel_y, pixel_z, eventID = get_hits_space_coords(params, pIDs, ticks)
+#     with jax.named_scope("masking"):
+#         mask = adcs.flatten() > 0
+#         pixel_x_masked = jnp.repeat(pixel_x, 10)[mask]
+#         pixel_y_masked = jnp.repeat(pixel_y, 10)[mask]
+#         pixel_z_masked = pixel_z[mask]
+#         eventID_masked = jnp.repeat(eventID, 10)[mask]
+#         adcs_masked = adcs.flatten()[mask]
+
+#     unique_event_ids, event_start_indices = jnp.unique(eventID_masked, return_index=True)
+#     num_events = unique_event_ids.shape[0]
+#     # Compute the number of hits per event
+#     hits_per_event = jnp.diff(jnp.append(event_start_indices, eventID_masked.shape[0]))
+#     # Determine maximum hits per event for padding
+
+#     max_hits_per_event = jnp.max(hits_per_event)
+#     padded_size = pad_size(max_hits_per_event, "batch_hits")
+#     max_hits_per_event = padded_size
+   
+#     # Create scatter indices to place hits into batch array
+#     with jax.named_scope("batching"):
+#         max_range = jnp.arange(max_hits_per_event, dtype=int)
+#         event_hit_ranges = max_range[None, :] < hits_per_event[:, None]
+#         hit_indices = jnp.where(event_hit_ranges, max_range[None, :], -1).flatten()
+#         valid_hit_indices = hit_indices[hit_indices >= 0]
+        
+#         event_indices = jnp.repeat(jnp.arange(num_events, dtype=int), hits_per_event)
+        
+#         #Initialize padded array
+#         batched_hits = jnp.full((num_events, max_hits_per_event, 4), 0.)
+#         # masks = jnp.zeros((num_events, max_hits_per_event), dtype=int)
+        
+#         batched_hits = batched_hits.at[event_indices, valid_hit_indices, 0].set(pixel_x_masked)
+#         batched_hits = batched_hits.at[event_indices, valid_hit_indices, 1].set(pixel_y_masked)
+#         batched_hits = batched_hits.at[event_indices, valid_hit_indices, 2].set(pixel_z_masked)
+#         batched_hits = batched_hits.at[event_indices, valid_hit_indices, 3].set(adcs_masked)
+
+#     # masks = masks.at[event_indices, valid_hit_indices].set(1)
+
+#     return batched_hits, unique_event_ids
+
+# @jit
+# def chamfer_distance_batch(points1, points2, mask1, mask2):
+#     """
+#     Computes the Chamfer distance for each event independently using masks.
+#     Args:
+#         points1, points2: Arrays of shape (B, P, D) and (B, Q, D) for batched events.
+#         mask1, mask2: Binary masks for valid points (shape (B, P) and (B, Q)).
+#     Returns:
+#         Chamfer distance for each event.
+#     """
+#     def chamfer_event(p1, p2, m1, m2):
+#         dists = jnp.sum((p1[:, None, :] - p2[None, :, :]) ** 2, axis=-1)
+
+#         valid_dists1 = jnp.where(m2[None, :], dists, 1e10)
+#         valid_dists2 = jnp.where(m1[:, None], dists, 1e10)
+
+#         min_dist1 = jnp.min(valid_dists1, axis=1)
+#         min_dist2 = jnp.min(valid_dists2, axis=0)
+
+#         mean_dist1 = jnp.sum(min_dist1 * m1)# / jnp.sum(m1)
+#         mean_dist2 = jnp.sum(min_dist2 * m2)# / jnp.sum(m2)
+
+#         return mean_dist1 + mean_dist2
+#     return vmap(chamfer_event)(points1, points2, mask1, mask2)

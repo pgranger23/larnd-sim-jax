@@ -60,7 +60,6 @@ class ParamFitter:
                  lr=None, optimizer=None, lr_scheduler=None, lr_kw=None, 
                  loss_fn=None, loss_fn_kw=None, readout_noise_target=True, readout_noise_guess=False, 
                  out_label="", norm_scheme="divide", max_clip_norm_val=None, optimizer_fn="Adam",
-                #  fit_diffs=False,
                  no_adc=False, shift_no_fit=[], link_vdrift_eField=False,
                  set_target_vals=[], vary_init=False, seed_init=30, profile_gradient = False, epoch_size=1, keep_in_memory=False,
                  config = {}):
@@ -92,8 +91,6 @@ class ParamFitter:
         if self.current_mode == 'lut':
             self.lut_file = config.lut_file
             self.load_lut()
-            self.number_pix_neighbors = 0
-
 
         self.track_fields = track_fields
         if type(relevant_params) == dict:
@@ -121,13 +118,6 @@ class ParamFitter:
                 param_val = set_target_vals[2*i_val+1]
                 self.target_val_dict[param_name] = float(param_val)
 
-        # Simulation object for target
-        # self.sim_target.load_detector_properties(detector_props, pixel_layouts)
-        #TODO: take care of link_vdrift_eField
-
-        # Simulation object for iteration -- this is where gradient updates will happen
-        # self.sim_iter.load_detector_properties(detector_props, pixel_layouts)
-
         # Normalize parameters to init at 1, or random, or set to checkpointed values
         
         Params = build_params_class(self.relevant_params_list)
@@ -153,18 +143,8 @@ class ParamFitter:
         self.current_params = ref_params.replace(**initial_params)
         self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
         self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
-         
-        # # Placeholder simulation -- parameters will be set by un-normalizing sim_iter
-        # self.sim_physics.load_detector_properties(detector_props, pixel_layouts)
-
-        # for param in self.relevant_params_list:
-        #     setattr(self.sim_physics, param, normalize_param(getattr(self.sim_iter, param), param, scheme=self.norm_scheme, undo_norm=True))
-
-        # Keep track of gradients in sim_iter
-        # self.sim_iter.track_gradients(self.relevant_params_list, fit_diffs=self.fit_diffs)
 
         self.learning_rates = {}
-        #TODO: Only step the learning rate at each epoch!!!
 
         if lr_scheduler is not None and lr_kw is not None:
             lr_scheduler_fn = getattr(optax, lr_scheduler)
@@ -189,19 +169,8 @@ class ParamFitter:
                 optax.multi_transform({key: self.optimizer_fn(value) for key, value in self.learning_rates.items()},
                             {key: key for key in self.relevant_params_list})
             )
-
-            # self.optimizer = optax.apply_if_finite(
-            #     optax.chain(
-            #         optax.clip_by_global_norm(self.max_clip_norm_val),
-            #         optax.multi_transform(
-            #             {key: self.optimizer_fn(value) for key, value in self.learning_rates.items()},
-            #             {key: key for key in self.relevant_params_list}
-            #         )
-            #     ), max_consecutive_errors = 5
-            # )
         else:
             raise ValueError("Passing directly optimizer is not supported")
-            # self.optimizer = optimizer
         
         self.opt_state = self.optimizer.init(extract_relevant_params(self.norm_params, self.relevant_params_list))
 
@@ -388,12 +357,6 @@ class ParamFitter:
                     self.current_params = self.current_params.replace(**new_param_values)
                 for i, selected_tracks_bt_torch in enumerate(dataloader):
                     start_time = time()
-                    # Zero gradients
-                    # self.optimizer.zero_grad()
-
-                    # Get rid of the extra dimension and padding elements for the loaded data
-                    # selected_tracks_bt_torch = torch.flatten(selected_tracks_bt_torch, start_dim=0, end_dim=1)
-                    # selected_tracks_bt_torch = selected_tracks_bt_torch[selected_tracks_bt_torch[:, self.track_fields.index("dx")] > 0]
                     
                     #Convert torch tracks to jax
                     selected_tracks_bt_torch = torch.flatten(selected_tracks_bt_torch, start_dim=0, end_dim=1)
@@ -430,8 +393,6 @@ class ParamFitter:
                                 ref_ticks = loaded['ticks']
 
                     # Simulate and get output
-                    # loss_val, aux = params_loss(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
-                    # grads, aux = jax.grad(params_loss, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
                     if self.current_mode == 'lut':
                         (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
                     else:
@@ -441,12 +402,11 @@ class ParamFitter:
                         leaves = jax.tree_util.tree_leaves(grads)
                         hasNaN = any(jnp.isnan(leaf).any() for leaf in leaves)
                         if hasNaN:
-                            logger.warning("Got NaN gradients!")
+                            logger.warning("Got NaN gradients! Skipping update for this batch")
                         else:
                             updates, self.opt_state = self.optimizer.update(scaled_grads, self.opt_state)
                             # self.current_params = update_params(self.norm_params, updates)
                             self.norm_params = update_params(self.norm_params, updates)
-                            #TODO: Fix values clipping to work for negative values
                             #Clipping param values
                             self.clip_values_from_range()
                             self.update_params()
@@ -456,48 +416,14 @@ class ParamFitter:
                     for param in self.relevant_params_list:
                         self.training_history[param+"_grad"].append(scaled_grads[param].item())
                     self.training_history['step_time'].append(stop_time - start_time)
-                    #TODO: Add norm clipping in the optimizer
-                    # if self.max_clip_norm_val is not None:
-                    #     if self.fit_diffs:
-                    #         torch.nn.utils.clip_grad_norm_([getattr(self.sim_iter, param+"_diff") for param in self.relevant_params_list],
-                    #                                     self.max_clip_norm_val)
-                    #     else:
-                    #         torch.nn.utils.clip_grad_norm_([getattr(self.sim_iter, param) for param in self.relevant_params_list],
-                    #                                     self.max_clip_norm_val)
+
                     self.training_history['losses_iter'].append(loss_val.item())
                     for param in self.relevant_params_list:
                         self.training_history[param+"_iter"].append(getattr(self.current_params, param).item())
 
-                    #     else:
-                    #         if len(self.training_history['losses_iter']) > 0:
-                    #             self.training_history['losses_iter'].append(self.training_history['losses_iter'][-1])
-                    #             for param in self.relevant_params_list:
-                    #                 self.training_history[param+"_iter"].append(self.training_history[param+"_iter"][-1])
-                    #                 self.training_history[param+"_grad"].append(self.training_history[param+"_grad"][-1])
-                    #         else:
-                    #             self.training_history['losses_iter'].append(0.)
-                    #             for param in self.relevant_params_list:
-                    #                 self.training_history[param+"_iter"].append(self.training_history[param+"_init"][0])
-                    #                 self.training_history[param+"_grad"].append(0.)
-
-                    #         logger.warning(f"Got {nan_check} gradients with a NaN value!")
-
-                    # else:
-                    #     if len(self.training_history['losses_iter']) > 0:
-                    #         self.training_history['losses_iter'].append(self.training_history['losses_iter'][-1])
-                    #         for param in self.relevant_params_list:
-                    #             self.training_history[param+"_iter"].append(self.training_history[param+"_iter"][-1])
-                    #             self.training_history[param+"_grad"].append(self.training_history[param+"_grad"][-1])
-                    #     else:
-                    #         self.training_history['losses_iter'].append(0.)
-                    #         for param in self.relevant_params_list:
-                    #             self.training_history[param+"_iter"].append(self.training_history[param+"_init"][0])
-                    #             self.training_history[param+"_grad"].append(0.)
-
                     if iterations is not None:
                         if total_iter % print_freq == 0:
                             for param in self.relevant_params_list:
-                                # logger.info(f"{param} {getattr(self.current_params,param)} {getattr(grads, param)} {updates[param]}")
                                 logger.info(f"{param} {getattr(self.current_params,param)} {scaled_grads[param]}")
                             
                         if total_iter % save_freq == 0:

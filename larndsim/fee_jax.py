@@ -64,8 +64,6 @@ def get_adc_values(params, pixels_signals):
         # Then linearly interpolate for the intersection point.
         # inv_dq = jnp.where(q_sum[idx_pix, idx_t + 1] != q_sum[idx_pix, idx_t], 1./(q_sum[idx_pix, idx_t + 1]-q_sum[idx_pix, idx_t]), 0.)
 
-        
-
         eps = 1e-4 #Any smaller value leads to NaN in gradients
         dq = jnp.where(q_sum[idx_pix, idx_t + 1] == q_sum[idx_pix, idx_t], q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD, q_sum[idx_pix, idx_t + 1] - q_sum[idx_pix, idx_t])
 
