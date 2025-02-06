@@ -46,7 +46,8 @@ def chop_tracks(tracks, fields, precision=0.001):
 
         return new_tracks
     
-    tracks = tracks.numpy()
+    if not isinstance(tracks, np.ndarray):
+        tracks = tracks.numpy()
     
     start = np.stack([tracks[:, fields.index("x_start")],
                         tracks[:, fields.index("y_start")],

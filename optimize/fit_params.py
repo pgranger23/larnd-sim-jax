@@ -10,6 +10,7 @@ from larndsim.sim_jax import simulate, simulate_parametrized
 from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc
 from larndsim.consts_jax import build_params_class, load_detector_properties
 from larndsim.softdtw_jax import SoftDTW
+from jax.flatten_util import ravel_pytree
 import logging
 import torch
 import optax
@@ -54,14 +55,19 @@ def extract_relevant_params(params, relevant):
 def update_params(params, update):
     return params.replace(**{key: getattr(params, key) + val for key, val in update.items()})
 
+def format_hessian(hess):
+    flatten_hessian, _ = ravel_pytree(hess)
+    return flatten_hessian.tolist()
+
 class ParamFitter:
-    def __init__(self, relevant_params, track_fields, track_chunk, pixel_chunk,
+    def __init__(self, relevant_params, track_fields,
                  detector_props, pixel_layouts, load_checkpoint = None,
                  lr=None, optimizer=None, lr_scheduler=None, lr_kw=None, 
                  loss_fn=None, loss_fn_kw=None, readout_noise_target=True, readout_noise_guess=False, 
                  out_label="", norm_scheme="divide", max_clip_norm_val=None, optimizer_fn="Adam",
                  no_adc=False, shift_no_fit=[], link_vdrift_eField=False,
                  set_target_vals=[], vary_init=False, seed_init=30, profile_gradient = False, epoch_size=1, keep_in_memory=False,
+                 compute_target_hessian=False,
                  config = {}):
         if optimizer_fn == "Adam":
             self.optimizer_fn = optax.adam
@@ -82,6 +88,8 @@ class ParamFitter:
             logger.info(f"Will clip gradient norm at {self.max_clip_norm_val}")
 
         self.profile_gradient = profile_gradient
+
+        self.compute_target_hessian = compute_target_hessian
 
         self.current_mode = config.mode
         self.electron_sampling_resolution = config.electron_sampling_resolution
@@ -227,6 +235,8 @@ class ParamFitter:
             self.training_history['norm_scheme'] = self.norm_scheme
         #     self.training_history['fit_diffs'] = self.fit_diffs
             self.training_history['optimizer_fn_name'] = self.optimizer_fn_name
+            if self.compute_target_hessian:
+                self.training_history['hessian'] = []
 
         self.training_history['config'] = config
 
@@ -372,6 +382,15 @@ class ParamFitter:
                             ref_adcs, ref_unique_pixels, ref_ticks = simulate(self.target_params, self.response, selected_tracks, self.track_fields)
                         else:
                             ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, selected_tracks, self.track_fields)
+
+                        if self.compute_target_hessian:
+                            if self.current_mode == 'lut':
+                                hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.target_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                            else:
+                                ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, selected_tracks, self.track_fields)
+                                hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                            self.training_history['hessian'].append(format_hessian(hess))     
+
                         # embed_target = embed_adc_list(self.sim_target, target, pix_target, ticks_list_targ)
                         #Saving the target for the batch
                         #TODO: See if we have to do this for each event
