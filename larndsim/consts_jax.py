@@ -170,8 +170,8 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
             "V_REF": 1300,
             "V_PEDESTAL": 580,
             "ADC_COUNTS": 2**8,
-            "RESET_NOISE_CHARGE": 0,
-            "UNCORRELATED_NOISE_CHARGE": 0,
+            "RESET_NOISE_CHARGE": 900,
+            "UNCORRELATED_NOISE_CHARGE": 500,
             "ELECTRON_MOBILITY_PARAMS": (551.6, 7158.3, 4440.43, 4.29, 43.63, 0.2053)
         }
 

@@ -80,6 +80,9 @@ def pad_size(cur_size, tag):
     logger.debug(f"Input size {cur_size} not existing. Creating new size of {new_size}")
     return new_size
 
+def get_size_history():
+    return size_history_dict
+
 @partial(jit, static_argnames=['fields'])
 def shift_tracks(params, tracks, fields):
     shifted_tracks = tracks.at[:, fields.index("x_start")].subtract(params.shift_x)

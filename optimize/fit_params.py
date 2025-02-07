@@ -6,7 +6,7 @@ import pickle
 import numpy as np
 from .utils import get_id_map, all_sim, embed_adc_list
 from .ranges import ranges
-from larndsim.sim_jax import simulate, simulate_parametrized
+from larndsim.sim_jax import simulate, simulate_parametrized, get_size_history
 from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc
 from larndsim.consts_jax import build_params_class, load_detector_properties
 from larndsim.softdtw_jax import SoftDTW
@@ -58,6 +58,10 @@ def update_params(params, update):
 def format_hessian(hess):
     flatten_hessian, _ = ravel_pytree(hess)
     return flatten_hessian.tolist()
+
+def remove_noise_from_params(params):
+    noise_params = ('RESET_NOISE_CHARGE', 'UNCORRELATED_NOISE_CHARGE')
+    return params.replace(**{key: 0. for key in noise_params})
 
 class ParamFitter:
     def __init__(self, relevant_params, track_fields,
@@ -149,6 +153,15 @@ class ParamFitter:
                     initial_params[param] = init_val
 
         self.current_params = ref_params.replace(**initial_params)
+
+        #Only do it now to not inpact current_params
+        if not readout_noise_target:
+            logger.info("Not simulating electronics noise for target")
+            ref_params = remove_noise_from_params(ref_params)
+        if not readout_noise_guess:
+            logger.info("Not simulating electronics noise for guesses")
+            self.current_params = remove_noise_from_params(self.current_params)
+
         self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
         self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
 
@@ -237,6 +250,8 @@ class ParamFitter:
             self.training_history['optimizer_fn_name'] = self.optimizer_fn_name
             if self.compute_target_hessian:
                 self.training_history['hessian'] = []
+            self.training_history['size_history'] = []
+            self.training_history['memory'] = []
 
         self.training_history['config'] = config
 
@@ -439,6 +454,9 @@ class ParamFitter:
                     self.training_history['losses_iter'].append(loss_val.item())
                     for param in self.relevant_params_list:
                         self.training_history[param+"_iter"].append(getattr(self.current_params, param).item())
+
+                    self.training_history['size_history'].append(get_size_history())
+                    self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
 
                     if iterations is not None:
                         if total_iter % print_freq == 0:
