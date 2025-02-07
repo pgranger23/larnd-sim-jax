@@ -162,6 +162,8 @@ class ParamFitter:
             logger.info("Not simulating electronics noise for guesses")
             self.current_params = remove_noise_from_params(self.current_params)
 
+        self.ref_params = ref_params
+
         self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
         self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
 
@@ -314,7 +316,7 @@ class ParamFitter:
 
                 logger.info(f'{param}, target: {param_val}, init {getattr(self.current_params, param)}')    
                 self.target_params[param] = param_val
-        self.target_params = self.current_params.replace(**self.target_params)
+        self.target_params = self.ref_params.replace(**self.target_params)
 
     
     def fit(self, dataloader, epochs=300, iterations=None, shuffle=False, 
