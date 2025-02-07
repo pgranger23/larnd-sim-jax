@@ -96,22 +96,29 @@ class TracksDataset(Dataset):
         # flat index for all reasonable track [eventID, trackID] 
         index = []
         all_tracks = []
-        for ev in np.unique(tracks['eventID']):
-            track_set = np.unique(tracks[tracks['eventID'] == ev]['trackID'])
-            for trk in track_set:
-                trk_msk = (tracks['eventID'] == ev) & (tracks['trackID'] == trk)
-                xd = tracks[trk_msk]['x_start'][0] - tracks[trk_msk]['x_end'][-1]
-                yd = tracks[trk_msk]['y_start'][0] - tracks[trk_msk]['y_end'][-1]
-                zd = tracks[trk_msk]['z_start'][0] - tracks[trk_msk]['z_end'][-1]
-                z_dir = [0,0,1]
-                trk_dir = [xd, yd, zd]
-                if np.sum(tracks[trk_msk]['dx']) > track_len_sel:
-                    cos_theta = abs(np.dot(trk_dir, z_dir))/ np.linalg.norm(trk_dir)
-                #TODO once we enter the end game, this track selection requirement needs to be more accessible.
-                # For now, we keep it as it is to take consistent data among developers
-                if np.sum(tracks[trk_msk]['dx']) > track_len_sel and max(abs(tracks[trk_msk]['z'])) < track_z_bound and abs(cos_theta) < max_abs_costheta_sel:
-                    index.append([ev, trk])
-                    all_tracks.append(torch_from_structured(tracks[trk_msk][abs(tracks[trk_msk]['z']) > min_abs_segz_sel]))
+
+        selected_tracks = tracks[tracks['z'] > min_abs_segz_sel]
+
+        unique_tracks, first_indices = np.unique(selected_tracks[['eventID', 'trackID']], return_index=True)
+        first_indices = np.sort(first_indices)
+        last_indices = np.r_[first_indices[1:] - 1, len(selected_tracks) - 1]
+
+        tracks_start = selected_tracks[first_indices]
+        tracks_end = selected_tracks[last_indices]
+        tracks_xd = tracks_start['x_start'] - tracks_end['x_end']
+        tracks_yd = tracks_start['y_start'] - tracks_end['y_end']
+        tracks_zd = tracks_start['z_start'] - tracks_end['z_end']
+
+        tracks_dir = np.column_stack((tracks_xd, tracks_yd, tracks_zd))
+        z_dir = np.array([0, 0, 1])
+        cos_theta = np.abs(np.dot(tracks_dir, z_dir))/ (np.linalg.norm(tracks_dir, axis=1) + 1e-10)
+
+        mask = np.sqrt(tracks_xd**2 + tracks_yd**2 + tracks_zd**2) > track_len_sel
+        mask = mask & (cos_theta < max_abs_costheta_sel)
+        mask = mask & (np.maximum(abs(tracks_start['z']), abs(tracks_end['z'])) < track_z_bound)
+
+        index = np.unique(tracks_start[['eventID', 'trackID']][mask])
+        all_tracks = [torch_from_structured(selected_tracks[mask]) for mask in (selected_tracks[['eventID', 'trackID']][:, None] == index).T]
 
         # all fit with a sub-set of tracks
         fit_index = []
@@ -136,58 +143,46 @@ class TracksDataset(Dataset):
 
         if print_input:
             logger.info(f"training set [ev, trk]: {fit_index}")
-      
+
         if max_batch_len is not None:
-            batches = []
-            batch_here = []
-            ev_here = []
-            trk_here = []
-            tot_length = 0
-            tot_data_length = 0
-            done_track_looping = False
-            for track in fit_tracks:
-                for segment in track:
-                    if segment[self.track_fields.index("dx")] > max_batch_len:
-                        continue
-                    tot_length+=segment[self.track_fields.index("dx")]
-                    if tot_length < max_batch_len:
-                        batch_here.append(segment)
-                        ev_here.append(segment[[self.track_fields.index("eventID")]])
-                        trk_here.append(segment[[self.track_fields.index("trackID")]])
-                    else:
-                       
-                        if len(batch_here) > 0:
-                            batches.append(torch.stack(batch_here))
-                            tot_data_length += tot_length - segment[self.track_fields.index("dx")]
-                            if print_input:
-                                logger.info(f"~ [batch ID]: {len(batches)}")
-                                logger.info(f"  batch length: {tot_length - segment[self.track_fields.index('dx')]}")
-                                logger.info(f"  event IDs: {ev_here}")
-                                logger.info(f"  track IDs: {trk_here}")
-                        batch_here = []
-                        ev_here = []
-                        trk_here = []
-                        tot_length = 0
-                        if max_nbatch is not None and len(batches) >= max_nbatch and max_nbatch > 0: 
-                            done_track_looping = True
-                            break
-                        batch_here.append(segment)
-                        ev_here.append(segment[[self.track_fields.index("eventID")]])
-                        trk_here.append(segment[[self.track_fields.index("trackID")]])
-                        tot_length+=segment[self.track_fields.index("dx")]
-                if done_track_looping:
-                    break
-            if len(batch_here) > 0:
-                batches.append(torch.stack(batch_here))
-                tot_data_length += tot_length
+            # Flatten tracks into a single array for efficient processing
+            all_segments = np.vstack(fit_tracks)
             
+            # Extract required fields as numpy arrays
+            lengths = all_segments[:, self.track_fields.index("dx")]
+            event_ids = all_segments[:, self.track_fields.index("eventID")]
+            track_ids = all_segments[:, self.track_fields.index("trackID")]
+
+            # Mask out segments longer than max_batch_len
+            valid_mask = lengths <= max_batch_len
+            lengths = lengths[valid_mask]
+            segments = all_segments[valid_mask]
+            event_ids = event_ids[valid_mask]
+            track_ids = track_ids[valid_mask]
+
+            # Cumulative sum to track segment lengths
+            cumsum_lengths = np.cumsum(lengths)
+            
+            # Find batch boundaries
+            split_points = np.where(np.diff(np.floor_divide(cumsum_lengths, max_batch_len)) > 0)[0] + 1
+
+            batch_indices = np.split(np.arange(len(segments)), split_points)
+
+            # Cap the number of batches if max_nbatch is set
+            if max_nbatch:
+                batch_indices = batch_indices[:max_nbatch]
+
+            # Convert batches to PyTorch tensors
+            batches = [torch.tensor(segments[idx]) for idx in batch_indices if idx.size > 0]
+            tot_data_length = sum(lengths[idx].sum() for idx in batch_indices if idx.size > 0)
             if chopped:
                 fit_tracks = [torch.tensor(chop_tracks(batch, self.track_fields, electron_sampling_resolution)) for batch in batches]
             else:
-                fit_tracks = batches
-            logger.info(f"-- The used data includes a total track length of {tot_data_length} cm.")
-            logger.info(f"-- The maximum batch track length is {max_batch_len} cm.")
-            logger.info(f"-- There are {len(batches)} different batches in total.")
+                fit_tracks = [torch.tensor(batch) for batch in batches]
+
+            print(f"-- The used data includes a total track length of {tot_data_length} cm.")
+            print(f"-- The maximum batch track length is {max_batch_len} cm.")
+            print(f"-- There are {len(batches)} different batches in total.")
         if pad:
             self.tracks = torch.nn.utils.rnn.pad_sequence(fit_tracks, batch_first=True, padding_value = 0)
         else:

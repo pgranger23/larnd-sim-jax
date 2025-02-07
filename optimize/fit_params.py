@@ -396,9 +396,9 @@ class ParamFitter:
                     fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
                     if epoch == 0:
                         if self.current_mode == 'lut':
-                            ref_adcs, ref_unique_pixels, ref_ticks = simulate(self.target_params, self.response, selected_tracks, self.track_fields)
+                            ref_adcs, ref_unique_pixels, ref_ticks = simulate(self.target_params, self.response, selected_tracks, self.track_fields, i) #Setting a different random seed for each target
                         else:
-                            ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, selected_tracks, self.track_fields)
+                            ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, selected_tracks, self.track_fields, i) #Setting a different random seed for each target
 
                         if self.compute_target_hessian:
                             if self.current_mode == 'lut':
@@ -430,9 +430,9 @@ class ParamFitter:
 
                     # Simulate and get output
                     if self.current_mode == 'lut':
-                        (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                        (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
                     else:
-                        (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                        (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
                     scaled_grads = {key: getattr(grads, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list}
                     if not self.profile_gradient:
                         leaves = jax.tree_util.tree_leaves(grads)
