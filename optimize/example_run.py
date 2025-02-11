@@ -50,24 +50,40 @@ def main(config):
         if max_nbatch is None or iterations < max_nbatch or max_nbatch < 0:
             max_nbatch = iterations
 
-    dataset = TracksDataset(filename=config.input_file, ntrack=config.data_sz, max_nbatch=max_nbatch, seed=config.data_seed, random_ntrack=config.random_ntrack, 
+    dataset_sim = TracksDataset(filename=config.input_file_sim, ntrack=config.data_sz, max_nbatch=max_nbatch, seed=config.data_seed, random_ntrack=config.random_ntrack, 
                             track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, electron_sampling_resolution=config.electron_sampling_resolution)
+
+    dataset_target = TracksDataset(filename=config.input_file_tgt, ntrack=config.data_sz, max_nbatch=max_nbatch, seed=config.data_seed, random_ntrack=config.random_ntrack,
+                            track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, electron_sampling_resolution=config.electron_sampling_resolution)
+
+    # check if the track in sim and target are consistent
+    if len(dataset_sim) != len(dataset_target):
+        raise Exception("target and sim inpputs are different in size.")
 
     batch_sz = config.batch_sz
     if config.max_batch_len is not None and batch_sz != 1:
         logger.warning("Need batch size == 1 for splitting in dx chunks. Setting now...")
         batch_sz = 1
 
-    tracks_dataloader = DataLoader(dataset,
+    tracks_dataloader_sim = DataLoader(dataset_sim,
                                   shuffle=config.data_shuffle, 
                                   batch_size=batch_sz,
                                   pin_memory=True, num_workers=config.num_workers)
+
+    tracks_dataloader_target = DataLoader(dataset_target,
+                                  shuffle=config.data_shuffle,
+                                  batch_size=batch_sz,
+                                  pin_memory=True, num_workers=config.num_workers)
+
+    # check if tracks_dataloader_sim and tracks_dataloader_target have the same size
+    if len(tracks_dataloader_sim) != len(tracks_dataloader_target):
+        raise Exception("target and sim inpputs are different in size.")
 
     # For readout noise: no_noise overrides if explicitly set to True. Otherwise, turn on noise
     # individually for target and guess
     param_list = make_param_list(config)
     logger.info(f"Param list: {param_list}")
-    param_fit = ParamFitter(param_list, dataset.get_track_fields(),
+    param_fit = ParamFitter(param_list, dataset_sim.get_track_fields(),
                             track_chunk=config.track_chunk, pixel_chunk=config.pixel_chunk,
                             detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                             load_checkpoint=config.load_checkpoint, lr=config.lr, 
@@ -80,13 +96,13 @@ def main(config):
                             no_adc=config.no_adc, loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
                             link_vdrift_eField=config.link_vdrift_eField,
                             set_target_vals=config.set_target_vals, vary_init=config.vary_init, seed_init=config.seed_init,
-                            config = config, profile_gradient=config.profile_gradient, epoch_size=len(tracks_dataloader), keep_in_memory=config.keep_in_memory)
+                            config = config, profile_gradient=config.profile_gradient, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory)
     param_fit.make_target_sim(seed=config.seed, fixed_range=config.fixed_range)
 
     # jax.profiler.start_trace("/tmp/tensorboard")
 
     # with cProfile.Profile() as pr:
-    param_fit.fit(tracks_dataloader, epochs=config.epochs, iterations=iterations, shuffle=config.data_shuffle, save_freq=config.save_freq)
+    param_fit.fit(tracks_dataloader_sim, tracks_dataloader_target, epochs=config.epochs, iterations=iterations, shuffle=config.data_shuffle, save_freq=config.save_freq)
     # pr.dump_stats('prof.prof')
     # jax.profiler.stop_trace()
     return 0, 'Fitting successful'
@@ -95,9 +111,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--params", dest="param_list", default=[], nargs="+", required=True,
                         help="List of parameters to optimize. See consts_ep.py")
-    parser.add_argument("--input_file", dest="input_file",
+    parser.add_argument("--input_file_sim", dest="input_file_sim",
                         default="/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim-output.h5",
-                        help="Input data file")
+                        help="Input sim data file")
+    parser.add_argument("--input_file_tgt", dest="input_file_tgt",
+                        default="/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim-output.h5",
+                        help="Input target data file")
     parser.add_argument("--detector_props", dest="detector_props",
                         default="larndsim/detector_properties/module0.yaml",
                         help="Path to detector properties YAML file")

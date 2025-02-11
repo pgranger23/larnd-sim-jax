@@ -292,11 +292,13 @@ class ParamFitter:
         self.target_params = self.current_params.replace(**self.target_params)
 
     
-    def fit(self, dataloader, epochs=300, iterations=None, shuffle=False, 
+    def fit(self, dataloader_sim, dataloader_target, epochs=300, iterations=None, shuffle=False, 
             save_freq=10, print_freq=1):
         # If explicit number of iterations, scale epochs accordingly
+        if len(dataloader_sim) != len(dataloader_target):
+            raise Exception("Sim and target inputs do not match in size. Panic.")
         if iterations is not None:
-            epochs = iterations // len(dataloader) + 1
+            epochs = iterations // len(dataloader_sim) + 1
 
         # make a folder for the pixel target
         if os.path.exists('target_' + self.out_label):
@@ -321,7 +323,7 @@ class ParamFitter:
         if iterations is not None:
             pbar_total = iterations
         else:
-            pbar_total = len(dataloader) * epochs
+            pbar_total = len(dataloader_sim) * epochs
 
         if self.profile_gradient:
             logger.info("Using the fitter in a gradient profile mode. The sampling will follow a regular grid.")
@@ -355,12 +357,20 @@ class ParamFitter:
                         new_param_values[param] = steps_grids[i][epoch]
                     logger.info(f"Stepping parameter values: {new_param_values}")
                     self.current_params = self.current_params.replace(**new_param_values)
-                for i, selected_tracks_bt_torch in enumerate(dataloader):
+                for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
                     start_time = time()
                     
                     #Convert torch tracks to jax
-                    selected_tracks_bt_torch = torch.flatten(selected_tracks_bt_torch, start_dim=0, end_dim=1)
-                    selected_tracks = jax.device_put(selected_tracks_bt_torch.numpy())
+                    # target
+                    selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
+#                    selected_tracks_bt_torch_tgt = selected_tracks_bt_torch_target[selected_tracks_bt_torch_target[:, self.track_fields.index("dx")] > 0]
+
+                    # sim
+                    selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
+#                    selected_tracks_bt_torch_sim = selected_tracks_bt_torch_sim[selected_tracks_bt_torch_sim[:, self.track_fields.index("dx")] > 0]
+
+                    selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
+                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
 
                     #Simulate the output for the whole batch
                     loss_ev = []
@@ -369,9 +379,9 @@ class ParamFitter:
                     fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
                     if epoch == 0:
                         if self.current_mode == 'lut':
-                            ref_adcs, ref_unique_pixels, ref_ticks = simulate(self.target_params, self.response, selected_tracks, self.track_fields)
+                            ref_adcs, ref_unique_pixels, ref_ticks = simulate(self.target_params, self.response, selected_tracks_tgt, self.track_fields)
                         else:
-                            ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, selected_tracks, self.track_fields)
+                            ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, selected_tracks_tgt, self.track_fields)
                         # embed_target = embed_adc_list(self.sim_target, target, pix_target, ticks_list_targ)
                         #Saving the target for the batch
                         #TODO: See if we have to do this for each event
@@ -394,9 +404,9 @@ class ParamFitter:
 
                     # Simulate and get output
                     if self.current_mode == 'lut':
-                        (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                        (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_sim, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
                     else:
-                        (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                        (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_sim, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
                     scaled_grads = {key: getattr(grads, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list}
                     if not self.profile_gradient:
                         leaves = jax.tree_util.tree_leaves(grads)
