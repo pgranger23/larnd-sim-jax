@@ -42,7 +42,6 @@ def drift(params, tracks, fields):
     drift_time = drift_distance / get_vdrift(params)
     lifetime_red = jnp.exp(-drift_time / params.lifetime)
 
-    #TODO: investigate using jnp.where instead of masking all values
     tracks = tracks.at[:, fields.index("n_electrons")].set(
         tracks[:, fields.index("n_electrons")] * lifetime_red * mask)
     tracks = tracks.at[:, fields.index("long_diff")].set(

@@ -26,7 +26,7 @@ def digitize(params, integral_list):
 
 @annotate_function
 @jit
-def get_adc_values(params, pixels_signals):
+def get_adc_values(params, pixels_signals, noise_rng_key):
     """
     Implementation of self-trigger logic
 
@@ -41,9 +41,8 @@ def get_adc_values(params, pixels_signals):
     """
 
     #Baseline level of noise on integrated charge
-    #TODO: Deal better with the rng
-    key = random.PRNGKey(42)
-    q_sum_base = random.normal(key, (pixels_signals.shape[0],)) * params.RESET_NOISE_CHARGE
+
+    q_sum_base = random.normal(noise_rng_key, (pixels_signals.shape[0],)) * params.RESET_NOISE_CHARGE
 
     # Charge
     q = pixels_signals*params.t_sampling
@@ -62,17 +61,9 @@ def get_adc_values(params, pixels_signals):
         idx_t = idx_t.ravel()
         idx_pix = jnp.arange(0, q_sum.shape[0])
         # Then linearly interpolate for the intersection point.
-        # inv_dq = jnp.where(q_sum[idx_pix, idx_t + 1] != q_sum[idx_pix, idx_t], 1./(q_sum[idx_pix, idx_t + 1]-q_sum[idx_pix, idx_t]), 0.)
 
-        eps = 1e-4 #Any smaller value leads to NaN in gradients
         dq = jnp.where(q_sum[idx_pix, idx_t + 1] == q_sum[idx_pix, idx_t], q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD, q_sum[idx_pix, idx_t + 1] - q_sum[idx_pix, idx_t])
 
-        # eps = 1e-2 #Any smaller value leads to NaN in gradients
-        # idx_val = jnp.where(dq < eps*params.DISCRIMINATION_THRESHOLD, 0, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/(dq+1e-3*params.DISCRIMINATION_THRESHOLD))
-        # idx_val = jnp.where(idx_t == 0, 0, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/jnp.where(dq < eps*params.DISCRIMINATION_THRESHOLD, 1, dq))
-        # idx_val = jnp.where(idx_t == 0, idx_t, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/jnp.maximum(dq, eps*params.DISCRIMINATION_THRESHOLD))
-        # idx_val = jnp.where(idx_t == 0, 0, idx_t + 1 - (q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD)/jnp.where((idx_t == 0) | (dq <= eps*params.DISCRIMINATION_THRESHOLD), q_sum[idx_pix, idx_t + 1] - params.DISCRIMINATION_THRESHOLD, dq))
-        # idx_val = idx_t
         idx_val = idx_t + 1 - (q_sum[idx_pix, idx_t+1] - params.DISCRIMINATION_THRESHOLD)/dq
         # debug.print("idx_val: {idx_val}", idx_val=idx_val)
 
@@ -128,7 +119,7 @@ def get_adc_values(params, pixels_signals):
         return (key, q_sum, q_cumsum), (adc, ic)
 
 
-    init_loop = (random.split(key, 1)[0], q_sum, q_cumsum)
+    init_loop = (random.split(noise_rng_key, 1)[0], q_sum, q_cumsum)
     
     _, (full_adc, full_ticks) = lax.scan(find_hit, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
     # Single iteration to detect NaNs

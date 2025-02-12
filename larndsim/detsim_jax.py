@@ -132,12 +132,11 @@ def get_hit_z(params, ticks, plane):
 
 # @annotate_function
 @partial(jit, static_argnames=['fields'])
-def generate_electrons(tracks, fields, rngkey=0):
-    key = random.PRNGKey(rngkey)
+def generate_electrons(tracks, fields, rngkey):
     sigmas = jnp.stack([tracks[:, fields.index("tran_diff")],
                         tracks[:, fields.index("tran_diff")],
                         tracks[:, fields.index("long_diff")]], axis=1)
-    rnd_pos = random.normal(key, (tracks.shape[0], 3))*sigmas
+    rnd_pos = random.normal(rngkey, (tracks.shape[0], 3))*sigmas
     electrons = tracks.copy()
     electrons = electrons.at[:, fields.index('x')].set(electrons[:, fields.index('x')] + rnd_pos[:, 0])
     electrons = electrons.at[:, fields.index('y')].set(electrons[:, fields.index('y')] + rnd_pos[:, 1])
@@ -211,10 +210,7 @@ def get_pixels(params, electrons, fields):
     shifts = jnp.vstack([X.ravel(), Y.ravel()]).T
     pixels = pixels[:, jnp.newaxis, :] + shifts[jnp.newaxis, :, :]
 
-    outside = (pixels[:, :, 0] >= params.n_pixels_x) | (pixels[:, :, 1] >= params.n_pixels_y)
-    return jnp.where(outside, -1, pixels[:, :, 0] + params.n_pixels_x * (pixels[:, :, 1] + params.n_pixels_y * (electrons[:, fields.index("pixel_plane")].astype(int)[:, jnp.newaxis] + params.tpc_borders.shape[0]*electrons[:, fields.index("eventID")].astype(int)[:, jnp.newaxis])))
-    #TODO: Maybe put back pixel2id (was removed because of a weird bug)
-    # return pixel2id(params, pixels[:, :, 0], pixels[:, :, 1], electrons[:, fields.index("pixel_plane")].astype(int)[:, jnp.newaxis], electrons[:, fields.index("eventID")].astype(int)[:, jnp.newaxis])
+    return pixel2id(params, pixels[:, :, 0], pixels[:, :, 1], electrons[:, fields.index("pixel_plane")].astype(int)[:, jnp.newaxis], electrons[:, fields.index("eventID")].astype(int)[:, jnp.newaxis])
 
 # @annotate_function
 @jit

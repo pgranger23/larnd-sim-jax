@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 from jax import jit
+import jax
 import numpy as np
 from numpy.lib import recfunctions as rfn
 from functools import partial
@@ -79,6 +80,9 @@ def pad_size(cur_size, tag):
     logger.debug(f"Input size {cur_size} not existing. Creating new size of {new_size}")
     return new_size
 
+def get_size_history():
+    return size_history_dict
+
 @partial(jit, static_argnames=['fields'])
 def shift_tracks(params, tracks, fields):
     shifted_tracks = tracks.at[:, fields.index("x_start")].subtract(params.shift_x)
@@ -119,7 +123,7 @@ def get_renumbering(pIDs, unique_pixels):
     return mask, pix_renumbering
 
 @partial(jit, static_argnames=['fields'])
-def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, fields):
+def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey, fields):
     pix_renumbering = jnp.take(pix_renumbering, mask_indices, mode='fill', fill_value=0)
     npix = (2*params.number_pix_neighbors + 1)**2
     elec_ids = mask_indices//npix
@@ -136,13 +140,13 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     start_ticks = (t0/params.t_sampling + 0.5).astype(int) - params.time_window
     
     wfs = accumulate_signals(wfs, currents_idx, electrons_renumbered[:, fields.index("n_electrons")], response, pix_renumbering, start_ticks, params.signal_length)
-    integral, ticks = get_adc_values(params, wfs[:, 1:])
+    integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey)
 
     adcs = digitize(params, integral)
     return adcs, unique_pixels, ticks
 
 @partial(jit, static_argnames=['fields'])
-def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, fields):
+def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, fields):
     xpitch, ypitch, plane, eid = id2pixel(params, pIDs)
     
     pixels_coord = get_pixel_coordinates(params, xpitch, ypitch, plane)
@@ -156,22 +160,26 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, fields
     start_ticks = t0 - signals.shape[1]
 
     wfs = accumulate_signals_parametrized(wfs, signals, pix_renumbering, start_ticks)
-    integral, ticks = get_adc_values(params, wfs[:, 1:])
+    integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey)
     adcs = digitize(params, integral)
     return adcs, unique_pixels, ticks
 
-def simulate_parametrized(params, tracks, fields, rngkey = 0):
-    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey)
+def simulate_parametrized(params, tracks, fields, rngseed = 0):
+    master_key = jax.random.PRNGKey(rngseed)
+    rngkey1, rngkey2 = jax.random.split(master_key)
+    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1)
     pIDs = pIDs.ravel()
     unique_pixels = jnp.unique(pIDs)
     padded_size = pad_size(unique_pixels.shape[0], "unique_pixels")
 
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
-    return simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, fields)
+    return simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, fields)
 
-def simulate(params, response, tracks, fields, rngkey = 0):
-    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey)
+def simulate(params, response, tracks, fields, rngseed = 0):
+    master_key = jax.random.PRNGKey(rngseed)
+    rngkey1, rngkey2 = jax.random.split(master_key)
+    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1)
 
     main_pixels = pIDs[:, 2*params.number_pix_neighbors*(params.number_pix_neighbors+1)] #Getting the main pixel
     #Sorting the pixels and getting the unique ones
@@ -191,7 +199,7 @@ def simulate(params, response, tracks, fields, rngkey = 0):
     # err, wfs = checked_f(wfs, currents_idx, electrons[:, fields.index("n_electrons")], response, pix_renumbering, start_ticks - earliest_tick, params.signal_length)
     # err.throw()
 
-    return simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, fields)
+    return simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey2, fields)
 
 def prepare_tracks(params, tracks_file, invert_xz=True):
     tracks, dtype = load_data(tracks_file, invert_xz)

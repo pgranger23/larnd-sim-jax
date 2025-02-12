@@ -84,7 +84,6 @@ def main(config):
     param_list = make_param_list(config)
     logger.info(f"Param list: {param_list}")
     param_fit = ParamFitter(param_list, dataset_sim.get_track_fields(),
-                            track_chunk=config.track_chunk, pixel_chunk=config.pixel_chunk,
                             detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                             load_checkpoint=config.load_checkpoint, lr=config.lr, 
                             readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
@@ -95,7 +94,7 @@ def main(config):
                             lr_scheduler=config.lr_scheduler, lr_kw=config.lr_kw,
                             no_adc=config.no_adc, loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
                             link_vdrift_eField=config.link_vdrift_eField,
-                            set_target_vals=config.set_target_vals, vary_init=config.vary_init, seed_init=config.seed_init,
+                            set_target_vals=config.set_target_vals, vary_init=config.vary_init, seed_init=config.seed_init, compute_target_hessian=config.compute_target_hessian,
                             config = config, profile_gradient=config.profile_gradient, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory)
     param_fit.make_target_sim(seed=config.seed, fixed_range=config.fixed_range)
 
@@ -125,10 +124,6 @@ if __name__ == '__main__':
                         help="Path to pixel layouts YAML file")
     parser.add_argument("--load_checkpoint", dest="load_checkpoint", type=str, default=None,
                         help="Path to checkpoint Pickle (pkl) file")
-    parser.add_argument("--track_chunk", dest="track_chunk", default=1, type=int,
-                        help="Track chunk size used in simulation.")
-    parser.add_argument("--pixel_chunk", dest="pixel_chunk", default=1, type=int,
-                        help="Pixel chunk size used in simulation.")
     parser.add_argument('--num_workers', type=int, default=4,
                         help='The number of worker threads to use for the dataloader.')
     parser.add_argument("--lr", dest="lr", default=1e1, type=float,
@@ -211,6 +206,7 @@ if __name__ == '__main__':
     parser.add_argument('--signal_length', type=int, required=True, help='Signal length')
     parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
     parser.add_argument('--keep_in_memory', default=False, action="store_true", help='Keep the expected output of each batch in memory')
+    parser.add_argument('--compute_target_hessian', default=False, action="store_true", help='Computes the Hessian at the target for every batch')
 
     try:
         args = parser.parse_args()
