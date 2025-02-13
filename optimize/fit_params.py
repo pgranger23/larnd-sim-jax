@@ -471,7 +471,7 @@ class ParamFitter:
                     self.training_history['size_history'].append(get_size_history())
                     self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
 
-                    if iterations is not None:
+                    if iterations is not None or total_iter == (iterations-1):
                         if total_iter % print_freq == 0:
                             for param in self.relevant_params_list:
                                 logger.info(f"{param} {getattr(self.current_params,param)} {scaled_grads[param]}")
@@ -489,4 +489,7 @@ class ParamFitter:
                     if iterations is not None:
                         if total_iter >= iterations:
                             break
+            if os.path.exists('target_' + self.out_label):
+                shutil.rmtree('target_' + self.out_label, ignore_errors=True)
+
             libcudart.cudaProfilerStop()
