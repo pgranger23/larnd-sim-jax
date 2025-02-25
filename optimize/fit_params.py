@@ -477,11 +477,11 @@ class ParamFitter:
                                 logger.info(f"{param} {getattr(self.current_params,param)} {scaled_grads[param]}")
                             
                         if total_iter % save_freq == 0:
-                            with open(f'fit_result/history_{param}_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
+                            with open(f'fit_result/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
                                 pickle.dump(self.training_history, f_history)
 
-                            if os.path.exists(f'fit_result/history_{param}_iter{total_iter-save_freq}_{self.out_label}.pkl'):
-                                os.remove(f'fit_result/history_{param}_iter{total_iter-save_freq}_{self.out_label}.pkl') 
+                            if os.path.exists(f'fit_result/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
+                                os.remove(f'fit_result/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
 
                     total_iter += 1
                     pbar.update(1)
