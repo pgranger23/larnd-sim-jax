@@ -88,7 +88,7 @@ def main(config):
                             load_checkpoint=config.load_checkpoint, lr=config.lr, 
                             readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
                             readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
-                            out_label=config.out_label, norm_scheme=config.norm_scheme, max_clip_norm_val=config.max_clip_norm_val,
+                            out_label=config.out_label, test_name=config.test_name, norm_scheme=config.norm_scheme, max_clip_norm_val=config.max_clip_norm_val,
                             # fit_diffs=config.fit_diffs,
                             optimizer_fn=config.optimizer_fn,
                             lr_scheduler=config.lr_scheduler, lr_kw=config.lr_kw,
@@ -164,6 +164,8 @@ if __name__ == '__main__':
                         help="Set z bound to keep healthy set of tracks")
     parser.add_argument("--out_label", dest="out_label", default="",
                         help="Label for output pkl file")
+    parser.add_argument("--test_name", dest="test_name", default="",
+                        help="Name of the test")
     parser.add_argument("--fixed_range", dest="fixed_range", default=None, type=float,
                         help="Construct target by sampling in a certain range (fraction of nominal)")
     parser.add_argument("--norm_scheme", dest="norm_scheme", default="divide",

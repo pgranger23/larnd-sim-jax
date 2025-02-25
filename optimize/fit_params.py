@@ -68,7 +68,7 @@ class ParamFitter:
                  detector_props, pixel_layouts, load_checkpoint = None,
                  lr=None, optimizer=None, lr_scheduler=None, lr_kw=None, 
                  loss_fn=None, loss_fn_kw=None, readout_noise_target=True, readout_noise_guess=False, 
-                 out_label="", norm_scheme="divide", max_clip_norm_val=None, optimizer_fn="Adam",
+                 out_label="", test_name="this_test", norm_scheme="divide", max_clip_norm_val=None, optimizer_fn="Adam",
                  no_adc=False, shift_no_fit=[], link_vdrift_eField=False,
                  set_target_vals=[], vary_init=False, seed_init=30, profile_gradient = False, epoch_size=1, keep_in_memory=False,
                  compute_target_hessian=False,
@@ -333,8 +333,8 @@ class ParamFitter:
         os.makedirs('target_' + self.out_label)
 
         # make a folder for the fit result
-        if not os.path.exists('fit_result'):
-            os.makedirs('fit_result')
+        if not os.path.exists('fit_result/{self.test_name}'):
+            os.makedirs('fit_result/{self.test_name}')
 
         # Include initial value in training history (if haven't loaded a checkpoint)
         for param in self.relevant_params_list:
@@ -477,11 +477,11 @@ class ParamFitter:
                                 logger.info(f"{param} {getattr(self.current_params,param)} {scaled_grads[param]}")
                             
                         if total_iter % save_freq == 0:
-                            with open(f'fit_result/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
+                            with open(f'fit_result/{self.test_name}/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
                                 pickle.dump(self.training_history, f_history)
 
-                            if os.path.exists(f'fit_result/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
-                                os.remove(f'fit_result/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
+                            if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
+                                os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
 
                     total_iter += 1
                     pbar.update(1)
