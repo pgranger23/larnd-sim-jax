@@ -68,7 +68,7 @@ class ParamFitter:
                  detector_props, pixel_layouts, load_checkpoint = None,
                  lr=None, optimizer=None, lr_scheduler=None, lr_kw=None, 
                  loss_fn=None, loss_fn_kw=None, readout_noise_target=True, readout_noise_guess=False, 
-                 out_label="", norm_scheme="divide", max_clip_norm_val=None, optimizer_fn="Adam",
+                 out_label="", test_name="this_test", norm_scheme="divide", max_clip_norm_val=None, optimizer_fn="Adam",
                  no_adc=False, shift_no_fit=[], link_vdrift_eField=False,
                  set_target_vals=[], vary_init=False, seed_init=30, profile_gradient = False, epoch_size=1, keep_in_memory=False,
                  compute_target_hessian=False,
@@ -319,11 +319,13 @@ class ParamFitter:
         self.target_params = self.ref_params.replace(**self.target_params)
 
     
-    def fit(self, dataloader, epochs=300, iterations=None, shuffle=False, 
+    def fit(self, dataloader_sim, dataloader_target, epochs=300, iterations=None, shuffle=False, 
             save_freq=10, print_freq=1):
         # If explicit number of iterations, scale epochs accordingly
+        if len(dataloader_sim) != len(dataloader_target):
+            raise Exception("Sim and target inputs do not match in size. Panic.")
         if iterations is not None:
-            epochs = iterations // len(dataloader) + 1
+            epochs = iterations // len(dataloader_sim) + 1
 
         # make a folder for the pixel target
         if os.path.exists('target_' + self.out_label):
@@ -331,8 +333,8 @@ class ParamFitter:
         os.makedirs('target_' + self.out_label)
 
         # make a folder for the fit result
-        if not os.path.exists('fit_result'):
-            os.makedirs('fit_result')
+        if not os.path.exists('fit_result/{self.test_name}'):
+            os.makedirs('fit_result/{self.test_name}')
 
         # Include initial value in training history (if haven't loaded a checkpoint)
         for param in self.relevant_params_list:
@@ -348,7 +350,7 @@ class ParamFitter:
         if iterations is not None:
             pbar_total = iterations
         else:
-            pbar_total = len(dataloader) * epochs
+            pbar_total = len(dataloader_sim) * epochs
 
         if self.profile_gradient:
             logger.info("Using the fitter in a gradient profile mode. The sampling will follow a regular grid.")
@@ -382,12 +384,20 @@ class ParamFitter:
                         new_param_values[param] = steps_grids[i][epoch]
                     logger.info(f"Stepping parameter values: {new_param_values}")
                     self.current_params = self.current_params.replace(**new_param_values)
-                for i, selected_tracks_bt_torch in enumerate(dataloader):
+                for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
                     start_time = time()
                     
                     #Convert torch tracks to jax
-                    selected_tracks_bt_torch = torch.flatten(selected_tracks_bt_torch, start_dim=0, end_dim=1)
-                    selected_tracks = jax.device_put(selected_tracks_bt_torch.numpy())
+                    # target
+                    selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
+#                    selected_tracks_bt_torch_tgt = selected_tracks_bt_torch_target[selected_tracks_bt_torch_target[:, self.track_fields.index("dx")] > 0]
+
+                    # sim
+                    selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
+#                    selected_tracks_bt_torch_sim = selected_tracks_bt_torch_sim[selected_tracks_bt_torch_sim[:, self.track_fields.index("dx")] > 0]
+
+                    selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
+                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
 
                     #Simulate the output for the whole batch
                     loss_ev = []
@@ -396,9 +406,9 @@ class ParamFitter:
                     fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
                     if epoch == 0:
                         if self.current_mode == 'lut':
-                            ref_adcs, ref_unique_pixels, ref_ticks = simulate(self.target_params, self.response, selected_tracks, self.track_fields, i) #Setting a different random seed for each target
+                            ref_adcs, ref_unique_pixels, ref_ticks = simulate(self.target_params, self.response, selected_tracks_tgt, self.track_fields, i) #Setting a different random seed for each target
                         else:
-                            ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, selected_tracks, self.track_fields, i) #Setting a different random seed for each target
+                            ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, selected_tracks_tgt, self.track_fields, i) #Setting a different random seed for each target
 
                         if self.compute_target_hessian:
                             if self.current_mode == 'lut':
@@ -430,9 +440,10 @@ class ParamFitter:
 
                     # Simulate and get output
                     if self.current_mode == 'lut':
-                        (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                        (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_sim, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
                     else:
-                        (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                        (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_sim, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
+
                     scaled_grads = {key: getattr(grads, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list}
                     if not self.profile_gradient:
                         leaves = jax.tree_util.tree_leaves(grads)
@@ -460,17 +471,17 @@ class ParamFitter:
                     self.training_history['size_history'].append(get_size_history())
                     self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
 
-                    if iterations is not None:
+                    if iterations is not None or total_iter == (iterations-1):
                         if total_iter % print_freq == 0:
                             for param in self.relevant_params_list:
                                 logger.info(f"{param} {getattr(self.current_params,param)} {scaled_grads[param]}")
                             
                         if total_iter % save_freq == 0:
-                            with open(f'fit_result/history_{param}_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
+                            with open(f'fit_result/{self.test_name}/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
                                 pickle.dump(self.training_history, f_history)
 
-                            if os.path.exists(f'fit_result/history_{param}_iter{total_iter-save_freq}_{self.out_label}.pkl'):
-                                os.remove(f'fit_result/history_{param}_iter{total_iter-save_freq}_{self.out_label}.pkl') 
+                            if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
+                                os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
 
                     total_iter += 1
                     pbar.update(1)
@@ -478,4 +489,7 @@ class ParamFitter:
                     if iterations is not None:
                         if total_iter >= iterations:
                             break
+            if os.path.exists('target_' + self.out_label):
+                shutil.rmtree('target_' + self.out_label, ignore_errors=True)
+
             libcudart.cudaProfilerStop()
