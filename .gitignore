@@ -10,6 +10,5 @@ docs/build
 target*/
 *.pkl
 *.png
-*.h5
 .history
 logs/
