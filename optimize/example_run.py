@@ -88,7 +88,8 @@ def main(config):
                             load_checkpoint=config.load_checkpoint, lr=config.lr, 
                             readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
                             readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
-                            out_label=config.out_label, test_name=config.test_name, norm_scheme=config.norm_scheme, max_clip_norm_val=config.max_clip_norm_val,
+                            out_label=config.out_label, test_name=config.test_name, norm_scheme=config.norm_scheme,
+                            max_clip_norm_val=config.max_clip_norm_val, clip_from_range=config.clip_from_range,
                             # fit_diffs=config.fit_diffs,
                             optimizer_fn=config.optimizer_fn,
                             lr_scheduler=config.lr_scheduler, lr_kw=config.lr_kw,
@@ -172,6 +173,8 @@ if __name__ == '__main__':
                         help="Normalization scheme to use for params. Right now, divide (by nom) and standard (subtract mean, div by variance)")
     parser.add_argument("--max_clip_norm_val", dest="max_clip_norm_val", default=None, type=float,
                         help="If passed, does gradient clipping (norm)")
+    parser.add_argument("--clip_from_range", dest="clip_from_range", default=False, action="store_true",
+                        help="Flag to clip the fitted parameters at the nominal ranges")
     # parser.add_argument("--fit_diffs", dest="fit_diffs", default=False, action="store_true",
     #                     help="Turns on fitting of differences rather than direct fitting of values")
     parser.add_argument("--optimizer_fn", dest="optimizer_fn", default="Adam",
