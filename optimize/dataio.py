@@ -99,7 +99,10 @@ class TracksDataset(Dataset):
 
         selected_tracks = tracks[tracks['z'] > min_abs_segz_sel]
 
-        unique_tracks, first_indices = np.unique(selected_tracks[['eventID', 'trackID']], return_index=True)
+        try:
+            unique_tracks, first_indices = np.unique(selected_tracks[['eventID', 'trackID']], return_index=True)
+        except:
+            unique_tracks, first_indices = np.unique(selected_tracks[['event_id', 'traj_id']], return_index=True)
         first_indices = np.sort(first_indices)
         last_indices = np.r_[first_indices[1:] - 1, len(selected_tracks) - 1]
 
@@ -117,8 +120,17 @@ class TracksDataset(Dataset):
         mask = mask & (cos_theta < max_abs_costheta_sel)
         mask = mask & (np.maximum(abs(tracks_start['z']), abs(tracks_end['z'])) < track_z_bound)
 
-        index = np.unique(tracks_start[['eventID', 'trackID']][mask])
-        all_tracks = [torch_from_structured(selected_tracks[mask]) for mask in (selected_tracks[['eventID', 'trackID']][:, None] == index).T]
+        try:
+            index = np.unique(tracks_start[['eventID', 'trackID']][mask])
+            # this is the memory intensive part
+            all_tracks = [torch_from_structured(selected_tracks[mask]) for mask in (selected_tracks[['eventID', 'trackID']][:, None] == index).T]
+        except:
+            index = np.unique(tracks_start[['event_id', 'traj_id']][mask])
+            (selected_tracks[['event_id', 'traj_id']][:, None] == index).T
+            selected_tracks[mask]
+            torch_from_structured(selected_tracks)
+            # this is the memory intensive part
+            all_tracks = [torch_from_structured(selected_tracks[mask]) for mask in (selected_tracks[['event_id', 'traj_id']][:, None] == index).T]
 
         # all fit with a sub-set of tracks
         fit_index = []
@@ -141,6 +153,7 @@ class TracksDataset(Dataset):
                 fit_index.append(index[i_rand])
                 fit_tracks.append(all_tracks[i_rand])
 
+
         if print_input:
             logger.info(f"training set [ev, trk]: {fit_index}")
 
@@ -150,8 +163,12 @@ class TracksDataset(Dataset):
             
             # Extract required fields as numpy arrays
             lengths = all_segments[:, self.track_fields.index("dx")]
-            event_ids = all_segments[:, self.track_fields.index("eventID")]
-            track_ids = all_segments[:, self.track_fields.index("trackID")]
+            try:
+                event_ids = all_segments[:, self.track_fields.index("eventID")]
+                track_ids = all_segments[:, self.track_fields.index("trackID")]
+            except:
+                event_ids = all_segments[:, self.track_fields.index("event_id")]
+                track_ids = all_segments[:, self.track_fields.index("traj_id")]
 
             # Mask out segments longer than max_batch_len
             valid_mask = lengths <= max_batch_len

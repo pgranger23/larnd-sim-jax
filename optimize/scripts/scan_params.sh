@@ -1,8 +1,8 @@
 #!/bin/bash
 
 #SBATCH --partition=ampere
-#SBATCH --account=neutrino
-#SBATCH --job-name=larndsim
+#SBATCH --account=neutrino:ml-dev
+#SBATCH --job-name=diffsim_scan
 #SBATCH --output=logs/job-%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
@@ -10,7 +10,7 @@
 #SBATCH --gpus-per-node=a100:1
 #SBATCH --time=1:00:00
 ##SBATCH --array=0
-#SBATCH --array=0,1,2,3,4,5,6,7,8
+#SBATCH --array=0,1,2,3,4,5
 
 #BASE DECLARATIONS
 
@@ -20,33 +20,38 @@ fi
 
 TARGET_SEED=$SLURM_ARRAY_TASK_ID
 # PARAMS=optimize/scripts/param_list.yaml
-BATCH_SIZE=800
-ITERATIONS=1000
+BATCH_SIZE=2000
+ITERATIONS=2000
 DATA_SEED=1
-INPUT_FILE=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim-output.h5
+LOSS=chamfer_3d
+#INPUT_FILE=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim-output.h5
+INPUT_FILE_TGT=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim_p_only_active_vol_5000.h5
+INPUT_FILE_SIM=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim_p_only_active_vol_5000.h5
 SIF_FILE=/sdf/group/neutrino/pgranger/larnd-sim-jax.sif
 UUID=$(uuidgen)
 #DECLARATIONS
 
 nvidia-smi
 
-PARAMS=("Ab" "kb" "eField" "tran_diff" "long_diff" "lifetime" "shift_x" "shift_y" "shift_z")
+PARAMS=("Ab" "kb" "eField" "tran_diff" "long_diff" "lifetime")
 PARAM=${PARAMS[$SLURM_ARRAY_TASK_ID]}
 
 # singularity exec --bind /sdf,$SCRATCH python-jax.sif python3 -m optimize.example_run \
 # apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop python3 -m optimize.example_run \
 apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} python3 -m optimize.example_run \
     --data_sz -1 \
-    --max_nbatch 40 \
+    --max_nbatch -1 \
     --params ${PARAM} \
-    --input_file ${INPUT_FILE} \
+    --input_file_sim ${INPUT_FILE_SIM} \
+    --input_file_tgt ${INPUT_FILE_TGT} \
     --track_len_sel 2 \
     --max_abs_costheta_sel 0.966 \
     --min_abs_segz_sel 15. \
-    --no-noise \
+    --no-noise-guess \
     --data_seed ${DATA_SEED} \
     --num_workers 0 \
-    --out_label seed${TARGET_SEED}_tdiff-vdrift_ds${DATA_SEED}_adam_SDTW_lr1e-2_5trk_test_${UUID} \
+    --out_label ${PARAM}_p_5E3_6par_noise_tgt_no_clip_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_test5_${UUID} \
+    --test_name fit_stability \
     --seed ${TARGET_SEED} \
     --optimizer_fn Adam \
     --random_ntrack \
@@ -62,7 +67,7 @@ apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} python3 -m op
     --signal_length 191 \
     --mode 'parametrized' \
     --profile_gradient \
-    --loss_fn chamfer_3d
+    --loss_fn ${LOSS}
     # --loss_fn SDTW \
     # --lut_file /home/pgranger/larnd-sim/jit_version/original/build/lib/larndsim/bin/response_44.npy
     # --keep_in_memory
