@@ -26,6 +26,6 @@ done
 
 
 python3 -m optimize.comparison \
-    --ref_output output/jax_ref_local/output_ \
+    --ref_output output/jax_ref/output_ \
     --output output/output_ \
     --n_files $((${NFILES}+1))
