@@ -8,6 +8,7 @@ import sys
 import traceback
 from larndsim.consts_jax import build_params_class, load_detector_properties
 from larndsim.sim_jax import prepare_tracks, simulate, simulate_parametrized
+from pprint import pprint
 import numpy as np
 import h5py
 import jax
@@ -40,9 +41,9 @@ def main(config):
         number_pix_neighbors=config.number_pix_neighbors,
         signal_length=config.signal_length,
         time_window=config.signal_length,
-        RESET_NOISE_CHARGE=0,
-        UNCORRELATED_NOISE_CHARGE=0
         )
+    
+    pprint(ref_params)
 
     tracks, fields, original_tracks = prepare_tracks(ref_params, config.input_file)
     logger.info(f"Loaded {len(tracks)} segments from {config.input_file}")

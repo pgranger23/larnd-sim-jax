@@ -122,6 +122,8 @@ def compare(config):
     print("Fraction of pixels that are not both activated:", nb_not_both_activated / len(all_diffs))
     print("Fraction of pixels that are not both activated (in %):", nb_not_both_activated / len(all_diffs) * 100)
 
+    assert(np.mean(all_diffs) < 1e-2) #Have some crash to detect changes in the output
+
 
     # plt.hist(all_diffs, bins=21, histtype='step', range=(-10, 10), density=True, label="Jax param. vs ref")
     # plt.xlabel("ADC difference")
@@ -132,13 +134,15 @@ def compare(config):
     # plt.figure()
     # plt.pcolor(grids_ref[0])
     # plt.colorbar()
+    # plt.savefig("output/ref.png")
     # plt.figure()
     # plt.pcolor(grids_new[0])
     # plt.colorbar()
+    # plt.savefig("output/new.png")
     # plt.figure()
     # plt.pcolor(grids_new[0] - grids_ref[0])
     # plt.colorbar()
-    # plt.show()
+    # plt.savefig("output/diffff.png")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

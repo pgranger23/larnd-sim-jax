@@ -1,7 +1,7 @@
 #!/bin/bash
 
-NFILES=9
-
+NFILES=4
+ls -lht output
 for ifile in $(seq 0 ${NFILES}); do
     INPUT_FILE=prepared_data/input_${ifile}.h5
     python3 -m optimize.simulate \
@@ -25,9 +25,7 @@ done
 # done
 
 
-
-
 python3 -m optimize.comparison \
-    --ref_output output/jax_ref/output_ \
+    --ref_output output/jax_ref_local/output_ \
     --output output/output_ \
-    --n_files ${NFILES}
+    --n_files $((${NFILES}+1))
