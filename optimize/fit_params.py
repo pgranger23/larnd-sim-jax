@@ -406,7 +406,7 @@ class ParamFitter:
                             else:
                                 ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, selected_tracks, self.track_fields)
                                 hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks, self.track_fields, rngkey=0, loss_fn=self.loss_fn, **self.loss_fn_kw)
-                            self.training_history['hessian'].append(format_hessian(hess))     
+                            self.training_history['hessian'].append(format_hessian(hess))
 
                         # embed_target = embed_adc_list(self.sim_target, target, pix_target, ticks_list_targ)
                         #Saving the target for the batch
