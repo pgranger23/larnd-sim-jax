@@ -228,8 +228,8 @@ def truncexpon(x, loc=0, scale=1, y_cutoff=-10., rate=100):
 @jit
 def integrated_expon(x, loc=0, scale=1, rate=100, dt=1):
     return (
-        jnp.minimum(1, jnp.exp((loc - x + dt/2)/scale))
-        - jnp.minimum(1., jnp.exp((loc - x - dt/2)/scale))
+        jnp.exp(jnp.minimum(0., (loc - x + dt/2)/scale))
+        - jnp.exp(jnp.minimum(0., (loc - x - dt/2)/scale))
         + jnp.where(x == 0., jnp.exp((loc - x - dt/2)/scale), 0)
     )/dt
 
