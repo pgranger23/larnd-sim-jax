@@ -182,9 +182,15 @@ class ParamFitter:
             if lr is None:
                 raise ValueError("Need to specify lr for params")
             else:
-                self.learning_rates = {par: lr_scheduler_fn(lr, transition_steps=epoch_size, **lr_kw) for par in self.relevant_params_list}
+                if lr_scheduler_fn == optax.constant_schedule:
+                    self.learning_rates = {par: lr_scheduler_fn(lr) for par in self.relevant_params_list}
+                else:
+                    self.learning_rates = {par: lr_scheduler_fn(lr, transition_steps=epoch_size, **lr_kw) for par in self.relevant_params_list}
         else:
-            self.learning_rates = {key: lr_scheduler_fn(float(value), transition_steps=epoch_size, **lr_kw) for key, value in self.relevant_params_dict.items()}
+            if lr_scheduler_fn == optax.constant_schedule:
+                self.learning_rates = {key: lr_scheduler_fn(float(value)) for key, value in self.relevant_params_dict.items()}
+            else:
+                self.learning_rates = {key: lr_scheduler_fn(float(value), transition_steps=epoch_size, **lr_kw) for key, value in self.relevant_params_dict.items()}
         
         # Set up optimizer -- can pass in directly, or construct as SGD from relevant params and/or lr
 
@@ -374,8 +380,12 @@ class ParamFitter:
 
         # The training loop
         total_iter = 0
+        terminate_fit = False
         with tqdm(total=pbar_total) as pbar:
             for epoch in range(epochs):
+                if terminate_fit:
+                    break
+                logger.info(f"epoch {epoch}")
                 if epoch == 2: libcudart.cudaProfilerStart()
                 # Losses for each batch -- used to compute epoch loss
                 losses_batch=[]
@@ -388,7 +398,7 @@ class ParamFitter:
                     self.current_params = self.current_params.replace(**new_param_values)
                 for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
                     start_time = time()
-                    
+
                     #Convert torch tracks to jax
                     # target
                     selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
@@ -500,6 +510,7 @@ class ParamFitter:
                             if os.path.exists('target_' + self.out_label):
                                 shutil.rmtree('target_' + self.out_label, ignore_errors=True)
 
+                            terminate_fit = True
                             break
 
             with open(f'fit_result/{self.test_name}/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
