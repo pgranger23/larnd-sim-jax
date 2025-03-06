@@ -10,7 +10,7 @@
 #SBATCH --output=logs/fit_noise/job-%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem-per-cpu=48g
+#SBATCH --mem-per-cpu=16g
 #SBATCH --gpus-per-node=a100:1
 #SBATCH --time=3:00:00
 #SBATCH --array=1,2,3,4,5
