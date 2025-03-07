@@ -230,9 +230,17 @@ def truncexpon(x, loc=0, scale=1, y_cutoff=-10., rate=100):
     y = jnp.maximum(y, y_cutoff)
     return sigmoid(rate*y)*jnp.exp(-y) / scale
 
+@jit
+def integrated_expon(x, loc=0, scale=1, rate=100, dt=1):
+    return (
+        jnp.exp(jnp.minimum(0., (loc - x + dt/2)/scale))
+        - jnp.exp(jnp.minimum(0., (loc - x - dt/2)/scale))
+        + jnp.where(x == 0., jnp.exp(jnp.minimum(0., (loc - x - dt/2)/scale)), 0)
+    )/dt
+
 # @annotate_function
 @jit
-def current_model(t, t0, x, y):
+def current_model(t, t0, x, y, dt):
     """
     Parametrization of the induced current on the pixel, which depends
     on the of arrival at the anode (:math:`t_0`) and on the position
@@ -265,7 +273,7 @@ def current_model(t, t0, x, y):
 
     a = jnp.minimum(a, 1)
 
-    return a * truncexpon(-t, -shifted_t0, b) + (1 - a) * truncexpon(-t, -shifted_t0, c)
+    return a * integrated_expon(-t, -shifted_t0, b, dt=dt) + (1 - a) * integrated_expon(-t, -shifted_t0, c, dt=dt)
 
 # @annotate_function
 @partial(jit, static_argnames=['fields'])
@@ -285,7 +293,9 @@ def current_mc(params, electrons, pixels_coord, fields):
 
     t0 = t0 - t0_tick*params.t_sampling # Only taking the floating part of the ticks
 
-    return t0_tick, current_model(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis])*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))
+    dt = 5./(nticks-1)
+
+    return t0_tick, current_model(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis], dt)*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))
 
 @partial(jit, static_argnames=['fields'])
 def current_lut(params, response, electrons, pixels_coord, fields):

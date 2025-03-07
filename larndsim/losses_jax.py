@@ -9,6 +9,9 @@ def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     all_pixels = jnp.concatenate([pIDs, pIDs_ref])
     unique_pixels = jnp.sort(jnp.unique(all_pixels))
     nb_pixels = unique_pixels.shape[0]
+
+    nb_pixels = pad_size(nb_pixels, "mse_loss")
+
     pix_renumbering = jnp.searchsorted(unique_pixels, pIDs)
 
     pix_renumbering_ref = jnp.searchsorted(unique_pixels, pIDs_ref)
