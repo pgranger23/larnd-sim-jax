@@ -165,7 +165,7 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey
     return adcs, unique_pixels, ticks
 
 def simulate_parametrized(params, tracks, fields, rngseed = 0):
-    master_key = jax.random.PRNGKey(rngseed)
+    master_key = jax.random.key(rngseed)
     rngkey1, rngkey2 = jax.random.split(master_key)
     electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1)
     pIDs = pIDs.ravel()
@@ -177,7 +177,7 @@ def simulate_parametrized(params, tracks, fields, rngseed = 0):
     return simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, fields)
 
 def simulate(params, response, tracks, fields, rngseed = 0):
-    master_key = jax.random.PRNGKey(rngseed)
+    master_key = jax.random.key(rngseed)
     rngkey1, rngkey2 = jax.random.split(master_key)
     electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1)
 

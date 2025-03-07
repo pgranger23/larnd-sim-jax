@@ -43,7 +43,8 @@ def main(config):
         time_window=config.signal_length,
         )
     
-    pprint(ref_params)
+    if not config.noise:
+        ref_params = ref_params.replace(RESET_NOISE_CHARGE=0, UNCORRELATED_NOISE_CHARGE=0)
 
     tracks, fields, original_tracks = prepare_tracks(ref_params, config.input_file)
     logger.info(f"Loaded {len(tracks)} segments from {config.input_file}")
@@ -81,6 +82,7 @@ if __name__ == '__main__':
     parser.add_argument('--number_pix_neighbors', type=int, required=True, help='Number of pixel neighbors')
     parser.add_argument('--signal_length', type=int, required=True, help='Signal length')
     parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
+    parser.add_argument('--noise', action='store_true', help='Add noise to the simulation')
 
     try:
         args = parser.parse_args()
