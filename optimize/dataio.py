@@ -99,10 +99,15 @@ class TracksDataset(Dataset):
 
         selected_tracks = tracks[tracks['z'] > min_abs_segz_sel]
 
-        try:
-            unique_tracks, first_indices = np.unique(selected_tracks[['eventID', 'trackID']], return_index=True)
-        except:
-            unique_tracks, first_indices = np.unique(selected_tracks[['event_id', 'traj_id']], return_index=True)
+        if 'eventID' in selected_tracks.dtype.names:
+            self.evt_id = 'eventID'
+            self.trj_id = 'trackID'
+        else:
+            self.evt_id = 'event_id'
+            self.trj_id = 'traj_id'
+
+        unique_tracks, first_indices = np.unique(selected_tracks[[self.evt_id, self.trj_id]], return_index=True)
+
         first_indices = np.sort(first_indices)
         last_indices = np.r_[first_indices[1:] - 1, len(selected_tracks) - 1]
 
@@ -120,17 +125,12 @@ class TracksDataset(Dataset):
         mask = mask & (cos_theta < max_abs_costheta_sel)
         mask = mask & (np.maximum(abs(tracks_start['z']), abs(tracks_end['z'])) < track_z_bound)
 
-        try:
-            index = np.unique(tracks_start[['eventID', 'trackID']][mask])
-            # this is the memory intensive part
-            all_tracks = [torch_from_structured(selected_tracks[mask]) for mask in (selected_tracks[['eventID', 'trackID']][:, None] == index).T]
-        except:
-            index = np.unique(tracks_start[['event_id', 'traj_id']][mask])
-            (selected_tracks[['event_id', 'traj_id']][:, None] == index).T
-            selected_tracks[mask]
-            torch_from_structured(selected_tracks)
-            # this is the memory intensive part
-            all_tracks = [torch_from_structured(selected_tracks[mask]) for mask in (selected_tracks[['event_id', 'traj_id']][:, None] == index).T]
+        keys = np.ascontiguousarray(selected_tracks[[self.evt_id, self.trj_id]])
+        index = set(map(tuple, keys))  # Ensure index is a set of tuples
+        mask = np.array([tuple(row) in index for row in keys])
+
+        all_tracks = [torch_from_structured(selected_tracks[mask])]
+        index = np.array(list(index))
 
         # all fit with a sub-set of tracks
         fit_index = []

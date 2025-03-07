@@ -127,7 +127,7 @@ if __name__ == '__main__':
                         help="Path to checkpoint Pickle (pkl) file")
     parser.add_argument('--num_workers', type=int, default=4,
                         help='The number of worker threads to use for the dataloader.')
-    parser.add_argument("--lr", dest="lr", default=1e1, type=float,
+    parser.add_argument("--lr", dest="lr", default=1, type=float,
                         help="Learning rate -- used for all params")
     parser.add_argument("--batch_sz", dest="batch_sz", default=1, type=int,
                         help="Batch size for fitting (tracks).")

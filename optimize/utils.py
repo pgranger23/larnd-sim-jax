@@ -10,31 +10,35 @@ def structured_from_torch(tracks_torch, dtype):
     return rfn.unstructured_to_structured(tracks_torch.cpu().numpy(), dtype=dtype)
 
 
-def batch(index, tracks, size=10, max_seg=-1):
-    n_seg = 0
-    out_trk = []
-    while n_seg < size:
-        rand_ev = np.random.choice(list(index.keys()))
-        rand_track = np.random.randint(0, len(index[rand_ev]))
-        mask = (tracks['eventID']== rand_ev) & (tracks['trackID'] == index[rand_ev][rand_track])
-        n_seg += np.sum(mask)
-        
-        out_trk.append(torch_from_structured(tracks[mask].copy()))
-       
-    out = torch.cat(out_trk, dim=0)
-    if max_seg != -1 and len(out) > max_seg:
-        idxs = np.random.permutation(np.arange(max_seg))
-        return out[idxs]
-    else:
-        return out
+#def batch(index, tracks, size=10, max_seg=-1, evt_id="event_id", trk_id="track_id"):
+#    n_seg = 0
+#    out_trk = []
+#    while n_seg < size:
+#        rand_ev = np.random.choice(list(index.keys()))
+#        rand_track = np.random.randint(0, len(index[rand_ev]))
+#        mask = (tracks[evt_id]== rand_ev) & (tracks[trk_id] == index[rand_ev][rand_track])
+#        #mask = (tracks['event_id']== rand_ev) & (tracks['track_id'] == index[rand_ev][rand_track])
+#        #mask = (tracks['eventID']== rand_ev) & (tracks['trackID'] == index[rand_ev][rand_track])
+#        n_seg += np.sum(mask)
+#        
+#        out_trk.append(torch_from_structured(tracks[mask].copy()))
+#       
+#    out = torch.cat(out_trk, dim=0)
+#    if max_seg != -1 and len(out) > max_seg:
+#        idxs = np.random.permutation(np.arange(max_seg))
+#        return out[idxs]
+#    else:
+#        return out
 
-def get_id_map(selected_tracks, fields, device):
-    # Here we build a map between tracks and event IDs (no param dependence, so np should be ok)
-    unique_eventIDs = np.unique(selected_tracks[:, fields.index('eventID')])
-    event_id_map = np.searchsorted(unique_eventIDs,np.asarray(selected_tracks[:, fields.index('eventID')]))
-    event_id_map_torch = torch.from_numpy(event_id_map).to(device)
-    
-    return event_id_map_torch, unique_eventIDs
+#def get_id_map(selected_tracks, fields, device):
+#    # Here we build a map between tracks and event IDs (no param dependence, so np should be ok)
+#    unique_eventIDs = np.unique(selected_tracks[:, fields.index('event_id')])
+#    event_id_map = np.searchsorted(unique_eventIDs,np.asarray(selected_tracks[:, fields.index('event_id')]))
+#    #unique_eventIDs = np.unique(selected_tracks[:, fields.index('eventID')])
+#    #event_id_map = np.searchsorted(unique_eventIDs,np.asarray(selected_tracks[:, fields.index('eventID')]))
+#    event_id_map_torch = torch.from_numpy(event_id_map).to(device)
+#    
+#    return event_id_map_torch, unique_eventIDs
 
 def all_sim(sim, selected_tracks, fields, event_id_map, unique_eventIDs, return_unique_pix=False):
     selected_tracks_quench = sim.quench(selected_tracks, sim.birks, fields=fields)

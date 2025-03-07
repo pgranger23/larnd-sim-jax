@@ -210,7 +210,12 @@ def get_pixels(params, electrons, fields):
     shifts = jnp.vstack([X.ravel(), Y.ravel()]).T
     pixels = pixels[:, jnp.newaxis, :] + shifts[jnp.newaxis, :, :]
 
-    return pixel2id(params, pixels[:, :, 0], pixels[:, :, 1], electrons[:, fields.index("pixel_plane")].astype(int)[:, jnp.newaxis], electrons[:, fields.index("eventID")].astype(int)[:, jnp.newaxis])
+    if "eventID" in fields:
+        evt_id = "eventID"
+    else:
+        evt_id = "event_id"
+
+    return pixel2id(params, pixels[:, :, 0], pixels[:, :, 1], electrons[:, fields.index("pixel_plane")].astype(int)[:, jnp.newaxis], electrons[:, fields.index(evt_id)].astype(int)[:, jnp.newaxis])
 
 # @annotate_function
 @jit
