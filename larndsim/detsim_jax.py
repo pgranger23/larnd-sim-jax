@@ -235,7 +235,7 @@ def integrated_expon(x, loc=0, scale=1, rate=100, dt=1):
     return (
         jnp.exp(jnp.minimum(0., (loc - x + dt/2)/scale))
         - jnp.exp(jnp.minimum(0., (loc - x - dt/2)/scale))
-        + jnp.where(x == 0., jnp.exp(jnp.minimum(0., (loc - x - dt/2)/scale)), 0)
+        + jnp.exp(jnp.minimum(0., (loc - dt/2)/scale))/x.shape[-1] #Add the last term to make the integral over the whole range 1 shared among all ticks
     )/dt
 
 # @annotate_function
