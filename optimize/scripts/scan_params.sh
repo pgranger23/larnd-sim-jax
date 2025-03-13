@@ -2,8 +2,11 @@
 
 #SBATCH --partition=ampere
 
-#SBATCH --account=mli:cider-ml
-##SBATCH --account=neutrino:ml-dev
+##SBATCH --account=mli:nu-ml-dev
+##SBATCH --account=mli:cider-ml
+##SBATCH --account=neutrino:cider-nu
+##SBATCH --account=neutrino:dune-ml
+#SBATCH --account=neutrino:ml-dev
 
 #SBATCH --job-name=diffsim_scan
 #SBATCH --output=logs/scan/job-%j.out
@@ -11,8 +14,8 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=16g
 #SBATCH --gpus-per-node=a100:1
-#SBATCH --time=5:00:00
-#SBATCH --array=0,1,2,3,4,5
+#SBATCH --time=1:00:00
+#SBATCH --array=0,1,2,3,4,5,6
 
 #BASE DECLARATIONS
 
@@ -22,7 +25,7 @@ fi
 
 TARGET_SEED=$SLURM_ARRAY_TASK_ID
 # PARAMS=optimize/scripts/param_list.yaml
-BATCH_SIZE=4000
+BATCH_SIZE=2000
 ITERATIONS=5000
 DATA_SEED=1
 LOSS=chamfer_3d
@@ -43,7 +46,7 @@ UUID=$(uuidgen)
 
 nvidia-smi
 
-PARAMS=("Ab" "kb" "eField" "tran_diff" "long_diff" "lifetime")
+PARAMS=("Ab" "kb" "eField" "tran_diff" "long_diff" "lifetime" "shift_z")
 PARAM=${PARAMS[$SLURM_ARRAY_TASK_ID]}
 
 # singularity exec --bind /sdf,$SCRATCH python-jax.sif python3 -m optimize.example_run \
@@ -57,10 +60,10 @@ apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} python3 -m op
     --track_len_sel 2 \
     --max_abs_costheta_sel 0.966 \
     --min_abs_segz_sel 15. \
-    --no-noise-guess \
+    --no-noise \
     --data_seed ${DATA_SEED} \
     --num_workers 0 \
-    --out_label ${PARAM}_p_1E5_6par_loss_scan_noise_tgt_no_clip_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_${UUID} \
+    --out_label ${PARAM}_p_1E5_loss_scan_no_noise_bt${BATCH_SIZE}_dtsd${DATA_SEED}_adam_${LOSS}_nticks_chamfer_sum_diff_no_drift_${UUID} \
     --test_name scan\
     --seed ${TARGET_SEED} \
     --optimizer_fn Adam \

@@ -195,11 +195,17 @@ class ParamFitter:
         # Set up optimizer -- can pass in directly, or construct as SGD from relevant params and/or lr
 
         if optimizer is None:
-            self.optimizer = optax.chain(
-                optax.clip_by_global_norm(self.max_clip_norm_val),
-                optax.multi_transform({key: self.optimizer_fn(value) for key, value in self.learning_rates.items()},
-                            {key: key for key in self.relevant_params_list})
-            )
+            if self.max_clip_norm_val is not None:
+                self.optimizer = optax.chain(
+                    optax.clip_by_global_norm(self.max_clip_norm_val),
+                    optax.multi_transform({key: self.optimizer_fn(value) for key, value in self.learning_rates.items()},
+                                {key: key for key in self.relevant_params_list})
+                )
+            else:
+                self.optimizer = optax.chain(
+                    optax.multi_transform({key: self.optimizer_fn(value) for key, value in self.learning_rates.items()},
+                                {key: key for key in self.relevant_params_list})
+                )
         else:
             raise ValueError("Passing directly optimizer is not supported")
         
