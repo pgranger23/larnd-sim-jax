@@ -88,7 +88,7 @@ def pixel2id(params, pixel_x, pixel_y, pixel_plane, eventID):
     Returns:
         unique integer id
     """
-    outside = (pixel_x >= params.n_pixels_x) | (pixel_y >= params.n_pixels_y)
+    outside = (pixel_x >= params.n_pixels_x) | (pixel_y >= params.n_pixels_y) | (pixel_x < 0) | (pixel_y < 0)
     return jnp.where(outside, -1, pixel_x + params.n_pixels_x * (pixel_y + params.n_pixels_y * (pixel_plane + params.tpc_borders.shape[0]*eventID)))
 
 # @annotate_function
