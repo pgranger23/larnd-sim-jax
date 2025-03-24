@@ -49,7 +49,7 @@ def prepare_hits(params, adcs, pixels, ticks):
     return pixel_x, pixel_y, pixel_z, adcs, eventID
 
 @jax.jit
-def chamfer_distance_3d(pos_a, pos_b, w_a, w_b, lambda_amp=0, gamma=0):
+def chamfer_distance_3d(pos_a, pos_b, w_a, w_b, lambda_amp=0, gamma=1):
     """
     Compute the Chamfer Distance between two sets of 3D points (x, y, t).
     
@@ -122,6 +122,9 @@ def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref):
     adcs_masked_ref = jnp.pad(adcs_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=0)/10
 
     loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e5, pixel_y_masked, pixel_z_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e5, pixel_y_masked_ref, pixel_z_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
+    #Adding penalty term based on the total charge difference
+    loss += (jnp.sum(adcs_masked) - jnp.sum(adcs_masked_ref))**2
+    
     # import matplotlib.pyplot as plt
     # plt.figure()
     # plt.scatter(pixel_x_masked[pixel_x_masked != -1e9], pixel_z_masked[pixel_z_masked != -1e9], c=adcs_masked[pixel_z_masked != -1e9])
