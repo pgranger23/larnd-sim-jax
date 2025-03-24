@@ -35,6 +35,7 @@ def main(config):
     jax.config.update('jax_platform_name', 'gpu')
     jax.config.update("jax_debug_nans", False)
 
+    os.environ['XLA_FLAGS'] = '--xla_gpu_deterministic_ops=true'
     logger.info(f"Jax devices: {jax.devices()}")
 
     if config.print_input:
