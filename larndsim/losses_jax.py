@@ -4,6 +4,7 @@ import jax
 from larndsim.sim_jax import pad_size, simulate, simulate_parametrized
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
+from jax.nn import softmax
 
 def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     all_pixels = jnp.concatenate([pIDs, pIDs_ref])
@@ -48,7 +49,7 @@ def prepare_hits(params, adcs, pixels, ticks):
     return pixel_x, pixel_y, pixel_z, adcs, eventID
 
 @jax.jit
-def chamfer_distance_3d(pos_a, pos_b, w_a, w_b):
+def chamfer_distance_3d(pos_a, pos_b, w_a, w_b, lambda_amp=0, gamma=0):
     """
     Compute the Chamfer Distance between two sets of 3D points (x, y, t).
     
@@ -62,33 +63,46 @@ def chamfer_distance_3d(pos_a, pos_b, w_a, w_b):
         A scalar representing the Chamfer Distance between the two point sets.
     """
 
-    # Calculate pairwise squared distances
+    # P and Q are Nx4 and Mx4 arrays respectively
+
+    # Compute pairwise spatial distances
     dists_a_to_b = jnp.sum((pos_a[:, None, :] - pos_b[None, :, :])**2, axis=2)
+
+    # Compute pairwise amplitude differences
+    amps_a_to_b = jnp.abs(w_a[:, None] - w_b[None, :])
+
+    # Combined distance metric
+    C = dists_a_to_b + lambda_amp * amps_a_to_b
+
+    # Soft assignments
+    S = softmax(-C, axis=1)
+    # print(S)
+    # print(pos_a)
+    # print()
+
+    # Chamfer Loss
+    chamfer_loss = (S * dists_a_to_b).sum()
+
+    # Amplitude Loss
+    amplitude_loss = (S * amps_a_to_b).sum()
+
+    # Total Loss
+    total_loss = chamfer_loss + gamma * amplitude_loss
+
+    return total_loss
+
+    # Calculate pairwise squared distances
+    # dists_a_to_b = jnp.sqrt(jnp.sum((pos_a[:, None, :] - pos_b[None, :, :])**2, axis=2))
+
+    # soft_assignments = softmax(-dists_a_to_b, axis=1)
     
-    # Find indices of minimum distances
-    argmin_dists_a_to_b = jnp.argmin(dists_a_to_b, axis=1)
-    argmin_dists_b_to_a = jnp.argmin(dists_a_to_b, axis=0)
-    
-    # Extract minimum distances
-    min_dists_a_to_b = jnp.take_along_axis(dists_a_to_b, argmin_dists_a_to_b[:, None], axis=1).squeeze()
-    min_dists_b_to_a = jnp.take_along_axis(dists_a_to_b, argmin_dists_b_to_a[None, :], axis=0).squeeze()
-    
-    # Extract weights of the closest points
-    closest_weights_a_to_b = jnp.take(w_b, argmin_dists_a_to_b)
-    closest_weights_b_to_a = jnp.take(w_a, argmin_dists_b_to_a)
-    
-    # Calculate the weighted Chamfer distance
-    chamfer_dist = (
-        jnp.sum(min_dists_a_to_b * w_a * closest_weights_a_to_b, where=min_dists_a_to_b < 1e4) +
-        jnp.sum(min_dists_b_to_a * w_b * closest_weights_b_to_a, where=min_dists_b_to_a < 1e4)
-    )
-    return chamfer_dist
+    # return jnp.sum(dists_a_to_b*soft_assignments)
 
 def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref):
     pixel_x, pixel_y, pixel_z, adcs, eventID = prepare_hits(params, adcs, pixels, ticks)
     pixel_x_ref, pixel_y_ref, pixel_z_ref, adcs_ref, eventID_ref = prepare_hits(params, adcs_ref, pixels_ref, ticks_ref)
     mask = (adcs.flatten() > 0) & (jnp.repeat(eventID, 10) != -1)
-    mask_ref = adcs_ref.flatten() > 0
+    mask_ref = (adcs_ref.flatten() > 0) & (jnp.repeat(eventID_ref, 10) != -1)
 
     nb_selected = jnp.count_nonzero(mask)
     nb_selected_ref = jnp.count_nonzero(mask_ref)
@@ -107,8 +121,16 @@ def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref):
     eventID_masked_ref = jnp.pad(jnp.repeat(eventID_ref, 10)[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
     adcs_masked_ref = jnp.pad(adcs_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=0)/10
 
-    loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, pixel_z_masked, adcs_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, pixel_z_masked_ref, adcs_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
-
+    loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e5, pixel_y_masked, pixel_z_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e5, pixel_y_masked_ref, pixel_z_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
+    # import matplotlib.pyplot as plt
+    # plt.figure()
+    # plt.scatter(pixel_x_masked[pixel_x_masked != -1e9], pixel_z_masked[pixel_z_masked != -1e9], c=adcs_masked[pixel_z_masked != -1e9])
+    # print(pixel_x_masked[jnp.abs(pixel_z_masked) < 3])
+    # print(pixel_y_masked[jnp.abs(pixel_z_masked) < 3])
+    # print(pixel_z_masked[jnp.abs(pixel_z_masked) < 3])
+    # print(adcs_masked[jnp.abs(pixel_z_masked) < 3])
+    # print(eventID_masked[jnp.abs(pixel_z_masked) < 3])
+    # print()
     return loss, dict()
 
 def sdtw_loss(adcs, ref, dstw):
