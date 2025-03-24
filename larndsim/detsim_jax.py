@@ -278,7 +278,7 @@ def current_model(t, t0, x, y, dt):
 # @annotate_function
 @partial(jit, static_argnames=['fields'])
 def current_mc(params, electrons, pixels_coord, fields):
-    nticks = int(5/params.t_sampling)
+    nticks = int(5/params.t_sampling) + 1
     ticks = jnp.linspace(0, 5, nticks).reshape((1, nticks)).repeat(electrons.shape[0], axis=0)#
 
     x_dist = abs(electrons[:, fields.index('x')] - pixels_coord[..., 0])
