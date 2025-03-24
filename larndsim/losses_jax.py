@@ -87,7 +87,7 @@ def chamfer_distance_3d(pos_a, pos_b, w_a, w_b):
 def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref):
     pixel_x, pixel_y, pixel_z, adcs, eventID = prepare_hits(params, adcs, pixels, ticks)
     pixel_x_ref, pixel_y_ref, pixel_z_ref, adcs_ref, eventID_ref = prepare_hits(params, adcs_ref, pixels_ref, ticks_ref)
-    mask = adcs.flatten() > 0
+    mask = (adcs.flatten() > 0) & (jnp.repeat(eventID, 10) != -1)
     mask_ref = adcs_ref.flatten() > 0
 
     nb_selected = jnp.count_nonzero(mask)
