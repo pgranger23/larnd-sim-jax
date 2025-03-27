@@ -32,14 +32,21 @@ def make_param_list(config):
 
 
 def main(config):
-    jax.config.update('jax_platform_name', 'gpu')
-    jax.config.update("jax_debug_nans", False)
+    if config.cpu_only:
+        jax.config.update('jax_platform_name', 'cpu')
+    else:
+        jax.config.update('jax_platform_name', 'gpu')
+
+    if config.debug_nans:
+        jax.config.update("jax_debug_nans", True)
+    else:
+        jax.config.update("jax_debug_nans", False)
 
     if config.non_deterministic:
         os.environ['XLA_FLAGS'] = '--xla_gpu_deterministic_ops=false'
     else:
         os.environ['XLA_FLAGS'] = '--xla_gpu_deterministic_ops=true'
-        
+
     logger.info(f"Jax devices: {jax.devices()}")
 
     if config.print_input:
@@ -218,6 +225,8 @@ if __name__ == '__main__':
     parser.add_argument('--keep_in_memory', default=False, action="store_true", help='Keep the expected output of each batch in memory')
     parser.add_argument('--compute_target_hessian', default=False, action="store_true", help='Computes the Hessian at the target for every batch')
     parser.add_argument('--non_deterministic', default=False, action="store_true", help='Make the computation slightly non-deterministic for faster computation')
+    parser.add_argument('--debug_nans', default=False, action="store_true", help='Debug NaNs (much slower)')
+    parser.add_argument('--cpu_only', default=False, action="store_true", help='Run on CPU only')
 
     try:
         args = parser.parse_args()
