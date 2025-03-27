@@ -157,7 +157,8 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey
     nticks_wf = int(params.time_interval[1]/params.t_sampling) + 1 #Adding one first element to serve as a garbage collector
     wfs = jnp.zeros((unique_pixels.shape[0], nticks_wf))
 
-    start_ticks = t0 - signals.shape[1]
+    #TODO: Check what should be the correct implementation: when is the actual trigger reference time?
+    start_ticks = t0 #- signals.shape[1]
 
     wfs = accumulate_signals_parametrized(wfs, signals, pix_renumbering, start_ticks)
     integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey)
