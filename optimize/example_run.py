@@ -35,7 +35,11 @@ def main(config):
     jax.config.update('jax_platform_name', 'gpu')
     jax.config.update("jax_debug_nans", False)
 
-    os.environ['XLA_FLAGS'] = '--xla_gpu_deterministic_ops=true'
+    if config.non_deterministic:
+        os.environ['XLA_FLAGS'] = '--xla_gpu_deterministic_ops=false'
+    else:
+        os.environ['XLA_FLAGS'] = '--xla_gpu_deterministic_ops=true'
+        
     logger.info(f"Jax devices: {jax.devices()}")
 
     if config.print_input:
@@ -213,6 +217,7 @@ if __name__ == '__main__':
     parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
     parser.add_argument('--keep_in_memory', default=False, action="store_true", help='Keep the expected output of each batch in memory')
     parser.add_argument('--compute_target_hessian', default=False, action="store_true", help='Computes the Hessian at the target for every batch')
+    parser.add_argument('--non_deterministic', default=False, action="store_true", help='Make the computation slightly non-deterministic for faster computation')
 
     try:
         args = parser.parse_args()
