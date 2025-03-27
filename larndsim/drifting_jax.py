@@ -17,13 +17,13 @@ logger.info("DRIFTING MODULE PARAMETERS")
 
 @partial(jit, static_argnames='fields')
 def drift(params, tracks, fields):
-    zMin = jnp.minimum(params.tpc_borders[:, 2, 1] - 2e-2, params.tpc_borders[:, 2, 0] - 2e-2)
-    zMax = jnp.maximum(params.tpc_borders[:, 2, 1] + 2e-2, params.tpc_borders[:, 2, 0] + 2e-2)
+    zMin = jnp.minimum(params.tpc_borders[:, 2, 1] - params.size_margin, params.tpc_borders[:, 2, 0] - params.size_margin)
+    zMax = jnp.maximum(params.tpc_borders[:, 2, 1] + params.size_margin, params.tpc_borders[:, 2, 0] + params.size_margin)
 
-    cond = tracks[:, fields.index("x")][..., None] >= params.tpc_borders[:, 0, 0][None, ...] - 2e-2
-    cond = jnp.logical_and(tracks[:, fields.index("x")][..., None] <= params.tpc_borders[:, 0, 1][None, ...] + 2e-2, cond)
-    cond = jnp.logical_and(tracks[:, fields.index("y")][..., None] >= params.tpc_borders[:, 1, 0][None, ...] - 2e-2, cond)
-    cond = jnp.logical_and(tracks[:, fields.index("y")][..., None] <= params.tpc_borders[:, 1, 1][None, ...] + 2e-2, cond)
+    cond = tracks[:, fields.index("x")][..., None] >= params.tpc_borders[:, 0, 0][None, ...] - params.size_margin
+    cond = jnp.logical_and(tracks[:, fields.index("x")][..., None] <= params.tpc_borders[:, 0, 1][None, ...] + params.size_margin, cond)
+    cond = jnp.logical_and(tracks[:, fields.index("y")][..., None] >= params.tpc_borders[:, 1, 0][None, ...] - params.size_margin, cond)
+    cond = jnp.logical_and(tracks[:, fields.index("y")][..., None] <= params.tpc_borders[:, 1, 1][None, ...] + params.size_margin, cond)
     cond = jnp.logical_and(tracks[:, fields.index("z")][..., None] >= zMin[None, ...], cond)
     cond = jnp.logical_and(tracks[:, fields.index("z")][..., None] <= zMax[None, ...], cond)
 
@@ -45,9 +45,9 @@ def drift(params, tracks, fields):
     tracks = tracks.at[:, fields.index("n_electrons")].set(
         tracks[:, fields.index("n_electrons")] * lifetime_red * mask)
     tracks = tracks.at[:, fields.index("long_diff")].set(
-        jnp.sqrt((drift_time + 0.5 / get_vdrift(params)) * 2 * params.long_diff))
+        jnp.sqrt(drift_time * 2 * params.long_diff))
     tracks = tracks.at[:, fields.index("tran_diff")].set(
-        jnp.sqrt((drift_time + 0.5 / get_vdrift(params)) * 2 * params.tran_diff))
+        jnp.sqrt(drift_time * 2 * params.tran_diff))
     tracks = tracks.at[:, fields.index("t")].set(
         tracks[:, fields.index("t")] + drift_time * mask + tracks[:, fields.index("t0")])
     tracks = tracks.at[:, fields.index("t_start")].set(

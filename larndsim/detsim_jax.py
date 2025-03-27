@@ -88,7 +88,7 @@ def pixel2id(params, pixel_x, pixel_y, pixel_plane, eventID):
     Returns:
         unique integer id
     """
-    outside = (pixel_x >= params.n_pixels_x) | (pixel_y >= params.n_pixels_y)
+    outside = (pixel_x >= params.n_pixels_x) | (pixel_y >= params.n_pixels_y) | (pixel_x < 0) | (pixel_y < 0)
     return jnp.where(outside, -1, pixel_x + params.n_pixels_x * (pixel_y + params.n_pixels_y * (pixel_plane + params.tpc_borders.shape[0]*eventID)))
 
 # @annotate_function
@@ -235,7 +235,7 @@ def integrated_expon(x, loc=0, scale=1, rate=100, dt=1):
     return (
         jnp.exp(jnp.minimum(0., (loc - x + dt/2)/scale))
         - jnp.exp(jnp.minimum(0., (loc - x - dt/2)/scale))
-        + jnp.where(x == 0., jnp.exp(jnp.minimum(0., (loc - x - dt/2)/scale)), 0)
+        + jnp.exp(jnp.minimum(0., (loc - dt/2)/scale))/x.shape[-1] #Add the last term to make the integral over the whole range 1 shared among all ticks
     )/dt
 
 # @annotate_function
@@ -278,7 +278,7 @@ def current_model(t, t0, x, y, dt):
 # @annotate_function
 @partial(jit, static_argnames=['fields'])
 def current_mc(params, electrons, pixels_coord, fields):
-    nticks = int(5/params.t_sampling)
+    nticks = int(5/params.t_sampling) + 1
     ticks = jnp.linspace(0, 5, nticks).reshape((1, nticks)).repeat(electrons.shape[0], axis=0)#
 
     x_dist = abs(electrons[:, fields.index('x')] - pixels_coord[..., 0])
