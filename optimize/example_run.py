@@ -108,7 +108,7 @@ def main(config):
                             no_adc=config.no_adc, loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
                             link_vdrift_eField=config.link_vdrift_eField,
                             set_target_vals=config.set_target_vals, vary_init=config.vary_init, seed_init=config.seed_init, compute_target_hessian=config.compute_target_hessian,
-                            config = config, profile_gradient=config.profile_gradient, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory)
+                            config = config, profile_gradient=config.profile_gradient, scan_tgt_nom=config.scan_tgt_nom, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory)
     param_fit.make_target_sim(seed=config.seed, fixed_range=config.fixed_range)
 
     # jax.profiler.start_trace("/tmp/tensorboard")
@@ -217,6 +217,8 @@ if __name__ == '__main__':
                         help="Link vdrift and eField in fitting")
     parser.add_argument("--profile_gradient", dest="profile_gradient", default=False, action="store_true",
                         help="To profile the gradient and loss instead of making an actual fit.")
+    parser.add_argument("--scan_tgt_nom", dest="scan_tgt_nom", default=False, action="store_true",
+                        help="Set the gradient and loss scan target to the parameter nominal value, otherwise there will be a target throw.")
     parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
     parser.add_argument('--electron_sampling_resolution', type=float, required=True, help='Electron sampling resolution')
     parser.add_argument('--number_pix_neighbors', type=int, required=True, help='Number of pixel neighbors')
