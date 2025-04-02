@@ -78,6 +78,7 @@ class Params_template:
     shift_x: float = struct.field(pytree_node=False)
     shift_y: float = struct.field(pytree_node=False)
     shift_z: float = struct.field(pytree_node=False)
+    size_margin: float = struct.field(pytree_node=False)
 
 def build_params_class(params_with_grad):
     template_fields = dataclasses.fields(Params_template)
@@ -172,7 +173,8 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
             "ADC_COUNTS": 2**8,
             "RESET_NOISE_CHARGE": 900,
             "UNCORRELATED_NOISE_CHARGE": 500,
-            "ELECTRON_MOBILITY_PARAMS": (551.6, 7158.3, 4440.43, 4.29, 43.63, 0.2053)
+            "ELECTRON_MOBILITY_PARAMS": (551.6, 7158.3, 4440.43, 4.29, 43.63, 0.2053),
+            "size_margin": 2e-2
         }
 
         mm2cm = 0.1
