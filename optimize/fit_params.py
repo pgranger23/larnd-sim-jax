@@ -71,7 +71,7 @@ class ParamFitter:
                  out_label="", test_name="this_test", norm_scheme="divide", max_clip_norm_val=None, clip_from_range=False, optimizer_fn="Adam",
                  no_adc=False, shift_no_fit=[], link_vdrift_eField=False,
                  set_target_vals=[], vary_init=False, seed_init=30, profile_gradient = False, scan_tgt_nom = False, epoch_size=1, keep_in_memory=False,
-                 compute_target_hessian=False,
+                 compute_target_hessian=False, sim_seed_strategy="different",
                  config = {}):
         if optimizer_fn == "Adam":
             self.optimizer_fn = optax.adam
@@ -273,6 +273,7 @@ class ParamFitter:
         self.training_history['config'] = config
 
         self.keep_in_memory = keep_in_memory
+        self.sim_seed_strategy = sim_seed_strategy
         if keep_in_memory:
             
             self.targets = {}
@@ -457,11 +458,20 @@ class ParamFitter:
                                 ref_unique_pixels = loaded['unique_pixels']
                                 ref_ticks = loaded['ticks']
 
+                    if self.sim_seed_strategy == "same":
+                        rngkey = i
+                    elif self.sim_seed_strategy == "different":
+                        rngkey = -i
+                    elif self.sim_seed_strategy == "random":
+                        rngkey = np.random.randint(0, 1000000)
+                    else:
+                        raise ValueError("Unknown sim_seed_strategy. Must be same, different or random")
+
                     # Simulate and get output
                     if self.current_mode == 'lut':
-                        (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_sim, self.track_fields, rngkey=-i, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                        (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_sim, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
                     else:
-                        (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_sim, self.track_fields, rngkey=-i, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                        (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_sim, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
 
                     scaled_grads = {key: getattr(grads, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list}
                     if not self.profile_gradient:
