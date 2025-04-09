@@ -12,7 +12,7 @@ import json
 import cProfile
 import jax
 
-from .fit_params import ParamFitter
+from .fit_params import GradientDescentFitter, LikelihoodProfiler
 from .dataio import TracksDataset
 
 logger = logging.getLogger(__name__)
@@ -95,26 +95,39 @@ def main(config):
     # individually for target and guess
     param_list = make_param_list(config)
     logger.info(f"Param list: {param_list}")
-    param_fit = ParamFitter(param_list, dataset_sim.get_track_fields(),
-                            detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
-                            load_checkpoint=config.load_checkpoint, lr=config.lr, 
-                            readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
-                            readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
-                            out_label=config.out_label, test_name=config.test_name, norm_scheme=config.norm_scheme,
-                            max_clip_norm_val=config.max_clip_norm_val, clip_from_range=config.clip_from_range,
-                            optimizer_fn=config.optimizer_fn,
-                            lr_scheduler=config.lr_scheduler, lr_kw=config.lr_kw,
-                            no_adc=config.no_adc, loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
-                            link_vdrift_eField=config.link_vdrift_eField,
-                            set_target_vals=config.set_target_vals, vary_init=config.vary_init, seed_init=config.seed_init, compute_target_hessian=config.compute_target_hessian,
-                            config = config, profile_gradient=config.profile_gradient, scan_tgt_nom=config.scan_tgt_nom, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory,
-                            sim_seed_strategy=config.sim_seed_strategy)
-    param_fit.make_target_sim(seed=config.seed, fixed_range=config.fixed_range)
+
+    if config.fit_type == "chain":
+        param_fit = GradientDescentFitter(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
+                                detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
+                                lr=config.lr, readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
+                                readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
+                                out_label=config.out_label, test_name=config.test_name,
+                                max_clip_norm_val=config.max_clip_norm_val, clip_from_range=config.clip_from_range,
+                                optimizer_fn=config.optimizer_fn,
+                                lr_scheduler=config.lr_scheduler, lr_kw=config.lr_kw,
+                                loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
+                                set_target_vals=config.set_target_vals, vary_init=config.vary_init, compute_target_hessian=config.compute_target_hessian,
+                                config = config, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory,
+                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,)
+    elif config.fit_type == "scan":
+        param_fit = LikelihoodProfiler(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
+                                detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
+                                readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
+                                readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
+                                out_label=config.out_label, test_name=config.test_name,
+                                loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
+                                set_target_vals=config.set_target_vals, vary_init=config.vary_init,
+                                config = config, keep_in_memory=config.keep_in_memory,
+                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,
+                                scan_tgt_nom=config.scan_tgt_nom)
+    else:
+        raise Exception(f"Unknown fit type: {config.fit_type}. Supported types are 'chain' and 'scan'.")
+    
 
     # jax.profiler.start_trace("/tmp/tensorboard")
 
     # with cProfile.Profile() as pr:
-    param_fit.fit(tracks_dataloader_sim, tracks_dataloader_target, epochs=config.epochs, iterations=iterations, shuffle=config.data_shuffle, save_freq=config.save_freq)
+    param_fit.fit(tracks_dataloader_sim, tracks_dataloader_target, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
     # pr.dump_stats('prof.prof')
     # jax.profiler.stop_trace()
     return 0, 'Fitting successful'
@@ -135,8 +148,6 @@ if __name__ == '__main__':
     parser.add_argument("--pixel_layouts", dest="pixel_layouts",
                         default="larndsim/pixel_layouts/multi_tile_layout-2.2.16.yaml",
                         help="Path to pixel layouts YAML file")
-    parser.add_argument("--load_checkpoint", dest="load_checkpoint", type=str, default=None,
-                        help="Path to checkpoint Pickle (pkl) file")
     parser.add_argument('--num_workers', type=int, default=4,
                         help='The number of worker threads to use for the dataloader.')
     parser.add_argument("--lr", dest="lr", default=1, type=float,
@@ -149,8 +160,6 @@ if __name__ == '__main__':
                         help="Random seed for target construction")
     parser.add_argument("--data_seed", dest="data_seed", default=3, type=int,
                         help="Random seed for data picking if not using the whole set")
-    parser.add_argument("--seed-init", dest="seed_init", default=30, type=int,
-                        help="Random seed for initial condition. Only used if --vary-init is passed.")
     parser.add_argument("--vary-init", dest="vary_init", default=False, action="store_true",
                         help="Randomly sample initial guess (vs starting at nominal value)")
     parser.add_argument("--data_sz", dest="data_sz", default=None, type=int,
@@ -181,8 +190,6 @@ if __name__ == '__main__':
                         help="Name of the test")
     parser.add_argument("--fixed_range", dest="fixed_range", default=None, type=float,
                         help="Construct target by sampling in a certain range (fraction of nominal)")
-    parser.add_argument("--norm_scheme", dest="norm_scheme", default="divide",
-                        help="Normalization scheme to use for params. Right now, divide (by nom) and standard (subtract mean, div by variance)")
     parser.add_argument("--max_clip_norm_val", dest="max_clip_norm_val", default=None, type=float,
                         help="If passed, does gradient clipping (norm)")
     parser.add_argument("--clip_from_range", dest="clip_from_range", default=False, action="store_true",
@@ -193,8 +200,6 @@ if __name__ == '__main__':
                         help="Schedule learning rate, e.g. ExponentialLR")
     parser.add_argument("--lr_kw", dest="lr_kw", default=None, type=json.loads,
                         help="kwargs for learning rate scheduler, as string dict")
-    parser.add_argument("--no_adc", dest="no_adc", default=False, action="store_true",
-                        help="Don't include ADC in loss (e.g. for vdrift)")
     parser.add_argument("--iterations", dest="iterations", default=None, type=int,
                         help="Number of iterations to run. Overrides epochs.")
     parser.add_argument("--loss_fn", dest="loss_fn", default=None,
@@ -211,10 +216,6 @@ if __name__ == '__main__':
                         help="Set of params to shift in target sim without fitting them (robustness/separability check).")
     parser.add_argument("--set-target-vals", dest="set_target_vals", default=[], nargs="+", 
                         help="Explicitly set values of target. Syntax is <param1> <val1> <param2> <val2>...")
-    parser.add_argument("--link-vdrift-eField", dest="link_vdrift_eField", default=False, action="store_true",
-                        help="Link vdrift and eField in fitting")
-    parser.add_argument("--profile_gradient", dest="profile_gradient", default=False, action="store_true",
-                        help="To profile the gradient and loss instead of making an actual fit.")
     parser.add_argument("--scan_tgt_nom", dest="scan_tgt_nom", default=False, action="store_true",
                         help="Set the gradient and loss scan target to the parameter nominal value, otherwise there will be a target throw.")
     parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
@@ -229,6 +230,7 @@ if __name__ == '__main__':
     parser.add_argument('--cpu_only', default=False, action="store_true", help='Run on CPU only')
     parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'random'],
                         help='Strategy to choose the seed for the simulation. It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs) or "random" (different between target and sim and random across epochs).')
+    parser.add_argument('--fit_type', type=str, choices=['chain', 'scan', 'minuit'], required=True)
 
     try:
         args = parser.parse_args()

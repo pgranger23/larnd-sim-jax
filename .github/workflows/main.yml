@@ -27,3 +27,27 @@ jobs:
       - name: Check simulation
         run: |
           ./optimize/simulate_test.sh
+
+  test-fit:
+    runs-on: ubuntu-latest
+    container: pigranger/larndsim-jax:latest
+
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4.2.2
+      - name: Check fit
+        run: |
+          ./optimize/fit_test.sh
+
+  test-scan:
+    runs-on: ubuntu-latest
+    container: pigranger/larndsim-jax:latest
+
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4.2.2
+      - name: Check fit
+        run: |
+          ./optimize/scan_test.sh
+
+  
