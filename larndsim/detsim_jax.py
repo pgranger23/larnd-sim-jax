@@ -204,11 +204,11 @@ def get_pixels(params, electrons, fields):
     pos = jnp.stack([(electrons[:, fields.index("x")] - borders[:, 0, 0]) // params.pixel_pitch,
             (electrons[:, fields.index("y")] - borders[:, 1, 0]) // params.pixel_pitch], axis=1)
 
-    pixels = (pos + 0.5).astype(int)
+    pixels_int = (pos + 0.5).astype(int)
 
     X, Y = jnp.mgrid[-n_neigh:n_neigh+1, -n_neigh:n_neigh+1]
     shifts = jnp.vstack([X.ravel(), Y.ravel()]).T
-    pixels = pixels[:, jnp.newaxis, :] + shifts[jnp.newaxis, :, :]
+    pixels = pixels_int[:, jnp.newaxis, :] + shifts[jnp.newaxis, :, :]
 
     if "eventID" in fields:
         evt_id = "eventID"

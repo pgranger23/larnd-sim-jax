@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 from jax import jit, vmap
 import jax
+from jax.nn import softmax
 from larndsim.sim_jax import pad_size, simulate, simulate_parametrized
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
@@ -46,6 +47,47 @@ def prepare_hits(params, adcs, pixels, ticks):
     pixel_z = get_hit_z(params, ticks.flatten(), jnp.repeat(pixel_plane, 10))
 
     return pixel_x, pixel_y, pixel_z, adcs, eventID
+
+@jit
+def softmin_charge_aware_chamfer(true_positions, sim_positions, true_charges, sim_charges, tau=10.0, lambda_charge=0):
+    """
+    Computes a softmin-based charge-aware Chamfer distance for smooth optimization.
+
+    Args:
+        true_positions (jnp.array): (N, 3) True hit positions.
+        true_charges (jnp.array): (N,) True charge intensities.
+        sim_positions (jnp.array): (M, 3) Simulated hit positions.
+        sim_charges (jnp.array): (M,) Simulated charge intensities.
+        tau (float): Temperature parameter for softmin.
+        lambda_charge (float): Weighting factor for charge mismatch.
+
+    Returns:
+        float: Softmin-based charge-aware Chamfer distance.
+    """
+
+    # Normalize charge weights (optional, but helps with stability)
+    # true_charges = true_charges / jnp.sum(true_charges)
+    # sim_charges = sim_charges / jnp.sum(sim_charges)
+
+    # Compute squared pairwise Euclidean distances (avoids sqrt for efficiency)
+    dists_sq = jnp.sum((true_positions[:, None, :] - sim_positions[None, :, :]) ** 2, axis=2)
+
+    # Compute absolute charge differences
+    charge_diffs = jnp.abs(true_charges[:, None] - sim_charges[None, :])
+
+    # Softmin using logsumexp for numerical stability
+    softmin_true_to_sim = softmax(-tau * dists_sq, axis=1)
+    # softmin_sim_to_true = softmax(-tau * dists_sq, axis=0)
+
+    # softmin_true_to_sim = jnp.where(softmin_true_to_sim > 1e4, 0, softmin_true_to_sim)
+    # softmin_sim_to_true = jnp.where(softmin_sim_to_true > 1e4, 0, softmin_sim_to_true)
+
+
+    # Compute total loss efficiently
+    loss_true_to_sim = jnp.sum(softmin_true_to_sim*(dists_sq + lambda_charge * charge_diffs), where=dists_sq < 1e4)
+    # loss_sim_to_true = jnp.sum(softmin_sim_to_true*(dists_sq.T + lambda_charge * charge_diffs.T), where=dists_sq.T < 1e4)
+
+    return loss_true_to_sim #+ loss_sim_to_true
 
 @jax.jit
 def chamfer_distance_3d(pos_a, pos_b, w_a, w_b):
@@ -108,6 +150,7 @@ def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref):
     adcs_masked_ref = jnp.pad(adcs_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=0)/10
 
     loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, pixel_z_masked, adcs_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, pixel_z_masked_ref, adcs_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
+    # loss = softmin_charge_aware_chamfer(jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, pixel_z_masked_ref, adcs_masked_ref/jnp.sum(adcs_masked_ref)), axis=-1), jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, pixel_z_masked, adcs_masked/jnp.sum(adcs_masked)), axis=-1), adcs_masked_ref, adcs_masked)
 
     return loss, dict()
 
