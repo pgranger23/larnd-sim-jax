@@ -11,8 +11,8 @@ DATA_SEED=1
 LOSS=chamfer_3d
 
 ### proton 5000 events
-INPUT_FILE_TGT=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim_p_only_active_vol_5000.h5
-INPUT_FILE_SIM=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim_p_only_active_vol_5000.h5
+INPUT_FILE_TGT=prepared_data/input_1.h5
+INPUT_FILE_SIM=prepared_data/input_1.h5
 
 #DECLARATIONS
 
