@@ -14,11 +14,9 @@ LOSS=chamfer_3d
 INPUT_FILE_TGT=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim_p_only_active_vol_5000.h5
 INPUT_FILE_SIM=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim_p_only_active_vol_5000.h5
 
-SIF_FILE=/sdf/group/neutrino/pgranger/larnd-sim-jax.sif
-UUID=$(uuidgen)
 #DECLARATIONS
 
-apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} python3 -m optimize.example_run \
+python3 -m optimize.example_run \
     --data_sz -1 \
     --max_nbatch 5 \
     --params ${PARAMS} \
@@ -31,7 +29,7 @@ apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} python3 -m op
     --no-noise-target \
     --data_seed ${DATA_SEED} \
     --num_workers 0 \
-    --out_label p_5E3_6par_noise_tgt_grad_clip${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target_${UUID} \
+    --out_label p_5E3_6par_noise_tgt_grad_clip${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target \
     --test_name fit_noise \
     --seed ${TARGET_SEED} \
     --optimizer_fn Adam \
