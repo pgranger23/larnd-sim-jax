@@ -227,8 +227,8 @@ if __name__ == '__main__':
     parser.add_argument('--non_deterministic', default=False, action="store_true", help='Make the computation slightly non-deterministic for faster computation')
     parser.add_argument('--debug_nans', default=False, action="store_true", help='Debug NaNs (much slower)')
     parser.add_argument('--cpu_only', default=False, action="store_true", help='Run on CPU only')
-    parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'random'],
-                        help='Strategy to choose the seed for the simulation. It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs) or "random" (different between target and sim and random across epochs).')
+    parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'random', 'constant'],
+                        help='Strategy to choose the seed for the simulation (the seed for target is the batch id). It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs), "random" (different between target and sim and random across epochs), "constant" (the seed is constant across batches).')
 
     try:
         args = parser.parse_args()

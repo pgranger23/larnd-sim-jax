@@ -410,11 +410,9 @@ class ParamFitter:
                     #Convert torch tracks to jax
                     # target
                     selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
-#                    selected_tracks_bt_torch_tgt = selected_tracks_bt_torch_target[selected_tracks_bt_torch_target[:, self.track_fields.index("dx")] > 0]
 
                     # sim
                     selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
-#                    selected_tracks_bt_torch_sim = selected_tracks_bt_torch_sim[selected_tracks_bt_torch_sim[:, self.track_fields.index("dx")] > 0]
 
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
                     selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
@@ -436,6 +434,8 @@ class ParamFitter:
                             else:
                                 ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, selected_tracks_tgt, self.track_fields)
                                 hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
+
+
                             self.training_history['hessian'].append(format_hessian(hess))
 
                         # embed_target = embed_adc_list(self.sim_target, target, pix_target, ticks_list_targ)
@@ -464,6 +464,8 @@ class ParamFitter:
                         rngkey = -i
                     elif self.sim_seed_strategy == "random":
                         rngkey = np.random.randint(0, 1000000)
+                    elif self.sim_seed_strategy == "constant":
+                        rngkey = 0
                     else:
                         raise ValueError("Unknown sim_seed_strategy. Must be same, different or random")
 

@@ -163,7 +163,10 @@ def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields,
 
     ref, adcs = cleaning_outputs(params, ref, adcs)
     
-    loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
+    if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
+        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
+    else:
+        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
     return loss_val, aux
 
 #Code commented below is unused but I still want to keep it for future reference
