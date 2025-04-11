@@ -12,7 +12,7 @@ import json
 import cProfile
 import jax
 
-from .fit_params import GradientDescentFitter, LikelihoodProfiler
+from .fit_params import GradientDescentFitter, LikelihoodProfiler, MinuitFitter
 from .dataio import TracksDataset
 
 logger = logging.getLogger(__name__)
@@ -120,6 +120,18 @@ def main(config):
                                 config = config, keep_in_memory=config.keep_in_memory,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,
                                 scan_tgt_nom=config.scan_tgt_nom)
+    elif config.fit_type == "minuit":
+        param_fit = MinuitFitter(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
+                                detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
+                                readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
+                                readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
+                                out_label=config.out_label, test_name=config.test_name,
+                                loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
+                                set_target_vals=config.set_target_vals, vary_init=config.vary_init,
+                                config = config, keep_in_memory=config.keep_in_memory,
+                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,
+                                minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits)
+
     else:
         raise Exception(f"Unknown fit type: {config.fit_type}. Supported types are 'chain' and 'scan'.")
     
@@ -231,6 +243,9 @@ if __name__ == '__main__':
     parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'random'],
                         help='Strategy to choose the seed for the simulation. It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs) or "random" (different between target and sim and random across epochs).')
     parser.add_argument('--fit_type', type=str, choices=['chain', 'scan', 'minuit'], required=True)
+    parser.add_argument('--minimizer_strategy', type=int, choices=[0, 1, 2], default=1, help='Minimizer strategy for Minuit')
+    parser.add_argument('--minimizer_tol', type=float, default=1e-4, help='Minimizer tolerance for Minuit')
+    parser.add_argument('--separate_fits', default=False, action="store_true", help='Separate fits for each batch')
 
     try:
         args = parser.parse_args()
