@@ -251,16 +251,15 @@ class ParamFitter:
         fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
         if regen or not os.path.exists(fname):
             if self.current_mode == 'lut':
-                ref_adcs, ref_unique_pixels, ref_ticks = simulate(self.target_params, self.response, tracks, self.track_fields, i) #Setting a different random seed for each target
+                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate(self.target_params, self.response, tracks, self.track_fields, i) #Setting a different random seed for each target
             else:
-                ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, tracks, self.track_fields, i) #Setting a different random seed for each target
+                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate_parametrized(self.target_params, tracks, self.track_fields, i) #Setting a different random seed for each target
 
             if self.compute_target_hessian:
                 logger.info("Computing target hessian")
                 if self.current_mode == 'lut':
                     hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.target_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
                 else:
-                    ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, tracks, self.track_fields)
                     hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
                 self.training_history['hessian'].append(format_hessian(hess))
 

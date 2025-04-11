@@ -51,9 +51,9 @@ def main(config):
 
     if args.mode == 'lut':
         response = load_lut(config)
-        ref, pixels_ref, ticks_ref = simulate(ref_params, response, tracks, fields)
+        ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate(ref_params, response, tracks, fields)
     else:
-        ref, pixels_ref, ticks_ref = simulate_parametrized(ref_params, tracks, fields)
+        ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate_parametrized(ref_params, tracks, fields)
 
     with h5py.File(config.output_file, 'w') as f:
         f.create_dataset('adc', data=ref)

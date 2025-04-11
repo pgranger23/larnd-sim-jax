@@ -143,7 +143,7 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey)
 
     adcs = digitize(params, integral)
-    return adcs, unique_pixels, ticks
+    return adcs, ticks, start_ticks
 
 @partial(jit, static_argnames=['fields'])
 def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, fields):
@@ -163,7 +163,7 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey
     wfs = accumulate_signals_parametrized(wfs, signals, pix_renumbering, start_ticks)
     integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey)
     adcs = digitize(params, integral)
-    return adcs, unique_pixels, ticks
+    return adcs, ticks, pix_renumbering, start_ticks
 
 def simulate_parametrized(params, tracks, fields, rngseed = 0):
     master_key = jax.random.key(rngseed)
@@ -175,7 +175,8 @@ def simulate_parametrized(params, tracks, fields, rngseed = 0):
 
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
-    return simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, fields)
+    adcs, ticks, pix_renumbering, start_ticks = simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, fields)
+    return adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks
 
 def simulate(params, response, tracks, fields, rngseed = 0):
     master_key = jax.random.key(rngseed)
@@ -200,7 +201,8 @@ def simulate(params, response, tracks, fields, rngseed = 0):
     # err, wfs = checked_f(wfs, currents_idx, electrons[:, fields.index("n_electrons")], response, pix_renumbering, start_ticks - earliest_tick, params.signal_length)
     # err.throw()
 
-    return simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey2, fields)
+    adcs, ticks, start_ticks =  simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey2, fields)
+    return adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks
 
 def prepare_tracks(params, tracks_file, invert_xz=True):
     tracks, dtype = load_data(tracks_file, invert_xz)
@@ -212,3 +214,15 @@ def prepare_tracks(params, tracks_file, invert_xz=True):
     tracks = jnp.array(tracks)
 
     return tracks, fields, original_tracks
+
+def backtrack_electrons(unique_pixels, pixId, hit_t0, pix_renumbering, electrons, start_ticks):
+    #For given hit, returning the list of electrons that deposited charge in the pixel during this time
+    pix_idx = jnp.searchsorted(unique_pixels, pixId, side='left')
+    #If pixel not found, return empty array
+    if pix_idx == unique_pixels.shape[0] or unique_pixels[pix_idx] != pixId:
+        return jnp.array([]), jnp.array([])
+    matching_electrons = electrons[pix_renumbering == pix_idx]
+    #Getting the electrons that are in the time window
+    t0 = start_ticks[pix_renumbering == pix_idx]
+    matching_electrons = matching_electrons[jnp.logical_and(t0 >= hit_t0 - 50, t0 <= hit_t0 + 50)] #TODO: Put sensible values for time window
+    return matching_electrons
