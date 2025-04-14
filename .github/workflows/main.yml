@@ -50,4 +50,25 @@ jobs:
         run: |
           ./optimize/scan_test.sh
 
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-result
+          path: fit_result/**/*.pkl
+          if-no-files-found: error
+
+      #Upload the scan results as artifact
+
+
+  test-minuit:
+    runs-on: ubuntu-latest
+    container: pigranger/larndsim-jax:latest
+
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4.2.2
+      - name: Check fit
+        run: |
+          ./optimize/minuit_test.sh
+
   
