@@ -51,9 +51,9 @@ def main(config):
 
     if args.mode == 'lut':
         response = load_lut(config)
-        ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate(ref_params, response, tracks, fields)
+        ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
     else:
-        ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate_parametrized(ref_params, tracks, fields)
+        ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
 
     with h5py.File(config.output_file, 'w') as f:
         f.create_dataset('adc', data=ref)
@@ -83,6 +83,7 @@ if __name__ == '__main__':
     parser.add_argument('--signal_length', type=int, required=True, help='Signal length')
     parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
     parser.add_argument('--noise', action='store_true', help='Add noise to the simulation')
+    parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
 
     try:
         args = parser.parse_args()
