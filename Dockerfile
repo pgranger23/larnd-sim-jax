@@ -31,14 +31,4 @@ VOLUME ${SCRATCH_VOLUME}
 
 ADD requirements.txt /work/requirements.txt
 
-RUN mkdir -p /tmp && wget -q --no-check-certificate -P /tmp https://download.open-mpi.org/release/open-mpi/v4.0/openmpi-4.0.4.tar.bz2 && \
-    tar -x -f /tmp/openmpi-4.0.4.tar.bz2 -C /tmp -j && \
-    cd /tmp/openmpi-4.0.4 && ./configure --prefix=/usr/local/openmpi --disable-getpwuid \
-    --with-slurm --with-cuda && \
-    make -j4 && \
-    make -j4 install && \
-    rm -rf /tmp/openmpi-4.0.4.tar.bz2 /tmp/openmpi-4.0.4
-ENV PATH=/usr/local/openmpi/bin:$PATH \
-    LD_LIBRARY_PATH=/usr/local/openmpi/lib:$LD_LIBRARY_PATH
-
 RUN pip install --no-cache-dir -r requirements.txt
