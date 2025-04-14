@@ -5,3 +5,4 @@ tqdm
 optax
 flax
 matplotlib
+sphinx_rtd_theme
