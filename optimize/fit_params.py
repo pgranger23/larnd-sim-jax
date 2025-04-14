@@ -18,6 +18,7 @@ import jax
 import jax.numpy as jnp
 from time import time
 from jax import value_and_grad, grad
+import iminuit
 
 from tqdm import tqdm
 
@@ -250,16 +251,15 @@ class ParamFitter:
         fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
         if regen or not os.path.exists(fname):
             if self.current_mode == 'lut':
-                ref_adcs, ref_unique_pixels, ref_ticks = simulate(self.target_params, self.response, tracks, self.track_fields, i) #Setting a different random seed for each target
+                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate(self.target_params, self.response, tracks, self.track_fields, i) #Setting a different random seed for each target
             else:
-                ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, tracks, self.track_fields, i) #Setting a different random seed for each target
+                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate_parametrized(self.target_params, tracks, self.track_fields, i) #Setting a different random seed for each target
 
             if self.compute_target_hessian:
                 logger.info("Computing target hessian")
                 if self.current_mode == 'lut':
                     hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.target_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
                 else:
-                    ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, tracks, self.track_fields)
                     hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
                 self.training_history['hessian'].append(format_hessian(hess))
 
@@ -624,12 +624,113 @@ class LikelihoodProfiler(ParamFitter):
             shutil.rmtree('target_' + self.out_label, ignore_errors=True)
 
 class MinuitFitter(ParamFitter):
-    def __init__(self, **kwargs):
+    def __init__(self, separate_fits=True, minimizer_strategy=1, minimizer_tol=1e-5, **kwargs):
         super().__init__(**kwargs)
 
-        from iminuit import Minuit
-        self.minuit = Minuit
+        self.separate_fits = separate_fits
+        self.minimizer_strategy = minimizer_strategy
+        self.minimizer_tol = minimizer_tol
 
-        # Set up the minimizer
-        self.minimizer = self.minuit(self.loss_fn, **self.loss_fn_kw)
-        self.minimizer.set_param_hint("param", value=0.0, error=0.1) # Dummy values to be replaced later
+    def configure_minimizer(self, loss_wrapper, grad_wrapper=None,):
+        self.minimizer = iminuit.Minuit(
+            loss_wrapper,
+            [getattr(self.current_params, param) for param in self.relevant_params_list],
+            grad=grad_wrapper,
+            name=self.relevant_params_list
+        )
+        for param in self.relevant_params_list:
+            lower = ranges[param]['down']
+            upper = ranges[param]['up']
+
+            self.minimizer.limits[param] = (lower, upper)
+            self.minimizer.errors[param] = (upper - lower)/10.
+            self.minimizer.fixed = False
+        
+        self.minimizer.strategy = self.minimizer_strategy  # 0, 1 or 2. Maybe, on 0, it doesn't use the grad func? Try out
+        self.minimizer.errordef = 1  # definition of "1 sigma": 0.5 for NLL, 1 for chi2
+        self.minimizer.tol = (  # stopping value, EDM < tol
+            self.minimizer_tol / 0.002 / 1  # iminuit multiplies by default with 0.002
+        )
+        self.minimizer.print_level = 2  # 0, 1 or 2. Verbosity level
+
+    def fit(self, dataloader_sim, dataloader_target, **kwargs):
+        self.prepare_fit()
+        logger.info("Using the fitter in a Minuit mode.")
+        logger.warning(f"Arguments {kwargs} are ignored in this mode.")
+
+        logger.info(f"Running in {'separate' if self.separate_fits else 'joint'} fit mode")
+
+        if self.separate_fits:
+            for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
+                logger.info(f"Batch {i}/{len(dataloader_target)}")
+
+                # target
+                selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
+                selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
+
+                ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
+
+                # sim
+                selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
+                selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
+
+                def loss_wrapper(args):
+                    # Update the current params with the new values
+                    self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
+                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_unique_pixels, ref_ticks, with_grad=False)
+                    return loss_val
+
+                def grad_wrapper(args):
+                    # Update the current params with the new values
+                    self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
+                    _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_unique_pixels, ref_ticks, with_loss=False)
+                    return [getattr(grads, key) for key in self.relevant_params_list]
+
+                self.configure_minimizer(loss_wrapper, grad_wrapper)
+                self.minimizer.migrad()
+
+        else:
+            # Joint fit
+            def loss_wrapper(args):
+                # Update the current params with the new values
+                self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
+                avg_loss = 0
+                for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
+                    # target
+                    selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
+                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
+
+                    ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
+
+                    # sim
+                    selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
+                    selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
+
+                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_unique_pixels, ref_ticks, with_grad=False)
+                    avg_loss += loss_val
+                return avg_loss/len(dataloader_target)
+            
+            def grad_wrapper(args):
+                # Update the current params with the new values
+                self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
+                avg_grad = [0 for _ in range(len(self.relevant_params_list))]
+                for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
+                    # target
+                    selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
+                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
+
+                    ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
+
+                    # sim
+                    selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
+                    selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
+
+                    _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_unique_pixels, ref_ticks, with_loss=False)
+                    avg_grad = [getattr(grads, key) + avg_grad[i] for i, key in enumerate(self.relevant_params_list)]
+                return [g/len(dataloader_target) for g in avg_grad]
+
+            self.configure_minimizer(loss_wrapper, grad_wrapper)
+            self.minimizer.migrad()
+
+
+
