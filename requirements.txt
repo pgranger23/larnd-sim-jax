@@ -1,8 +1,0 @@
-numpy
-numba
-h5py
-tqdm
-optax
-flax
-matplotlib
-sphinx_rtd_theme

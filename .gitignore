@@ -12,3 +12,5 @@ target*/
 *.png
 .history
 logs/
+/src/larndsim/version.py
+/.idea/
