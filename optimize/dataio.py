@@ -110,6 +110,7 @@ class TracksDataset(Dataset):
 
         first_indices = np.sort(first_indices)
         last_indices = np.r_[first_indices[1:] - 1, len(selected_tracks) - 1]
+        n_repeat = last_indices - first_indices + 1
 
         tracks_start = selected_tracks[first_indices]
         tracks_end = selected_tracks[last_indices]
@@ -121,13 +122,14 @@ class TracksDataset(Dataset):
         z_dir = np.array([0, 0, 1])
         cos_theta = np.abs(np.dot(tracks_dir, z_dir))/ (np.linalg.norm(tracks_dir, axis=1) + 1e-10)
 
-        mask = np.sqrt(tracks_xd**2 + tracks_yd**2 + tracks_zd**2) > track_len_sel
-        mask = mask & (cos_theta < max_abs_costheta_sel)
-        mask = mask & (np.maximum(abs(tracks_start['z']), abs(tracks_end['z'])) < track_z_bound)
+        trk_mask = np.sqrt(tracks_xd**2 + tracks_yd**2 + tracks_zd**2) > track_len_sel
+        trk_mask = trk_mask & (cos_theta < max_abs_costheta_sel)
+        trk_mask = trk_mask & (np.maximum(abs(tracks_start['z']), abs(tracks_end['z'])) < track_z_bound)
+        mask = np.repeat(trk_mask, n_repeat)
 
         keys = np.ascontiguousarray(selected_tracks[[self.evt_id, self.trj_id]])
         index = set(map(tuple, keys))  # Ensure index is a set of tuples
-        mask = np.array([tuple(row) in index for row in keys])
+        #mask = np.array([tuple(row) in index for row in keys])
 
         all_tracks = [torch_from_structured(selected_tracks[mask])]
         index = np.array(list(index))
@@ -148,11 +150,11 @@ class TracksDataset(Dataset):
                 list_rand = random.sample(range(len(index)), ntrack)
             else:
                 list_rand = np.arange(ntrack)
-                
+
             for i_rand in list_rand:
                 fit_index.append(index[i_rand])
-                fit_tracks.append(all_tracks[i_rand])
-
+                trk_msk = ((all_tracks[0][:, self.track_fields.index("eventID")] == index[i_rand][0]) & (all_tracks[0][:, self.track_fields.index("trackID")] == index[i_rand][1]))
+                fit_tracks.append(all_tracks[0][trk_msk])
 
         if print_input:
             logger.info(f"training set [ev, trk]: {fit_index}")
