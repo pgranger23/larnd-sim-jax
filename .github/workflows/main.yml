@@ -31,8 +31,15 @@ jobs:
         continue-on-error: true
 
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
         with:
           name: simulation-plots-${{ github.sha }}
+          path: output/*.png
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: simulation-plots-${{ github.event.pull_request.head.sha }}
           path: output/*.png
 
       - name: Trigger RTDs build
