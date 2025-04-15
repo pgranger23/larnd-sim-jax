@@ -35,7 +35,7 @@ rtds_action_github_repo = "pgranger23/larnd-sim-jax"
 
 # The path where the artifact should be extracted
 # Note: this is relative to the conf.py file!
-rtds_action_path = "source/debug-plots"
+rtds_action_path = "debug-plots"
 
 # The "prefix" used in the `upload-artifact` step of the action
 rtds_action_artifact_prefix = "simulation-plots-"
