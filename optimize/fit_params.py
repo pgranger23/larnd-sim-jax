@@ -7,7 +7,7 @@ import numpy as np
 # from .utils import get_id_map, all_sim, embed_adc_list
 from .ranges import ranges
 from larndsim.sim_jax import simulate, simulate_parametrized, get_size_history
-from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc
+from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, cleaning_outputs
 from larndsim.consts_jax import build_params_class, load_detector_properties
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
@@ -63,6 +63,10 @@ def remove_noise_from_params(params):
     noise_params = ('RESET_NOISE_CHARGE', 'UNCORRELATED_NOISE_CHARGE')
     return params.replace(**{key: 0. for key in noise_params})
 
+def remove_diffusion_from_params(params):
+    diff_params = ('long_diff', 'tran_diff')
+    return params.replace(**{key: 0. for key in diff_params})
+
 class ParamFitter:
     def __init__(self, relevant_params, track_fields,
                  detector_props, pixel_layouts, load_checkpoint = None,
@@ -71,7 +75,7 @@ class ParamFitter:
                  out_label="", test_name="this_test", norm_scheme="divide", max_clip_norm_val=None, clip_from_range=False, optimizer_fn="Adam",
                  no_adc=False, shift_no_fit=[], link_vdrift_eField=False,
                  set_target_vals=[], vary_init=False, seed_init=30, profile_gradient = False, scan_tgt_nom = False, epoch_size=1, keep_in_memory=False,
-                 compute_target_hessian=False, sim_seed_strategy="different",
+                 compute_target_hessian=False, sim_seed_strategy="different", fwd_only=False,
                  config = {}):
         if optimizer_fn == "Adam":
             self.optimizer_fn = optax.adam
@@ -102,6 +106,8 @@ class ParamFitter:
         self.electron_sampling_resolution = config.electron_sampling_resolution
         self.number_pix_neighbors = config.number_pix_neighbors
         self.signal_length = config.signal_length
+
+        self.fwd_only = fwd_only
 
         if self.current_mode == 'lut':
             self.lut_file = config.lut_file
@@ -306,10 +312,11 @@ class ParamFitter:
 
         self.target_params = {}
 
-        if self.profile_gradient and self.scan_tgt_nom:
+        if self.profile_gradient and self.scan_tgt_nom or self.fwd_only:
             logger.info("Using the fitter in a gradient profile mode. Setting targets to nominal values")
             for param in self.relevant_params_list:
                 self.target_params[param] = ranges[param]['nom']
+                logger.info(f'{param}, target: {self.target_params[param]}, init {getattr(self.current_params, param)}')
         elif self.target_val_dict is not None:
             if set(self.relevant_params_list + self.shift_no_fit) != set(self.target_val_dict.keys()):
                 logger.debug(set(self.relevant_params_list + self.shift_no_fit))
@@ -386,6 +393,13 @@ class ParamFitter:
                 steps_grids[i] += lower
                 steps_grids[i] = steps_grids[i].ravel()
 
+#        # remove target diffusion
+#        if self.fwd_only:
+#            #print("long_diff: ", self.target_params['long_diff'])
+#            self.target_params = remove_diffusion_from_params(self.target_params)
+#            #print("long_diff: ", self.target_params['long_diff'])
+#            print("long_diff", getattr(self.target_params, "long_diff"))
+
         # The training loop
         total_iter = 0
         terminate_fit = False
@@ -420,6 +434,17 @@ class ParamFitter:
                     #Simulate the output for the whole batch
                     loss_ev = []
 
+                    if self.sim_seed_strategy == "same":
+                        rngkey = i+1
+                    elif self.sim_seed_strategy == "different":
+                        rngkey = -(i+1)
+                    elif self.sim_seed_strategy == "random":
+                        rngkey = np.random.randint(0, 1000000)
+                    elif self.sim_seed_strategy == "constant":
+                        rngkey = 0
+                    else:
+                        raise ValueError("Unknown sim_seed_strategy. Must be same, different or random")
+
                     #Simulating the reference during the first epoch
                     fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
                     if epoch == 0:
@@ -427,6 +452,15 @@ class ParamFitter:
                             ref_adcs, ref_unique_pixels, ref_ticks = simulate(self.target_params, self.response, selected_tracks_tgt, self.track_fields, i) #Setting a different random seed for each target
                         else:
                             ref_adcs, ref_unique_pixels, ref_ticks = simulate_parametrized(self.target_params, selected_tracks_tgt, self.track_fields, i) #Setting a different random seed for each target
+                            if self.fwd_only:
+                                adcs, unique_pixels, ticks = simulate_parametrized(self.current_params, selected_tracks_sim, self.track_fields, rngkey)
+                                ref_adcs, adcs = cleaning_outputs(self.current_params, ref_adcs, adcs)
+                                if self.loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
+                                    loss_val, aux = self.loss_fn(self.current_params, adcs, unique_pixels, ticks, ref_adcs, ref_unique_pixels, ref_ticks, self.loss_fn_kw['dstw'])
+                                else:
+                                    loss_val, aux = self.loss_fn(self.current_params, adcs, unique_pixels, ticks, ref_adcs, ref_unique_pixels, ref_ticks, **self.loss_fn_kw)
+                                print("loss: ", loss_val)
+                                return
 
                         if self.compute_target_hessian:
                             if self.current_mode == 'lut':
@@ -476,7 +510,7 @@ class ParamFitter:
                         (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_sim, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
 
                     scaled_grads = {key: getattr(grads, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list}
-                    if not self.profile_gradient:
+                    if not self.profile_gradient and not self.fwd_only:
                         leaves = jax.tree_util.tree_leaves(grads)
                         hasNaN = any(jnp.isnan(leaf).any() for leaf in leaves)
                         if hasNaN:
