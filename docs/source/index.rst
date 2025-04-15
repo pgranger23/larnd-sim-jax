@@ -13,6 +13,7 @@ Welcome to LarND-Sim-Jax's documentation!
    intro
    larndsim
    modules
+   debug-plots
 
 
 

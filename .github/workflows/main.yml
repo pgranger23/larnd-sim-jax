@@ -24,6 +24,19 @@ jobs:
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4.2.2
+
       - name: Check simulation
         run: |
           ./optimize/simulate_test.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simulation-plots-${{ github.sha }}
+          path: output/*.png
+
+      - name: Trigger RTDs build
+        uses: dfm/rtds-action@v1.1.0
+        with:
+          webhook_url: ${{ secrets.RTDS_WEBHOOK_URL }}
+          webhook_token: ${{ secrets.RTDS_WEBHOOK_TOKEN }}
+          commit_ref: ${{ github.ref }}

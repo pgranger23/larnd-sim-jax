@@ -13,14 +13,12 @@ RUN apt-get update && \
 
 WORKDIR /work
 
-RUN python3 -m pip install --upgrade pip && \
-    python3 -m pip install "jax[cuda]" \
-        -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+RUN python3 -m pip install --no-cache-dir  --upgrade pip && \
+    python3 -m pip install --no-cache-dir "jax[cuda]" \
+        -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html && \
+    python3 -m pip install --no-cache-dir torch torchvision torchaudio -f https://download.pytorch.org/whl/cu111/torch_stable.html
 
-# Install PyTorch and torchvision
-RUN python3 -m pip install torch torchvision torchaudio -f https://download.pytorch.org/whl/cu111/torch_stable.html
-
-RUN python3 -m pip install jupyter
+RUN python3 -m pip install --no-cache-dir jupyter
 
 ENV PYTHONUNBUFFERED=1
 
@@ -30,15 +28,5 @@ RUN echo creating ${SCRATCH_VOLUME} && mkdir -p ${SCRATCH_VOLUME}
 VOLUME ${SCRATCH_VOLUME}
 
 ADD requirements.txt /work/requirements.txt
-
-RUN mkdir -p /tmp && wget -q --no-check-certificate -P /tmp https://download.open-mpi.org/release/open-mpi/v4.0/openmpi-4.0.4.tar.bz2 && \
-    tar -x -f /tmp/openmpi-4.0.4.tar.bz2 -C /tmp -j && \
-    cd /tmp/openmpi-4.0.4 && ./configure --prefix=/usr/local/openmpi --disable-getpwuid \
-    --with-slurm --with-cuda && \
-    make -j4 && \
-    make -j4 install && \
-    rm -rf /tmp/openmpi-4.0.4.tar.bz2 /tmp/openmpi-4.0.4
-ENV PATH=/usr/local/openmpi/bin:$PATH \
-    LD_LIBRARY_PATH=/usr/local/openmpi/lib:$LD_LIBRARY_PATH
 
 RUN pip install --no-cache-dir -r requirements.txt
