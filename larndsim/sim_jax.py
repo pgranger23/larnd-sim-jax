@@ -41,13 +41,13 @@ def load_data(fname, invert_xz=True):
     return rfn.structured_to_unstructured(tracks, copy=True, dtype=np.float32), dtype
 
 def set_pixel_plane(params, tracks, fields):
-    zMin = np.minimum(params.tpc_borders[:, 2, 1] - 2e-2, params.tpc_borders[:, 2, 0] - 2e-2)
-    zMax = np.maximum(params.tpc_borders[:, 2, 1] + 2e-2, params.tpc_borders[:, 2, 0] + 2e-2)
+    zMin = np.minimum(params.tpc_borders[:, 2, 1] - params.size_margin, params.tpc_borders[:, 2, 0] - params.size_margin)
+    zMax = np.maximum(params.tpc_borders[:, 2, 1] + params.size_margin, params.tpc_borders[:, 2, 0] + params.size_margin)
 
-    cond = tracks[:, fields.index("x")][..., None] >= params.tpc_borders[:, 0, 0][None, ...] - 2e-2
-    cond = np.logical_and(tracks[:, fields.index("x")][..., None] <= params.tpc_borders[:, 0, 1][None, ...] + 2e-2, cond)
-    cond = np.logical_and(tracks[:, fields.index("y")][..., None] >= params.tpc_borders[:, 1, 0][None, ...] - 2e-2, cond)
-    cond = np.logical_and(tracks[:, fields.index("y")][..., None] <= params.tpc_borders[:, 1, 1][None, ...] + 2e-2, cond)
+    cond = tracks[:, fields.index("x")][..., None] >= params.tpc_borders[:, 0, 0][None, ...] - params.size_margin
+    cond = np.logical_and(tracks[:, fields.index("x")][..., None] <= params.tpc_borders[:, 0, 1][None, ...] + params.size_margin, cond)
+    cond = np.logical_and(tracks[:, fields.index("y")][..., None] >= params.tpc_borders[:, 1, 0][None, ...] - params.size_margin, cond)
+    cond = np.logical_and(tracks[:, fields.index("y")][..., None] <= params.tpc_borders[:, 1, 1][None, ...] + params.size_margin, cond)
     cond = np.logical_and(tracks[:, fields.index("z")][..., None] >= zMin[None, ...], cond)
     cond = np.logical_and(tracks[:, fields.index("z")][..., None] <= zMax[None, ...], cond)
 
@@ -157,7 +157,8 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey
     nticks_wf = int(params.time_interval[1]/params.t_sampling) + 1 #Adding one first element to serve as a garbage collector
     wfs = jnp.zeros((unique_pixels.shape[0], nticks_wf))
 
-    start_ticks = t0 - signals.shape[1]
+    #TODO: Check what should be the correct implementation: when is the actual trigger reference time?
+    start_ticks = t0 #- signals.shape[1]
 
     wfs = accumulate_signals_parametrized(wfs, signals, pix_renumbering, start_ticks)
     integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey)

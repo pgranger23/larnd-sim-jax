@@ -83,9 +83,13 @@ def get_adc_values(params, pixels_signals, noise_rng_key):
         # integrate_end = jnp.where(integrate_end >= q_sum.shape[1], q_sum.shape[1]-1, integrate_end)
         # end2d_idx = tuple(jnp.stack([jnp.arange(0, ic.shape[0]).astype(int), integrate_end.astype(int)]))
 
+        end2d_idx_next = tuple(jnp.stack([jnp.arange(0, ic.shape[0]).astype(int), jnp.clip(integrate_end + 1, 0, q_sum.shape[1]-1)]))
+        q_vals = q_sum[end2d_idx] + (idx_val - idx_t) *(q_sum[end2d_idx_next] - q_sum[end2d_idx])
+        q_vals_no_noise = q_cumsum[end2d_idx] + (idx_val - idx_t) *(q_cumsum[end2d_idx_next] - q_cumsum[end2d_idx])
+
         # Cumulative => value at end is desired value
-        q_vals = q_sum[end2d_idx] 
-        q_vals_no_noise = q_cumsum[end2d_idx]
+        # q_vals = q_sum[end2d_idx] 
+        # q_vals_no_noise = q_cumsum[end2d_idx]
 
         # Uncorrelated noise
         key, = random.split(key, 1)
@@ -95,6 +99,8 @@ def get_adc_values(params, pixels_signals, noise_rng_key):
         adc = jnp.where(q_vals_no_noise != 0, q_vals + extra_noise, q_vals_no_noise)
 
         cond_adc = adc < params.DISCRIMINATION_THRESHOLD
+        #TODO: Check if the following selection makes sense
+        cond_adc = jnp.logical_or(cond_adc, idx_t == q_sum.shape[1]-2) #Force set to zero if no initial threshold crossing
 
         # Only include if passes threshold     
         adc = jnp.where(cond_adc, 0, adc)

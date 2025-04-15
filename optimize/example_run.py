@@ -32,8 +32,20 @@ def make_param_list(config):
 
 
 def main(config):
-    jax.config.update('jax_platform_name', 'gpu')
-    jax.config.update("jax_debug_nans", False)
+    if config.cpu_only:
+        jax.config.update('jax_platform_name', 'cpu')
+    else:
+        jax.config.update('jax_platform_name', 'gpu')
+
+    if config.debug_nans:
+        jax.config.update("jax_debug_nans", True)
+    else:
+        jax.config.update("jax_debug_nans", False)
+
+    if config.non_deterministic:
+        os.environ['XLA_FLAGS'] = '--xla_gpu_deterministic_ops=false'
+    else:
+        os.environ['XLA_FLAGS'] = '--xla_gpu_deterministic_ops=true'
 
     logger.info(f"Jax devices: {jax.devices()}")
 
@@ -90,13 +102,13 @@ def main(config):
                             readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
                             out_label=config.out_label, test_name=config.test_name, norm_scheme=config.norm_scheme,
                             max_clip_norm_val=config.max_clip_norm_val, clip_from_range=config.clip_from_range,
-                            # fit_diffs=config.fit_diffs,
                             optimizer_fn=config.optimizer_fn,
                             lr_scheduler=config.lr_scheduler, lr_kw=config.lr_kw,
                             no_adc=config.no_adc, loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
                             link_vdrift_eField=config.link_vdrift_eField,
                             set_target_vals=config.set_target_vals, vary_init=config.vary_init, seed_init=config.seed_init, compute_target_hessian=config.compute_target_hessian,
-                            config = config, profile_gradient=config.profile_gradient, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory)
+                            config = config, profile_gradient=config.profile_gradient, scan_tgt_nom=config.scan_tgt_nom, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory,
+                            sim_seed_strategy=config.sim_seed_strategy)
     param_fit.make_target_sim(seed=config.seed, fixed_range=config.fixed_range)
 
     # jax.profiler.start_trace("/tmp/tensorboard")
@@ -175,8 +187,6 @@ if __name__ == '__main__':
                         help="If passed, does gradient clipping (norm)")
     parser.add_argument("--clip_from_range", dest="clip_from_range", default=False, action="store_true",
                         help="Flag to clip the fitted parameters at the nominal ranges")
-    # parser.add_argument("--fit_diffs", dest="fit_diffs", default=False, action="store_true",
-    #                     help="Turns on fitting of differences rather than direct fitting of values")
     parser.add_argument("--optimizer_fn", dest="optimizer_fn", default="Adam",
                         help="Choose optimizer function (here Adam vs SGD")
     parser.add_argument("--lr_scheduler", dest="lr_scheduler", default=None,
@@ -205,6 +215,8 @@ if __name__ == '__main__':
                         help="Link vdrift and eField in fitting")
     parser.add_argument("--profile_gradient", dest="profile_gradient", default=False, action="store_true",
                         help="To profile the gradient and loss instead of making an actual fit.")
+    parser.add_argument("--scan_tgt_nom", dest="scan_tgt_nom", default=False, action="store_true",
+                        help="Set the gradient and loss scan target to the parameter nominal value, otherwise there will be a target throw.")
     parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
     parser.add_argument('--electron_sampling_resolution', type=float, required=True, help='Electron sampling resolution')
     parser.add_argument('--number_pix_neighbors', type=int, required=True, help='Number of pixel neighbors')
@@ -212,6 +224,11 @@ if __name__ == '__main__':
     parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
     parser.add_argument('--keep_in_memory', default=False, action="store_true", help='Keep the expected output of each batch in memory')
     parser.add_argument('--compute_target_hessian', default=False, action="store_true", help='Computes the Hessian at the target for every batch')
+    parser.add_argument('--non_deterministic', default=False, action="store_true", help='Make the computation slightly non-deterministic for faster computation')
+    parser.add_argument('--debug_nans', default=False, action="store_true", help='Debug NaNs (much slower)')
+    parser.add_argument('--cpu_only', default=False, action="store_true", help='Run on CPU only')
+    parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'random', 'constant'],
+                        help='Strategy to choose the seed for the simulation (the seed for target is the batch id). It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs), "random" (different between target and sim and random across epochs), "constant" (the seed is constant across batches).')
 
     try:
         args = parser.parse_args()

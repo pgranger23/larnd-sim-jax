@@ -216,7 +216,7 @@ class SoftDTW(CostFn):
 
   def __init__(
       self,
-      gamma: float,
+      gamma: float = 1.0,
       ground_cost: Optional[CostFn] = None,
       debiased: bool = False
   ):

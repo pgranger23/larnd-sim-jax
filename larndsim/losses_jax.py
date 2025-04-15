@@ -26,11 +26,15 @@ def mse_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
     return mse_loss(adcs, pixels, ref, pixels_ref)
 
 def mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
+    mask_ref = ref > 0
+    mask = adcs > 0
+    ticks = ticks.at[~mask].set(0)
+    ticks_ref = ticks_ref.at[~mask_ref].set(0)
     return mse_loss(ticks, pixels, ticks_ref, pixels_ref)
 
 def mse_time_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, alpha=0.5):
-    loss_adc, _ = mse_adc(adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
-    loss_time, _ = mse_time(adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
+    loss_adc, _ = mse_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
+    loss_time, _ = mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
     return alpha * loss_adc + (1 - alpha) * loss_time, dict()
 
 @jit
@@ -75,15 +79,15 @@ def chamfer_distance_3d(pos_a, pos_b, w_a, w_b):
     
     # Calculate the weighted Chamfer distance
     chamfer_dist = (
-        jnp.mean(min_dists_a_to_b * w_a * closest_weights_a_to_b, where=min_dists_a_to_b < 1e4) +
-        jnp.mean(min_dists_b_to_a * w_b * closest_weights_b_to_a, where=min_dists_b_to_a < 1e4)
+        jnp.sum(min_dists_a_to_b * w_a * closest_weights_a_to_b, where=min_dists_a_to_b < 1e4) +
+        jnp.sum(min_dists_b_to_a * w_b * closest_weights_b_to_a, where=min_dists_b_to_a < 1e4)
     )
     return chamfer_dist
 
 def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref):
     pixel_x, pixel_y, pixel_z, adcs, eventID = prepare_hits(params, adcs, pixels, ticks)
     pixel_x_ref, pixel_y_ref, pixel_z_ref, adcs_ref, eventID_ref = prepare_hits(params, adcs_ref, pixels_ref, ticks_ref)
-    mask = adcs.flatten() > 0
+    mask = (adcs.flatten() > 0) & (jnp.repeat(eventID, 10) != -1)
     mask_ref = adcs_ref.flatten() > 0
 
     nb_selected = jnp.count_nonzero(mask)
@@ -159,7 +163,10 @@ def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields,
 
     ref, adcs = cleaning_outputs(params, ref, adcs)
     
-    loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
+    if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
+        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
+    else:
+        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
     return loss_val, aux
 
 #Code commented below is unused but I still want to keep it for future reference
