@@ -43,7 +43,7 @@ jobs:
           path: output/*.png
 
       - name: Trigger RTDs build
-        uses: pgranger23/rtds-action
+        uses: pgranger23/rtds-action@main
         with:
           webhook_url: ${{ secrets.RTDS_WEBHOOK_URL }}
           webhook_token: ${{ secrets.RTDS_WEBHOOK_TOKEN }}
