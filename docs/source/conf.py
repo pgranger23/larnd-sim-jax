@@ -17,7 +17,7 @@ author = 'Pierre Granger'
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
-extensions = ['sphinx.ext.autodoc', 'rtds_action']
+extensions = ['sphinx.ext.napoleon', 'sphinx.ext.autodoc', 'rtds_action']
 
 templates_path = ['_templates']
 exclude_patterns = []
