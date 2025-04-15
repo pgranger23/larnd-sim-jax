@@ -204,7 +204,7 @@ def get_pixels(params, electrons, fields):
     pos = jnp.stack([(electrons[:, fields.index("x")] - borders[:, 0, 0]) // params.pixel_pitch,
             (electrons[:, fields.index("y")] - borders[:, 1, 0]) // params.pixel_pitch], axis=1)
 
-    pixels_int = (pos + 0.5).astype(int)
+    pixels_int = pos.astype(int)
 
     X, Y = jnp.mgrid[-n_neigh:n_neigh+1, -n_neigh:n_neigh+1]
     shifts = jnp.vstack([X.ravel(), Y.ravel()]).T
