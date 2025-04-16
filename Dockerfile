@@ -13,14 +13,11 @@ RUN apt-get update && \
 
 WORKDIR /work
 
-RUN python3 -m pip install --upgrade pip && \
-    python3 -m pip install "jax[cuda]" \
+RUN python3 -m pip install --no-cache-dir  --upgrade pip && \
+    python3 -m pip install --no-cache-dir "jax[cuda]" \
         -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
-# Install PyTorch and torchvision
-RUN python3 -m pip install torch torchvision torchaudio -f https://download.pytorch.org/whl/cu111/torch_stable.html
-
-RUN python3 -m pip install jupyter
+RUN python3 -m pip install --no-cache-dir jupyter
 
 ENV PYTHONUNBUFFERED=1
 

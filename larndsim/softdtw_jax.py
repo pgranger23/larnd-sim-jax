@@ -145,7 +145,7 @@ class TICost(CostFn):
     c(x, y) = h(z), z := x - y.
 
   If that cost function is used to form an Entropic map using the
-  :cite:`brenier:91` theorem, then the user should ensure :math:`h` is
+  theorem, then the user should ensure :math:`h` is
   strictly convex, as well as provide the Legendre transform of :math:`h`,
   whose gradient is necessarily the inverse of the gradient of :math:`h`.
   """
@@ -205,18 +205,18 @@ class SqEuclidean(TICost):
 
 @jax.tree_util.register_pytree_node_class
 class SoftDTW(CostFn):
-  """Soft dynamic time warping (DTW) cost :cite:`cuturi:17`.
+  """Soft dynamic time warping (DTW) cost.
 
   Args:
     gamma: Smoothing parameter :math:`> 0` for the soft-min operator.
     ground_cost: Ground cost function. If ``None``,
       use :class:`~ott.geometry.costs.SqEuclidean`.
-    debiased: Whether to compute the debiased soft-DTW :cite:`blondel:21`.
+    debiased: Whether to compute the debiased soft-DTW.
   """
 
   def __init__(
       self,
-      gamma: float,
+      gamma: float = 1.0,
       ground_cost: Optional[CostFn] = None,
       debiased: bool = False
   ):

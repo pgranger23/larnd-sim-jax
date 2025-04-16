@@ -34,8 +34,8 @@ def mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
     return mse_loss(ticks, pixels, ticks_ref, pixels_ref)
 
 def mse_time_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, alpha=0.5):
-    loss_adc, _ = mse_adc(adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
-    loss_time, _ = mse_time(adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
+    loss_adc, _ = mse_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
+    loss_time, _ = mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
     return alpha * loss_adc + (1 - alpha) * loss_time, dict()
 
 @jit
@@ -170,8 +170,8 @@ def sdtw_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw):
     return sdtw_loss(ticks, ticks_ref, dstw)
 
 def sdtw_time_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw, alpha=0.5):
-    loss_adc, _ = sdtw_adc(adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw)
-    loss_time, _ = sdtw_time(adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw)
+    loss_adc, _ = sdtw_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw)
+    loss_time, _ = sdtw_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw)
     return alpha * loss_adc + (1 - alpha) * loss_time, dict()
 
 @jit
@@ -206,7 +206,10 @@ def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields,
 
     ref, adcs = cleaning_outputs(params, ref, adcs)
     
-    loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
+    if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
+        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
+    else:
+        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
     return loss_val, aux
 
 #Code commented below is unused but I still want to keep it for future reference

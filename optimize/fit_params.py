@@ -4,7 +4,6 @@ sys.path.insert(0, larndsim_dir)
 import shutil
 import pickle
 import numpy as np
-# from .utils import get_id_map, all_sim, embed_adc_list
 from .ranges import ranges
 from larndsim.sim_jax import simulate, simulate_parametrized, get_size_history
 from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc
@@ -12,7 +11,6 @@ from larndsim.consts_jax import build_params_class, load_detector_properties
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
 import logging
-import torch
 import optax
 import jax
 import jax.numpy as jnp
@@ -292,6 +290,8 @@ class ParamFitter:
             rngkey = -i
         elif self.sim_seed_strategy == "random":
             rngkey = np.random.randint(0, 1000000)
+        elif self.sim_seed_strategy == "constant":
+            rngkey = 0
         else:
             raise ValueError("Unknown sim_seed_strategy. Must be same, different or random")
 
@@ -466,19 +466,17 @@ class GradientDescentFitter(ParamFitter):
                 logger.info(f"epoch {epoch}")
                 # if epoch == 2: libcudart.cudaProfilerStart()
 
-                for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
+                for i, (selected_tracks_bt_target, selected_tracks_bt_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
                     start_time = time()
 
-                    #Convert torch tracks to jax
                     # target
-                    selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
-                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
-
-                    ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
+                    selected_tracks_bt_tgt = selected_tracks_bt_target.reshape(-1, len(self.track_fields))
 
                     # sim
-                    selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
-                    selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
+                    selected_tracks_bt_sim = selected_tracks_bt_sim.reshape(-1, len(self.track_fields))
+
+                    selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
+                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_tgt)
                     loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_unique_pixels, ref_ticks)
 
                     modified_grads = self.process_grads(grads) #Grads are modified ans applied in this function
@@ -575,18 +573,18 @@ class LikelihoodProfiler(ParamFitter):
 
         self.ref_params = self.current_params
 
-        for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
+        for i, (selected_tracks_bt_target, selected_tracks_bt_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
             logger.info(f"Batch {i}/{len(dataloader_target)}")
-            #Convert torch tracks to jax
             # target
-            selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
-            selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
-
-            ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
+            selected_tracks_bt_tgt = selected_tracks_bt_target.reshape(-1, len(self.track_fields))
 
             # sim
-            selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
-            selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
+            selected_tracks_bt_sim = selected_tracks_bt_sim.reshape(-1, len(self.track_fields))
+
+            selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
+            selected_tracks_tgt = jax.device_put(selected_tracks_bt_tgt)
+
+            ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
 
             for param in self.relevant_params_list:
                 lower = ranges[param]['down']
@@ -674,20 +672,21 @@ class MinuitFitter(ParamFitter):
         logger.warning(f"Arguments {kwargs} are ignored in this mode.")
 
         logger.info(f"Running in {'separate' if self.separate_fits else 'joint'} fit mode")
+        
 
         if self.separate_fits:
-            for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
+            for i, (selected_tracks_bt_target, selected_tracks_bt_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
                 logger.info(f"Batch {i}/{len(dataloader_target)}")
-
                 # target
-                selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
-                selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
-
-                ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
+                selected_tracks_bt_tgt = selected_tracks_bt_target.reshape(-1, len(self.track_fields))
 
                 # sim
-                selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
-                selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
+                selected_tracks_bt_sim = selected_tracks_bt_sim.reshape(-1, len(self.track_fields))
+
+                selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
+                selected_tracks_tgt = jax.device_put(selected_tracks_bt_tgt)
+
+                ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
 
                 def loss_wrapper(args):
                     # Update the current params with the new values
@@ -711,16 +710,17 @@ class MinuitFitter(ParamFitter):
                 # Update the current params with the new values
                 self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
                 avg_loss = 0
-                for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
+                for i, (selected_tracks_bt_target, selected_tracks_bt_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
                     # target
-                    selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
-                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
-
-                    ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
+                    selected_tracks_bt_tgt = selected_tracks_bt_target.reshape(-1, len(self.track_fields))
 
                     # sim
-                    selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
-                    selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
+                    selected_tracks_bt_sim = selected_tracks_bt_sim.reshape(-1, len(self.track_fields))
+
+                    selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
+                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_tgt)
+
+                    ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
 
                     loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_unique_pixels, ref_ticks, with_grad=False)
                     avg_loss += loss_val
@@ -730,16 +730,17 @@ class MinuitFitter(ParamFitter):
                 # Update the current params with the new values
                 self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
                 avg_grad = [0 for _ in range(len(self.relevant_params_list))]
-                for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
+                for i, (selected_tracks_bt_target, selected_tracks_bt_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
                     # target
-                    selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
-                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
-
-                    ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
+                    selected_tracks_bt_tgt = selected_tracks_bt_target.reshape(-1, len(self.track_fields))
 
                     # sim
-                    selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
-                    selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
+                    selected_tracks_bt_sim = selected_tracks_bt_sim.reshape(-1, len(self.track_fields))
+
+                    selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
+                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_tgt)
+
+                    ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
 
                     _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_unique_pixels, ref_ticks, with_loss=False)
                     avg_grad = [getattr(grads, key) + avg_grad[i] for i, key in enumerate(self.relevant_params_list)]

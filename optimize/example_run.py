@@ -7,13 +7,12 @@ import argparse
 import yaml
 import sys, os
 import traceback
-from torch.utils.data import DataLoader
 import json
 import cProfile
 import jax
 
 from .fit_params import GradientDescentFitter, LikelihoodProfiler, MinuitFitter
-from .dataio import TracksDataset
+from .dataio import TracksDataset, DataLoader
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -79,13 +78,11 @@ def main(config):
 
     tracks_dataloader_sim = DataLoader(dataset_sim,
                                   shuffle=config.data_shuffle, 
-                                  batch_size=batch_sz,
-                                  pin_memory=True, num_workers=config.num_workers)
+                                  batch_size=batch_sz)
 
     tracks_dataloader_target = DataLoader(dataset_target,
                                   shuffle=config.data_shuffle,
-                                  batch_size=batch_sz,
-                                  pin_memory=True, num_workers=config.num_workers)
+                                  batch_size=batch_sz)
 
     # check if tracks_dataloader_sim and tracks_dataloader_target have the same size
     if len(tracks_dataloader_sim) != len(tracks_dataloader_target):
@@ -160,8 +157,6 @@ if __name__ == '__main__':
     parser.add_argument("--pixel_layouts", dest="pixel_layouts",
                         default="larndsim/pixel_layouts/multi_tile_layout-2.2.16.yaml",
                         help="Path to pixel layouts YAML file")
-    parser.add_argument('--num_workers', type=int, default=4,
-                        help='The number of worker threads to use for the dataloader.')
     parser.add_argument("--lr", dest="lr", default=1, type=float,
                         help="Learning rate -- used for all params")
     parser.add_argument("--batch_sz", dest="batch_sz", default=1, type=int,
@@ -240,8 +235,8 @@ if __name__ == '__main__':
     parser.add_argument('--non_deterministic', default=False, action="store_true", help='Make the computation slightly non-deterministic for faster computation')
     parser.add_argument('--debug_nans', default=False, action="store_true", help='Debug NaNs (much slower)')
     parser.add_argument('--cpu_only', default=False, action="store_true", help='Run on CPU only')
-    parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'random'],
-                        help='Strategy to choose the seed for the simulation. It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs) or "random" (different between target and sim and random across epochs).')
+    parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'random', 'constant'],
+                        help='Strategy to choose the seed for the simulation (the seed for target is the batch id). It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs), "random" (different between target and sim and random across epochs), "constant" (the seed is constant across batches).')
     parser.add_argument('--fit_type', type=str, choices=['chain', 'scan', 'minuit'], required=True)
     parser.add_argument('--minimizer_strategy', type=int, choices=[0, 1, 2], default=1, help='Minimizer strategy for Minuit')
     parser.add_argument('--minimizer_tol', type=float, default=1e-4, help='Minimizer tolerance for Minuit')

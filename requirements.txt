@@ -6,3 +6,5 @@ optax
 flax
 matplotlib
 iminuit
+sphinx_rtd_theme
+rtds_action
