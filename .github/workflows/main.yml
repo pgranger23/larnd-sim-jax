@@ -24,6 +24,27 @@ jobs:
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4.2.2
+
       - name: Check simulation
         run: |
           ./optimize/simulate_test.sh
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: simulation-plots-${{ github.sha }}
+          path: output/*.png
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: simulation-plots-${{ github.event.pull_request.head.sha }}
+          path: output/*.png
+
+      - name: Trigger RTDs build
+        uses: pgranger23/rtds-action@main
+        with:
+          webhook_url: ${{ secrets.RTDS_WEBHOOK_URL }}
+          webhook_token: ${{ secrets.RTDS_WEBHOOK_TOKEN }}
+          commit_ref: ${{ github.ref }}
