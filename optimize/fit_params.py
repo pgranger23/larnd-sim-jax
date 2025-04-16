@@ -653,6 +653,21 @@ class MinuitFitter(ParamFitter):
         )
         self.minimizer.print_level = 2  # 0, 1 or 2. Verbosity level
 
+    def prepare_fit(self):
+        self.training_history["minuit_result"] = []
+        return super().prepare_fit()
+
+    def push_minuit_result(self, result):
+        result_dict = {
+            "fval": result.fval,
+            "edm": result.fmin.edm,
+            "covariance": result.covariance,
+            "params": result.values.to_dict(),
+            "errors": result.errors.to_dict(),
+            "valid": result.valid,
+        }
+        self.training_history["minuit_result"].append(result_dict)
+
     def fit(self, dataloader_sim, dataloader_target, **kwargs):
         self.prepare_fit()
         logger.info("Using the fitter in a Minuit mode.")
@@ -687,7 +702,8 @@ class MinuitFitter(ParamFitter):
                     return [getattr(grads, key) for key in self.relevant_params_list]
 
                 self.configure_minimizer(loss_wrapper, grad_wrapper)
-                self.minimizer.migrad()
+                result = self.minimizer.migrad()
+                self.push_minuit_result(result)
 
         else:
             # Joint fit
@@ -730,7 +746,11 @@ class MinuitFitter(ParamFitter):
                 return [g/len(dataloader_target) for g in avg_grad]
 
             self.configure_minimizer(loss_wrapper, grad_wrapper)
-            self.minimizer.migrad()
+            result = self.minimizer.migrad()
+            self.push_minuit_result(result)
+        
+        with open(f'fit_result/{self.test_name}/history_minuit_{self.out_label}.pkl', "wb") as f_history:
+            pickle.dump(self.training_history, f_history)
 
 
 
