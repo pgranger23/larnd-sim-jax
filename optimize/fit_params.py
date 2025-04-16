@@ -4,7 +4,6 @@ sys.path.insert(0, larndsim_dir)
 import shutil
 import pickle
 import numpy as np
-# from .utils import get_id_map, all_sim, embed_adc_list
 from .ranges import ranges
 from larndsim.sim_jax import simulate, simulate_parametrized, get_size_history
 from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc
@@ -12,7 +11,6 @@ from larndsim.consts_jax import build_params_class, load_detector_properties
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
 import logging
-import torch
 import optax
 import jax
 import jax.numpy as jnp
@@ -404,18 +402,17 @@ class ParamFitter:
                         new_param_values[param] = steps_grids[i][epoch]
                     logger.info(f"Stepping parameter values: {new_param_values}")
                     self.current_params = self.current_params.replace(**new_param_values)
-                for i, (selected_tracks_bt_torch_target, selected_tracks_bt_torch_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
+                for i, (selected_tracks_bt_target, selected_tracks_bt_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
                     start_time = time()
 
-                    #Convert torch tracks to jax
                     # target
-                    selected_tracks_bt_torch_tgt = torch.flatten(selected_tracks_bt_torch_target, start_dim=0, end_dim=1)
+                    selected_tracks_bt_tgt = selected_tracks_bt_target.reshape(-1, len(self.track_fields))
 
                     # sim
-                    selected_tracks_bt_torch_sim = torch.flatten(selected_tracks_bt_torch_sim, start_dim=0, end_dim=1)
+                    selected_tracks_bt_sim = selected_tracks_bt_sim.reshape(-1, len(self.track_fields))
 
-                    selected_tracks_sim = jax.device_put(selected_tracks_bt_torch_sim.numpy())
-                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_torch_tgt.numpy())
+                    selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
+                    selected_tracks_tgt = jax.device_put(selected_tracks_bt_tgt)
 
                     #Simulate the output for the whole batch
                     loss_ev = []

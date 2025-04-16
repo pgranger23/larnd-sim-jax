@@ -1,20 +1,51 @@
 import h5py
 import numpy as np
-import torch
-from torch.utils.data import Dataset
 from numpy.lib import recfunctions as rfn
 import random
 import logging
+import jax.numpy as jnp
+from jax import vmap
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-def torch_from_structured(tracks):
-    tracks_np = rfn.structured_to_unstructured(tracks, copy=True, dtype=np.float32)
-    return torch.from_numpy(tracks_np).float()
+class DataLoader:
+    def __init__(self, dataset, batch_size, shuffle=False, seed=42):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.seed = seed
+        self.index = 0
+        self.data_size = len(dataset)
+        self.indices = np.arange(self.data_size)
+        if self.shuffle:
+            self.rng = random.PRNGKey(self.seed)
+            self.indices = random.permutation(self.rng, self.indices)
 
-def structured_from_torch(tracks_torch, dtype):
-    return rfn.unstructured_to_structured(tracks_torch.cpu().numpy(), dtype=dtype)
+    def __iter__(self):
+        self.index = 0
+        if self.shuffle:
+            self.rng = random.PRNGKey(self.seed)
+            self.indices = random.permutation(self.rng, self.indices)
+        return self
+
+    def __next__(self):
+        if self.index >= self.data_size:
+            raise StopIteration
+
+        # Get the indices for the current batch
+        batch_indices = self.indices[self.index:self.index + self.batch_size]
+        batch_data = [self.dataset[i] for i in batch_indices]
+
+        # Convert batch data to JAX arrays
+        batch_data = jnp.array(batch_data)
+
+        self.index += self.batch_size
+        return batch_data
+
+def jax_from_structured(tracks):
+    tracks_np = rfn.structured_to_unstructured(tracks, copy=True, dtype=np.float32)
+    return jnp.array(tracks_np).astype(jnp.float32)
 
 def chop_tracks(tracks, fields, precision=0.001):
     def split_track(track, nsteps, length, direction, i):
@@ -65,7 +96,29 @@ def chop_tracks(tracks, fields, precision=0.001):
     new_tracks = np.vstack([split_track(tracks[i], nsteps[i], length[i], direction[i], i) for i in range(tracks.shape[0])])
     return new_tracks
 
-class TracksDataset(Dataset):
+def pad_sequence(sequences, batch_first=False, padding_value=0.0):
+    # Determine the maximum length of the sequences
+    max_len = max(seq.shape[0] for seq in sequences)
+
+    # Create a function to pad a single sequence
+    def pad_single_sequence(seq):
+        # Calculate the amount of padding needed
+        padding_shape = (max_len - seq.shape[0],) + seq.shape[1:]
+        # Create the padding array
+        padding = jnp.full(padding_shape, padding_value, dtype=seq.dtype)
+        # Concatenate the sequence with the padding
+        return jnp.concatenate([seq, padding], axis=0)
+
+    # Pad all sequences
+    padded_sequences = vmap(pad_single_sequence)(sequences)
+
+    # Transpose dimensions if batch_first is True
+    if batch_first:
+        padded_sequences = padded_sequences.transpose(1, 0, 2)
+
+    return padded_sequences
+
+class TracksDataset:
     def __init__(self, filename, ntrack, max_nbatch=None, swap_xz=True, seed=3, random_ntrack=False, track_len_sel=2., 
                  max_abs_costheta_sel=0.966, min_abs_segz_sel=15., track_z_bound=28., max_batch_len=None, print_input=False,
                  chopped=True, pad=True, electron_sampling_resolution=0.001):
@@ -85,7 +138,6 @@ class TracksDataset(Dataset):
             tracks['z_start'] = x_start
             tracks['z_end'] = x_end
             tracks['z'] = x
-
         
 
         if not 't0' in tracks.dtype.names:
@@ -131,7 +183,7 @@ class TracksDataset(Dataset):
         index = set(map(tuple, keys))  # Ensure index is a set of tuples
         #mask = np.array([tuple(row) in index for row in keys])
 
-        all_tracks = [torch_from_structured(selected_tracks[mask])]
+        all_tracks = [jax_from_structured(selected_tracks[mask])]
         index = np.array(list(index))
 
         # all fit with a sub-set of tracks
@@ -191,19 +243,19 @@ class TracksDataset(Dataset):
             if max_nbatch:
                 batch_indices = batch_indices[:max_nbatch]
 
-            # Convert batches to PyTorch tensors
-            batches = [torch.tensor(segments[idx]) for idx in batch_indices if idx.size > 0]
+            # Create JaX batches
+            batches = [jnp.array(segments[idx]) for idx in batch_indices if idx.size > 0]
             tot_data_length = sum(lengths[idx].sum() for idx in batch_indices if idx.size > 0)
             if chopped:
-                fit_tracks = [torch.tensor(chop_tracks(batch, self.track_fields, electron_sampling_resolution)) for batch in batches]
+                fit_tracks = [jnp.array(chop_tracks(batch, self.track_fields, electron_sampling_resolution)) for batch in batches]
             else:
-                fit_tracks = [torch.tensor(batch) for batch in batches]
+                fit_tracks = [jnp.array(batch) for batch in batches]
 
             print(f"-- The used data includes a total track length of {tot_data_length} cm.")
             print(f"-- The maximum batch track length is {max_batch_len} cm.")
             print(f"-- There are {len(batches)} different batches in total.")
         if pad:
-            self.tracks = torch.nn.utils.rnn.pad_sequence(fit_tracks, batch_first=True, padding_value = 0)
+            self.tracks = pad_sequence(fit_tracks, batch_first=True, padding_value = 0)
         else:
             self.tracks = fit_tracks
 

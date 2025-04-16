@@ -7,13 +7,12 @@ import argparse
 import yaml
 import sys, os
 import traceback
-from torch.utils.data import DataLoader
 import json
 import cProfile
 import jax
 
 from .fit_params import ParamFitter
-from .dataio import TracksDataset
+from .dataio import TracksDataset, DataLoader
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -79,13 +78,11 @@ def main(config):
 
     tracks_dataloader_sim = DataLoader(dataset_sim,
                                   shuffle=config.data_shuffle, 
-                                  batch_size=batch_sz,
-                                  pin_memory=True, num_workers=config.num_workers)
+                                  batch_size=batch_sz)
 
     tracks_dataloader_target = DataLoader(dataset_target,
                                   shuffle=config.data_shuffle,
-                                  batch_size=batch_sz,
-                                  pin_memory=True, num_workers=config.num_workers)
+                                  batch_size=batch_sz)
 
     # check if tracks_dataloader_sim and tracks_dataloader_target have the same size
     if len(tracks_dataloader_sim) != len(tracks_dataloader_target):
@@ -137,8 +134,6 @@ if __name__ == '__main__':
                         help="Path to pixel layouts YAML file")
     parser.add_argument("--load_checkpoint", dest="load_checkpoint", type=str, default=None,
                         help="Path to checkpoint Pickle (pkl) file")
-    parser.add_argument('--num_workers', type=int, default=4,
-                        help='The number of worker threads to use for the dataloader.')
     parser.add_argument("--lr", dest="lr", default=1, type=float,
                         help="Learning rate -- used for all params")
     parser.add_argument("--batch_sz", dest="batch_sz", default=1, type=int,
