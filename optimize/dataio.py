@@ -241,7 +241,7 @@ class TracksDataset:
                 batch_indices = batch_indices[:max_nbatch]
 
             # Create JaX batches
-            batches = [jnp.array(segments[idx]) for idx in batch_indices if idx.size > 0]
+            batches = [segments[idx] for idx in batch_indices if idx.size > 0]
             tot_data_length = sum(lengths[idx].sum() for idx in batch_indices if idx.size > 0)
             if chopped:
                 fit_tracks = [jnp.array(chop_tracks(batch, self.track_fields, electron_sampling_resolution)) for batch in batches]
