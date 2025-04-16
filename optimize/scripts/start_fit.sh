@@ -71,7 +71,6 @@ apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} python3 -m op
     --min_abs_segz_sel 15. \
     --no-noise-guess \
     --data_seed ${DATA_SEED} \
-    --num_workers 0 \
     --out_label p_5000_6par_noise_tgt_e_sampling_${SAMPLING_STEP}cm_seed_strategy_${SEED_STRATEGY}_grad_clip${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target_${UUID} \
     --test_name fit_noise \
     --seed ${TARGET_SEED} \

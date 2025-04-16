@@ -15,8 +15,7 @@ WORKDIR /work
 
 RUN python3 -m pip install --no-cache-dir  --upgrade pip && \
     python3 -m pip install --no-cache-dir "jax[cuda]" \
-        -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html && \
-    python3 -m pip install --no-cache-dir torch torchvision torchaudio -f https://download.pytorch.org/whl/cu111/torch_stable.html
+        -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
 RUN python3 -m pip install --no-cache-dir jupyter
 

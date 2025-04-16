@@ -20,7 +20,6 @@ singularity exec -B /sdf --nv ${SIF_FILE} \
     --data_sz 5 \
     --batch_sz 5 \
     --no-noise \
-    --num_workers 2 \
     --track_zlen_sel 0 \
     --out_label seed${seed}_${PARAM}_adam_SDTW_lr1e-2_5trk_test \
     --iterations 100 \

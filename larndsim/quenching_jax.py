@@ -35,7 +35,7 @@ def quench(params, tracks, mode, fields):
     Birks (Amoruso, et al NIM A 523 (2004) 275).
 
     Args:
-        tracks (:obj:`numpy.ndarray`, `pyTorch/Tensorflow/JAX Tensor`): array containing the tracks segment information
+        tracks (:obj:`numpy.ndarray`, `JAX Tensor`): array containing the tracks segment information
         mode (int): recombination model.
         fields (list): an ordered string list of field/column name of the tracks structured array
     """

@@ -62,7 +62,6 @@ apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} python3 -m op
     --min_abs_segz_sel 15. \
     --no-noise \
     --data_seed ${DATA_SEED} \
-    --num_workers 0 \
     --out_label ${PARAM}_p_1E5_loss_scan_no_noise_bt${BATCH_SIZE}_dtsd${DATA_SEED}_adam_${LOSS}_nticks_chamfer_sum_diff_no_drift_${UUID} \
     --test_name scan\
     --seed ${TARGET_SEED} \
