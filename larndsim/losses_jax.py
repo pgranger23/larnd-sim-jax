@@ -127,8 +127,8 @@ def sdtw_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw):
     return sdtw_loss(ticks, ticks_ref, dstw)
 
 def sdtw_time_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw, alpha=0.5):
-    loss_adc, _ = sdtw_adc(adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw)
-    loss_time, _ = sdtw_time(adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw)
+    loss_adc, _ = sdtw_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw)
+    loss_time, _ = sdtw_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw)
     return alpha * loss_adc + (1 - alpha) * loss_time, dict()
 
 @jit

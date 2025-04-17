@@ -17,7 +17,7 @@ author = 'Pierre Granger'
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
-extensions = ['sphinx.ext.autodoc']
+extensions = ['sphinx.ext.napoleon', 'sphinx.ext.autodoc', 'rtds_action']
 
 templates_path = ['_templates']
 exclude_patterns = []
@@ -29,3 +29,16 @@ exclude_patterns = []
 
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
+
+# The name of your GitHub repository
+rtds_action_github_repo = "pgranger23/larnd-sim-jax"
+
+# The path where the artifact should be extracted
+# Note: this is relative to the conf.py file!
+rtds_action_path = "debug-plots"
+
+# The "prefix" used in the `upload-artifact` step of the action
+rtds_action_artifact_prefix = "simulation-plots-"
+
+# A GitHub personal access token is required
+rtds_action_github_token = os.environ["GITHUB_TOKEN"]
