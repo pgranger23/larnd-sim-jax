@@ -71,7 +71,7 @@ class ParamFitter:
                  out_label="", test_name="this_test", norm_scheme="divide", max_clip_norm_val=None, clip_from_range=False, optimizer_fn="Adam",
                  no_adc=False, shift_no_fit=[], link_vdrift_eField=False,
                  set_target_vals=[], vary_init=False, seed_init=30, profile_gradient = False, scan_tgt_nom = False, epoch_size=1, keep_in_memory=False,
-                 compute_target_hessian=False, sim_seed_strategy="different",
+                 compute_target_hessian=False, sim_seed_strategy="different", adc_norm=10,
                  config = {}):
         if optimizer_fn == "Adam":
             self.optimizer_fn = optax.adam
@@ -216,7 +216,7 @@ class ParamFitter:
             "mse_adc": (mse_adc, {}),
             "mse_time": (mse_time, {}),
             "mse_time_adc": (mse_time_adc, {'alpha': 0.5}),
-            "chamfer_3d": (chamfer_3d, {}),
+            "chamfer_3d": (chamfer_3d, {'adc_norm': adc_norm}),
             "sdtw_adc": (sdtw_adc, {'gamma': 1.}),
             "sdtw_time": (sdtw_time, {'gamma': 1.}),
             "sdtw_time_adc": (sdtw_time_adc, {'gamma': 1., 'alpha': 0.5})
@@ -462,6 +462,8 @@ class ParamFitter:
                         rngkey = i
                     elif self.sim_seed_strategy == "different":
                         rngkey = -i
+                    elif self.sim_seed_strategy == "different_epoch":
+                        rngkey = -i - epoch * 10000
                     elif self.sim_seed_strategy == "random":
                         rngkey = np.random.randint(0, 1000000)
                     elif self.sim_seed_strategy == "constant":

@@ -108,7 +108,7 @@ def main(config):
                             link_vdrift_eField=config.link_vdrift_eField,
                             set_target_vals=config.set_target_vals, vary_init=config.vary_init, seed_init=config.seed_init, compute_target_hessian=config.compute_target_hessian,
                             config = config, profile_gradient=config.profile_gradient, scan_tgt_nom=config.scan_tgt_nom, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory,
-                            sim_seed_strategy=config.sim_seed_strategy)
+                            sim_seed_strategy=config.sim_seed_strategy, adc_norm=config.adc_norm)
     param_fit.make_target_sim(seed=config.seed, fixed_range=config.fixed_range)
 
     # jax.profiler.start_trace("/tmp/tensorboard")
@@ -227,8 +227,9 @@ if __name__ == '__main__':
     parser.add_argument('--non_deterministic', default=False, action="store_true", help='Make the computation slightly non-deterministic for faster computation')
     parser.add_argument('--debug_nans', default=False, action="store_true", help='Debug NaNs (much slower)')
     parser.add_argument('--cpu_only', default=False, action="store_true", help='Run on CPU only')
-    parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'random', 'constant'],
-                        help='Strategy to choose the seed for the simulation (the seed for target is the batch id). It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs), "random" (different between target and sim and random across epochs), "constant" (the seed is constant across batches).')
+    parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'different_epoch', 'random', 'constant'],
+                        help='Strategy to choose the seed for the simulation (the seed for target is the batch id). It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs), "different_epoch" (different for target and sim, and in the simulation the key is different per epoch)"random" (different between target and sim and random across epochs), "constant" (the seed is constant across batches).')
+    parser.add_argument('--adc_norm', type=float, required=True, help='ADC normalisation wrt to position (cm)')
 
     try:
         args = parser.parse_args()
