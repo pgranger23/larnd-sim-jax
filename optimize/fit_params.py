@@ -66,7 +66,8 @@ class ParamFitter:
                  out_label="", test_name="this_test",
                  shift_no_fit=[], set_target_vals=[], vary_init=False, keep_in_memory=False,
                  compute_target_hessian=False, sim_seed_strategy="different",
-                 target_seed=0, target_fixed_range=None, 
+                 target_seed=0, target_fixed_range=None,
+                 adc_norm=10, match_z=True,
                  diffusion_in_current_sim=False,
                  config = {}):
         
@@ -122,7 +123,7 @@ class ParamFitter:
             "mse_adc": (mse_adc, {}),
             "mse_time": (mse_time, {}),
             "mse_time_adc": (mse_time_adc, {'alpha': 0.5}),
-            "chamfer_3d": (chamfer_3d, {}),
+            "chamfer_3d": (chamfer_3d, {'adc_norm': adc_norm, 'match_z': match_z}),
             "sdtw_adc": (sdtw_adc, {'gamma': 1.}),
             "sdtw_time": (sdtw_time, {'gamma': 1.}),
             "sdtw_time_adc": (sdtw_time_adc, {'gamma': 1., 'alpha': 0.5})
@@ -292,6 +293,8 @@ class ParamFitter:
             rngkey = i
         elif self.sim_seed_strategy == "different":
             rngkey = -i
+        elif self.sim_seed_strategy == "different_epoch":
+            rngkey = -i - epoch * 10000
         elif self.sim_seed_strategy == "random":
             rngkey = np.random.randint(0, 1000000)
         elif self.sim_seed_strategy == "constant":
