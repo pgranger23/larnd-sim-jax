@@ -105,6 +105,7 @@ def main(config):
                                 loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
                                 set_target_vals=config.set_target_vals, vary_init=config.vary_init, compute_target_hessian=config.compute_target_hessian,
                                 config = config, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory,
+                                diffusion_in_current_sim=config.diffusion_in_current_sim,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,)
     elif config.fit_type == "scan":
         param_fit = LikelihoodProfiler(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
@@ -115,6 +116,7 @@ def main(config):
                                 loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
                                 set_target_vals=config.set_target_vals, vary_init=config.vary_init,
                                 config = config, keep_in_memory=config.keep_in_memory,
+                                diffusion_in_current_sim=config.diffusion_in_current_sim,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,
                                 scan_tgt_nom=config.scan_tgt_nom)
     elif config.fit_type == "minuit":
@@ -126,6 +128,7 @@ def main(config):
                                 loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
                                 set_target_vals=config.set_target_vals, vary_init=config.vary_init,
                                 config = config, keep_in_memory=config.keep_in_memory,
+                                diffusion_in_current_sim=config.diffusion_in_current_sim,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,
                                 minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits)
 
@@ -241,6 +244,8 @@ if __name__ == '__main__':
     parser.add_argument('--minimizer_strategy', type=int, choices=[0, 1, 2], default=1, help='Minimizer strategy for Minuit')
     parser.add_argument('--minimizer_tol', type=float, default=1e-4, help='Minimizer tolerance for Minuit')
     parser.add_argument('--separate_fits', default=False, action="store_true", help='Separate fits for each batch')
+    parser.add_argument('--diffusion_in_current_sim', action='store_true', help='Use diffusion in current simulation')
+
 
     try:
         args = parser.parse_args()
