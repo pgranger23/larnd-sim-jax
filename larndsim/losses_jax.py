@@ -153,7 +153,7 @@ def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref, adc
     drift_masked_ref = jnp.pad(drift.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
     adcs_masked_ref = jnp.pad(adcs_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=0)/adc_norm
 
-    loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, pixel_z_masked, adcs_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, pixel_z_masked_ref, adcs_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
+    loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked, adcs_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref, adcs_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
     # loss = softmin_charge_aware_chamfer(jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, pixel_z_masked_ref, adcs_masked_ref/jnp.sum(adcs_masked_ref)), axis=-1), jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, pixel_z_masked, adcs_masked/jnp.sum(adcs_masked)), axis=-1), adcs_masked_ref, adcs_masked)
 
     return loss, dict()
