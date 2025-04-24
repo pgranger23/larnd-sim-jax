@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 from jax import jit, vmap
 import jax
+from functools import partial
 from larndsim.sim_jax import pad_size, simulate, simulate_parametrized
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
@@ -37,7 +38,7 @@ def mse_time_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, alpha=
     loss_time, _ = mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
     return alpha * loss_adc + (1 - alpha) * loss_time, dict()
 
-@jit
+@partial(jit, static_argnames=['match_z'])
 def prepare_hits(params, adcs, pixels, ticks, match_z=False):
     pixel_x, pixel_y, pixel_plane, eventID = id2pixel(params, pixels)
     pixel_coords = get_pixel_coordinates(params, pixel_x, pixel_y, pixel_plane)
