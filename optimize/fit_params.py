@@ -481,7 +481,7 @@ class GradientDescentFitter(ParamFitter):
 
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
                     selected_tracks_tgt = jax.device_put(selected_tracks_bt_tgt)
-                    print(selected_tracks_tgt)
+
                     ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
                     loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_unique_pixels, ref_ticks)
 

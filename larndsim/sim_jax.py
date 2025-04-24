@@ -97,7 +97,7 @@ def shift_tracks(params, tracks, fields):
     return shifted_tracks
 
 
-@partial(jit, static_argnames=['fields'])
+@partial(jit, static_argnames=['fields', 'apply_long_diffusion'])
 def simulate_drift(params, tracks, fields, rngkey, apply_long_diffusion=True):
     #Shifting tracks
     new_tracks = shift_tracks(params, tracks, fields)
@@ -145,7 +145,7 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     adcs = digitize(params, integral)
     return adcs, ticks, start_ticks
 
-@partial(jit, static_argnames=['fields'])
+@partial(jit, static_argnames=['fields', 'diffusion_in_current_sim'])
 def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, diffusion_in_current_sim, fields):
     xpitch, ypitch, plane, eid = id2pixel(params, pIDs)
     

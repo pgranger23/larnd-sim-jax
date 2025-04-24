@@ -132,7 +132,7 @@ def get_hit_z(params, ticks, plane):
 
 
 # @annotate_function
-@partial(jit, static_argnames=['fields'])
+@partial(jit, static_argnames=['fields', 'apply_long_diffusion'])
 def generate_electrons(tracks, fields, rngkey, apply_long_diffusion=True):
     """
     Generate electrons from the tracks.
@@ -345,7 +345,7 @@ def current_model_diff(t, t0, x, y, dt, sigma):
     return a * integrated_expon_diff(-t, -shifted_t0, b, dt=dt, diff=sigma) + (1 - a) * integrated_expon_diff(-t, -shifted_t0, c, dt=dt, diff=sigma)
 
 # @annotate_function
-@partial(jit, static_argnames=['fields'])
+@partial(jit, static_argnames=['fields', 'apply_diffusion'])
 def current_mc(params, electrons, pixels_coord, apply_diffusion, fields):
     nticks = int(5/params.t_sampling) + 1
     ticks = jnp.linspace(0, 5, nticks).reshape((1, nticks)).repeat(electrons.shape[0], axis=0)#
