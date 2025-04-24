@@ -64,7 +64,7 @@ jobs:
       - name: 'Upload Artifact'
         uses: actions/upload-artifact@v4
         with:
-          name: scan-result
+          name: fit-result
           path: fit_result/**/*.pkl
           if-no-files-found: error
 
@@ -101,7 +101,7 @@ jobs:
       - name: 'Upload Artifact'
         uses: actions/upload-artifact@v4
         with:
-          name: scan-result
+          name: minuit-result
           path: fit_result/**/*.pkl
           if-no-files-found: error
 
