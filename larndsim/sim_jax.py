@@ -98,7 +98,7 @@ def shift_tracks(params, tracks, fields):
 
 
 @partial(jit, static_argnames=['fields'])
-def simulate_drift(params, tracks, fields, rngkey):
+def simulate_drift(params, tracks, fields, rngkey, apply_long_diffusion=True):
     #Shifting tracks
     new_tracks = shift_tracks(params, tracks, fields)
     #Quenching and drifting
@@ -106,7 +106,7 @@ def simulate_drift(params, tracks, fields, rngkey):
     new_tracks = drift(params, new_tracks, fields)
 
     #Simulating the electron generation according to the diffusion coefficients
-    electrons = generate_electrons(new_tracks, fields, rngkey)
+    electrons = generate_electrons(new_tracks, fields, rngkey, apply_long_diffusion)
     #Getting the pixels where the electrons are
     pIDs = get_pixels(params, electrons, fields)
 
@@ -146,11 +146,11 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     return adcs, ticks, start_ticks
 
 @partial(jit, static_argnames=['fields'])
-def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, fields):
+def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, diffusion_in_current_sim, fields):
     xpitch, ypitch, plane, eid = id2pixel(params, pIDs)
     
     pixels_coord = get_pixel_coordinates(params, xpitch, ypitch, plane)
-    t0, signals = current_mc(params, electrons, pixels_coord, fields)
+    t0, signals = current_mc(params, electrons, pixels_coord, diffusion_in_current_sim, fields)
 
     pix_renumbering = jnp.searchsorted(unique_pixels, pIDs)
 
@@ -165,17 +165,34 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey
     adcs = digitize(params, integral)
     return adcs, ticks, pix_renumbering, start_ticks
 
-def simulate_parametrized(params, tracks, fields, rngseed = 0):
+def simulate_parametrized(params, tracks, fields, rngseed = 0, diffusion_in_current_sim = False):
+    """
+    Simulates the signal from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
+    Args:
+        params: Parameters of the simulation.
+        tracks: Tracks of the particles.
+        fields: Fields of the tracks.
+        rngseed: Random seed for the simulation.
+        diffusion_in_current_sim: If True, use diffusion in current simulation.
+    Returns:
+        adcs: ADC values.
+        unique_pixels: Unique pixels.
+        ticks: Ticks of the signals.
+        pix_renumbering: Renumbering of the pixels.
+        electrons: Electrons generated.
+        start_ticks: Start ticks of the signals.
+    """
+
     master_key = jax.random.key(rngseed)
     rngkey1, rngkey2 = jax.random.split(master_key)
-    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1)
+    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1, not diffusion_in_current_sim)
     pIDs = pIDs.ravel()
     unique_pixels = jnp.unique(pIDs)
     padded_size = pad_size(unique_pixels.shape[0], "unique_pixels")
 
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
-    adcs, ticks, pix_renumbering, start_ticks = simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, fields)
+    adcs, ticks, pix_renumbering, start_ticks = simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, diffusion_in_current_sim, fields)
     return adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks
 
 def simulate(params, response, tracks, fields, rngseed = 0):

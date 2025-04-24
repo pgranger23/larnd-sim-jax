@@ -67,6 +67,7 @@ class ParamFitter:
                  shift_no_fit=[], set_target_vals=[], vary_init=False, keep_in_memory=False,
                  compute_target_hessian=False, sim_seed_strategy="different",
                  target_seed=0, target_fixed_range=None, 
+                 diffusion_in_current_sim=False,
                  config = {}):
         
         self.shift_no_fit = shift_no_fit
@@ -77,6 +78,7 @@ class ParamFitter:
         self.vary_init = vary_init
         self.target_seed = target_seed
         self.target_fixed_range = target_fixed_range
+        self.diffusion_in_current_sim = diffusion_in_current_sim
 
         self.out_label = out_label
         self.test_name = test_name
@@ -251,15 +253,17 @@ class ParamFitter:
             if self.current_mode == 'lut':
                 ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate(self.target_params, self.response, tracks, self.track_fields, i) #Setting a different random seed for each target
             else:
-                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate_parametrized(self.target_params, tracks, self.track_fields, i) #Setting a different random seed for each target
+                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate_parametrized(self.target_params, tracks, self.track_fields, i, self.diffusion_in_current_sim) #Setting a different random seed for each target
 
             if self.compute_target_hessian:
-                logger.info("Computing target hessian")
-                if self.current_mode == 'lut':
-                    hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.target_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
-                else:
-                    hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
-                self.training_history['hessian'].append(format_hessian(hess))
+                logger.error("Computing target hessian is not implemented yet")
+                raise NotImplementedError("Computing target hessian is not implemented yet")
+                # logger.info("Computing target hessian")
+                # if self.current_mode == 'lut':
+                #     hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.target_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
+                # else:
+                #     hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
+                # self.training_history['hessian'].append(format_hessian(hess))
 
             # embed_target = embed_adc_list(self.sim_target, target, pix_target, ticks_list_targ)
             #Saving the target for the batch
@@ -477,6 +481,8 @@ class GradientDescentFitter(ParamFitter):
 
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
                     selected_tracks_tgt = jax.device_put(selected_tracks_bt_tgt)
+                    print(selected_tracks_tgt)
+                    ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
                     loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_unique_pixels, ref_ticks)
 
                     modified_grads = self.process_grads(grads) #Grads are modified ans applied in this function

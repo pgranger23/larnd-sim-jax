@@ -53,7 +53,7 @@ def main(config):
         response = load_lut(config)
         ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
     else:
-        ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
+        ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed, diffusion_in_current_sim=config.diffusion_in_current_sim)
 
     with h5py.File(config.output_file, 'w') as f:
         f.create_dataset('adc', data=ref)
@@ -84,6 +84,7 @@ if __name__ == '__main__':
     parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
     parser.add_argument('--noise', action='store_true', help='Add noise to the simulation')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
+    parser.add_argument('--diffusion_in_current_sim', action='store_true', help='Use diffusion in current simulation')
 
     try:
         args = parser.parse_args()
