@@ -28,7 +28,7 @@ python3 -m optimize.example_run \
     --no-noise-guess \
     --no-noise-target \
     --data_seed ${DATA_SEED} \
-    --out_label test${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target \
+    --out_label minuit_test${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target \
     --test_name fit_noise \
     --seed ${TARGET_SEED} \
     --optimizer_fn Adam \
