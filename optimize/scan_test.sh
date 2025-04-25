@@ -5,7 +5,7 @@
 TARGET_SEED=1
 PARAMS=optimize/scripts/params_test.yaml
 BATCH_SIZE=100
-ITERATIONS=10
+ITERATIONS=100
 MAX_CLIP_NORM_VAL=1
 DATA_SEED=1
 LOSS=chamfer_3d
@@ -43,6 +43,8 @@ python3 -m optimize.example_run \
     --mode 'parametrized' \
     --loss_fn ${LOSS} \
     --fit_type 'scan' \
-    --cpu_only
+    --sim_seed_strategy 'same' \
+    --cpu_only \
+    --scan_tgt_nom
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
 
