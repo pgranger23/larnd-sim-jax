@@ -11,6 +11,7 @@ from jax.nn import sigmoid
 from jax.scipy.stats import norm
 from functools import partial
 from larndsim.consts_jax import get_vdrift
+from jax.scipy.special import erfc, erf
 
 import logging
 
@@ -131,8 +132,19 @@ def get_hit_z(params, ticks, plane):
 
 
 # @annotate_function
-@partial(jit, static_argnames=['fields'])
-def generate_electrons(tracks, fields, rngkey):
+@partial(jit, static_argnames=['fields', 'apply_long_diffusion'])
+def generate_electrons(tracks, fields, rngkey, apply_long_diffusion=True):
+    """
+    Generate electrons from the tracks.
+
+    Args:
+        tracks: Tracks of the particles.
+        fields: Fields of the tracks.
+        rngkey: Random key for generating noise.
+        apply_long_diffusion: Whether to apply longitudinal diffusion.
+    Returns:
+        electrons: Generated electrons.
+    """
     sigmas = jnp.stack([tracks[:, fields.index("tran_diff")],
                         tracks[:, fields.index("tran_diff")],
                         tracks[:, fields.index("long_diff")]], axis=1)
@@ -140,7 +152,8 @@ def generate_electrons(tracks, fields, rngkey):
     electrons = tracks.copy()
     electrons = electrons.at[:, fields.index('x')].set(electrons[:, fields.index('x')] + rnd_pos[:, 0])
     electrons = electrons.at[:, fields.index('y')].set(electrons[:, fields.index('y')] + rnd_pos[:, 1])
-    electrons = electrons.at[:, fields.index('z')].set(electrons[:, fields.index('z')] + rnd_pos[:, 2])
+    if apply_long_diffusion:
+        electrons = electrons.at[:, fields.index('z')].set(electrons[:, fields.index('z')] + rnd_pos[:, 2])
 
     return electrons
 
@@ -181,19 +194,42 @@ def generate_electrons(tracks, fields, rngkey):
 
 #     return (centers_x, centers_y, centers_z), amplitudes
 
-# @partial(jit, static_argnames=['fields'])
-# def generate_electrons_distrib(tracks, fields):
-    
-#     sigmas = jnp.stack([tracks[:, fields.index("tran_diff")],
-#                         tracks[:, fields.index("tran_diff")],
-#                         tracks[:, fields.index("long_diff")]], axis=1)
-#     rnd_pos = random.normal(key, (tracks.shape[0], 3))*sigmas
-#     electrons = tracks.copy()
-#     electrons = electrons.at[:, fields.index('x')].set(electrons[:, fields.index('x')] + rnd_pos[:, 0])
-#     electrons = electrons.at[:, fields.index('y')].set(electrons[:, fields.index('y')] + rnd_pos[:, 1])
-#     electrons = electrons.at[:, fields.index('z')].set(electrons[:, fields.index('z')] + rnd_pos[:, 2])
 
-#     return electrons
+@jit
+def emg_pdf(x, mu, sigma, lambd):
+    """
+    Exponentially Modified Gaussian (EMG) PDF.
+
+    Parameters:
+    x (array-like): Input values.
+    mu (float): Mean of the Gaussian component.
+    sigma (float): Standard deviation of the Gaussian component.
+    lambd (float): Rate of the exponential component.
+
+    Returns:
+    array-like: EMG PDF values for the input x.
+    """
+    coeff = lambd / 2
+    exponent = coeff * (2 * mu + lambd * sigma**2 - 2 * x)
+    erfc_term = erfc((mu + lambd * sigma**2 - x) / (jnp.sqrt(2) * sigma))
+    pdf_values = coeff * jnp.exp(exponent) * erfc_term
+    return pdf_values
+
+
+@jit
+def integrated_expon_diff(x, loc=0, scale=1, diff=100, dt=1):
+    lambd = 1/scale
+    a = x - dt/2
+    b = x + dt/2
+
+    upper_values = 0.5*erf((b - loc)/(jnp.sqrt(2)*diff)) - emg_pdf(b, loc, diff, lambd)/lambd
+    lower_values = 0.5*erf((a - loc)/(jnp.sqrt(2)*diff)) - emg_pdf(a, loc, diff, lambd)/lambd
+
+    tick_values = (upper_values - lower_values)
+
+    tick_values = tick_values/(lower_values[..., 0] - upper_values[..., -1])[..., jnp.newaxis] #Normalize to 1
+
+    return tick_values/dt
 
 # @annotate_function
 @partial(jit, static_argnames=['fields'])
@@ -204,11 +240,11 @@ def get_pixels(params, electrons, fields):
     pos = jnp.stack([(electrons[:, fields.index("x")] - borders[:, 0, 0]) // params.pixel_pitch,
             (electrons[:, fields.index("y")] - borders[:, 1, 0]) // params.pixel_pitch], axis=1)
 
-    pixels = (pos + 0.5).astype(int)
+    pixels_int = pos.astype(int)
 
     X, Y = jnp.mgrid[-n_neigh:n_neigh+1, -n_neigh:n_neigh+1]
     shifts = jnp.vstack([X.ravel(), Y.ravel()]).T
-    pixels = pixels[:, jnp.newaxis, :] + shifts[jnp.newaxis, :, :]
+    pixels = pixels_int[:, jnp.newaxis, :] + shifts[jnp.newaxis, :, :]
 
     if "eventID" in fields:
         evt_id = "eventID"
@@ -275,9 +311,45 @@ def current_model(t, t0, x, y, dt):
 
     return a * integrated_expon(-t, -shifted_t0, b, dt=dt) + (1 - a) * integrated_expon(-t, -shifted_t0, c, dt=dt)
 
+@jit
+def current_model_diff(t, t0, x, y, dt, sigma):
+    """
+    Parametrization of the induced current on the pixel, which depends
+    on the of arrival at the anode (:math:`t_0`) and on the position
+    on the pixel pad.
+
+    Args:
+        t (float): time where we evaluate the current
+        t0 (float): time of arrival at the anode
+        x (float): distance between the point on the pixel and the pixel center
+            on the :math:`x` axis
+        y (float): distance between the point on the pixel and the pixel center
+            on the :math:`y` axis
+
+    Returns:
+        float: the induced current at time :math:`t`
+    """
+    B_params = (1.060, -0.909, -0.909, 5.856, 0.207, 0.207)
+    C_params = (0.679, -1.083, -1.083, 8.772, -5.521, -5.521)
+    D_params = (2.644, -9.174, -9.174, 13.483, 45.887, 45.887)
+    t0_params = (2.948, -2.705, -2.705, 4.825, 20.814, 20.814)
+
+    a = B_params[0] + B_params[1] * x + B_params[2] * y + B_params[3] * x * y + B_params[4] * x * x + B_params[
+        5] * y * y
+    b = C_params[0] + C_params[1] * x + C_params[2] * y + C_params[3] * x * y + C_params[4] * x * x + C_params[
+        5] * y * y
+    c = D_params[0] + D_params[1] * x + D_params[2] * y + D_params[3] * x * y + D_params[4] * x * x + D_params[
+        5] * y * y
+    shifted_t0 = t0 + t0_params[0] + t0_params[1] * x + t0_params[2] * y + \
+                    t0_params[3] * x * y + t0_params[4] * x * x + t0_params[5] * y * y
+
+    a = jnp.minimum(a, 1)
+
+    return a * integrated_expon_diff(-t, -shifted_t0, b, dt=dt, diff=sigma) + (1 - a) * integrated_expon_diff(-t, -shifted_t0, c, dt=dt, diff=sigma)
+
 # @annotate_function
-@partial(jit, static_argnames=['fields'])
-def current_mc(params, electrons, pixels_coord, fields):
+@partial(jit, static_argnames=['fields', 'apply_diffusion'])
+def current_mc(params, electrons, pixels_coord, apply_diffusion, fields):
     nticks = int(5/params.t_sampling) + 1
     ticks = jnp.linspace(0, 5, nticks).reshape((1, nticks)).repeat(electrons.shape[0], axis=0)#
 
@@ -294,8 +366,10 @@ def current_mc(params, electrons, pixels_coord, fields):
     t0 = t0 - t0_tick*params.t_sampling # Only taking the floating part of the ticks
 
     dt = 5./(nticks-1)
-
-    return t0_tick, current_model(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis], dt)*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))
+    if apply_diffusion:
+        return t0_tick, current_model_diff(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis], dt, electrons[:, fields.index("long_diff")].reshape((electrons.shape[0], 1)))*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))
+    else:
+        return t0_tick, current_model(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis], dt)*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))
 
 @partial(jit, static_argnames=['fields'])
 def current_lut(params, response, electrons, pixels_coord, fields):

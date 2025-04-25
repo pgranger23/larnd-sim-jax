@@ -48,3 +48,61 @@ jobs:
           webhook_url: ${{ secrets.RTDS_WEBHOOK_URL }}
           webhook_token: ${{ secrets.RTDS_WEBHOOK_TOKEN }}
           commit_ref: ${{ github.ref }}
+
+
+  test-fit:
+    runs-on: ubuntu-latest
+    container: pigranger/larndsim-jax:latest
+
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4.2.2
+      - name: Check fit
+        run: |
+          ./optimize/fit_test.sh
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fit-result
+          path: fit_result/**/*.pkl
+          if-no-files-found: error
+
+  test-scan:
+    runs-on: ubuntu-latest
+    container: pigranger/larndsim-jax:latest
+
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4.2.2
+      - name: Check fit
+        run: |
+          ./optimize/scan_test.sh
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-result
+          path: fit_result/**/*.pkl
+          if-no-files-found: error
+
+
+  test-minuit:
+    runs-on: ubuntu-latest
+    container: pigranger/larndsim-jax:latest
+
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4.2.2
+      - name: Check fit
+        run: |
+          ./optimize/minuit_test.sh
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: minuit-result
+          path: fit_result/**/*.pkl
+          if-no-files-found: error
+
+  

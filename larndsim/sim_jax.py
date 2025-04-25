@@ -97,8 +97,8 @@ def shift_tracks(params, tracks, fields):
     return shifted_tracks
 
 
-@partial(jit, static_argnames=['fields'])
-def simulate_drift(params, tracks, fields, rngkey):
+@partial(jit, static_argnames=['fields', 'apply_long_diffusion'])
+def simulate_drift(params, tracks, fields, rngkey, apply_long_diffusion=True):
     #Shifting tracks
     new_tracks = shift_tracks(params, tracks, fields)
     #Quenching and drifting
@@ -106,7 +106,7 @@ def simulate_drift(params, tracks, fields, rngkey):
     new_tracks = drift(params, new_tracks, fields)
 
     #Simulating the electron generation according to the diffusion coefficients
-    electrons = generate_electrons(new_tracks, fields, rngkey)
+    electrons = generate_electrons(new_tracks, fields, rngkey, apply_long_diffusion)
     #Getting the pixels where the electrons are
     pIDs = get_pixels(params, electrons, fields)
 
@@ -143,14 +143,14 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey)
 
     adcs = digitize(params, integral)
-    return adcs, unique_pixels, ticks
+    return adcs, ticks, start_ticks
 
-@partial(jit, static_argnames=['fields'])
-def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, fields):
+@partial(jit, static_argnames=['fields', 'diffusion_in_current_sim'])
+def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, diffusion_in_current_sim, fields):
     xpitch, ypitch, plane, eid = id2pixel(params, pIDs)
     
     pixels_coord = get_pixel_coordinates(params, xpitch, ypitch, plane)
-    t0, signals = current_mc(params, electrons, pixels_coord, fields)
+    t0, signals = current_mc(params, electrons, pixels_coord, diffusion_in_current_sim, fields)
 
     pix_renumbering = jnp.searchsorted(unique_pixels, pIDs)
 
@@ -163,19 +163,40 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey
     wfs = accumulate_signals_parametrized(wfs, signals, pix_renumbering, start_ticks)
     integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey)
     adcs = digitize(params, integral)
-    return adcs, unique_pixels, ticks
+    return adcs, ticks, pix_renumbering, start_ticks
 
-def simulate_parametrized(params, tracks, fields, rngseed = 0):
+from typing import Any, Tuple, List
+
+def simulate_parametrized(params: Any, tracks: jnp.ndarray, fields: List[str], rngseed: int = 0, diffusion_in_current_sim: bool = False) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Simulates the signal from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
+    Args:
+        params (Any): Parameters of the simulation.
+        tracks (jnp.ndarray): Tracks of the particles as a JAX array.
+        fields (List[str]): List of field names corresponding to the tracks.
+        rngseed (int): Random seed for the simulation.
+        diffusion_in_current_sim (bool): If True, use diffusion in current simulation.
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
+            - adcs: ADC values.
+            - unique_pixels: Unique pixels.
+            - ticks: Ticks of the signals.
+            - pix_renumbering: Renumbering of the pixels.
+            - electrons: Electrons generated.
+            - start_ticks: Start ticks of the signals.
+    """
+
     master_key = jax.random.key(rngseed)
     rngkey1, rngkey2 = jax.random.split(master_key)
-    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1)
+    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1, not diffusion_in_current_sim)
     pIDs = pIDs.ravel()
     unique_pixels = jnp.unique(pIDs)
     padded_size = pad_size(unique_pixels.shape[0], "unique_pixels")
 
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
-    return simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, fields)
+    adcs, ticks, pix_renumbering, start_ticks = simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, diffusion_in_current_sim, fields)
+    return adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks
 
 def simulate(params, response, tracks, fields, rngseed = 0):
     master_key = jax.random.key(rngseed)
@@ -200,7 +221,8 @@ def simulate(params, response, tracks, fields, rngseed = 0):
     # err, wfs = checked_f(wfs, currents_idx, electrons[:, fields.index("n_electrons")], response, pix_renumbering, start_ticks - earliest_tick, params.signal_length)
     # err.throw()
 
-    return simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey2, fields)
+    adcs, ticks, start_ticks =  simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey2, fields)
+    return adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks
 
 def prepare_tracks(params, tracks_file, invert_xz=True):
     tracks, dtype = load_data(tracks_file, invert_xz)
@@ -212,3 +234,15 @@ def prepare_tracks(params, tracks_file, invert_xz=True):
     tracks = jnp.array(tracks)
 
     return tracks, fields, original_tracks
+
+def backtrack_electrons(unique_pixels, pixId, hit_t0, pix_renumbering, electrons, start_ticks):
+    #For given hit, returning the list of electrons that deposited charge in the pixel during this time
+    pix_idx = jnp.searchsorted(unique_pixels, pixId, side='left')
+    #If pixel not found, return empty array
+    if pix_idx == unique_pixels.shape[0] or unique_pixels[pix_idx] != pixId:
+        return jnp.array([]), jnp.array([])
+    matching_electrons = electrons[pix_renumbering == pix_idx]
+    #Getting the electrons that are in the time window
+    t0 = start_ticks[pix_renumbering == pix_idx]
+    matching_electrons = matching_electrons[jnp.logical_and(t0 >= hit_t0 - 50, t0 <= hit_t0 + 50)] #TODO: Put sensible values for time window
+    return matching_electrons
