@@ -21,7 +21,8 @@ for ifile in $(seq 0 ${NFILES}); do
         --number_pix_neighbors 0 \
         --signal_length 191 \
         --mode 'parametrized' \
-        --noise
+        --noise \
+        --diffusion_in_current_sim
 done
 
 
