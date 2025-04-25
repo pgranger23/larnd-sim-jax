@@ -229,7 +229,7 @@ if __name__ == '__main__':
     parser.add_argument('--cpu_only', default=False, action="store_true", help='Run on CPU only')
     parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'different_epoch', 'random', 'constant'],
                         help='Strategy to choose the seed for the simulation (the seed for target is the batch id). It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs), "different_epoch" (different for target and sim, and in the simulation the key is different per epoch)"random" (different between target and sim and random across epochs), "constant" (the seed is constant across batches).')
-    parser.add_argument('--chamfer_adc_norm', default=10., type=float, required=True, help='ADC normalisation wrt to position (cm)')
+    parser.add_argument('--chamfer_adc_norm', default=10., type=float, help='ADC normalisation wrt to position (cm)')
     parser.add_argument('--chamfer_match_z', default=False, action="store_true", help='match z (converted using the iterated simulation v_drift value for both the target and simulation) instead of t')
 
     try:
