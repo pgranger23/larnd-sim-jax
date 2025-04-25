@@ -165,22 +165,25 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey
     adcs = digitize(params, integral)
     return adcs, ticks, pix_renumbering, start_ticks
 
-def simulate_parametrized(params, tracks, fields, rngseed = 0, diffusion_in_current_sim = False):
+from typing import Any, Tuple, List
+
+def simulate_parametrized(params: Any, tracks: jnp.ndarray, fields: List[str], rngseed: int = 0, diffusion_in_current_sim: bool = False) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Simulates the signal from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
     Args:
-        params: Parameters of the simulation.
-        tracks: Tracks of the particles.
-        fields: Fields of the tracks.
-        rngseed: Random seed for the simulation.
-        diffusion_in_current_sim: If True, use diffusion in current simulation.
+        params (Any): Parameters of the simulation.
+        tracks (jnp.ndarray): Tracks of the particles as a JAX array.
+        fields (List[str]): List of field names corresponding to the tracks.
+        rngseed (int): Random seed for the simulation.
+        diffusion_in_current_sim (bool): If True, use diffusion in current simulation.
     Returns:
-        adcs: ADC values.
-        unique_pixels: Unique pixels.
-        ticks: Ticks of the signals.
-        pix_renumbering: Renumbering of the pixels.
-        electrons: Electrons generated.
-        start_ticks: Start ticks of the signals.
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
+            - adcs: ADC values.
+            - unique_pixels: Unique pixels.
+            - ticks: Ticks of the signals.
+            - pix_renumbering: Renumbering of the pixels.
+            - electrons: Electrons generated.
+            - start_ticks: Start ticks of the signals.
     """
 
     master_key = jax.random.key(rngseed)

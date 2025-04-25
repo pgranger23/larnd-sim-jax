@@ -227,7 +227,9 @@ def integrated_expon_diff(x, loc=0, scale=1, diff=100, dt=1):
 
     tick_values = (upper_values - lower_values)
 
-    return tick_values/dt/jnp.sum(tick_values, axis=-1, keepdims=True)
+    tick_values = tick_values/(lower_values[..., 0] - upper_values[..., -1])[..., jnp.newaxis] #Normalize to 1
+
+    return tick_values/dt
 
 # @annotate_function
 @partial(jit, static_argnames=['fields'])
@@ -309,6 +311,7 @@ def current_model(t, t0, x, y, dt):
 
     return a * integrated_expon(-t, -shifted_t0, b, dt=dt) + (1 - a) * integrated_expon(-t, -shifted_t0, c, dt=dt)
 
+@jit
 def current_model_diff(t, t0, x, y, dt, sigma):
     """
     Parametrization of the induced current on the pixel, which depends
