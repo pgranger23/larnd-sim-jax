@@ -288,7 +288,7 @@ class ParamFitter:
         
         return ref_adcs, ref_unique_pixels, ref_ticks
 
-    def compute_loss(self, tracks, i, ref_adcs, ref_unique_pixels, ref_ticks, with_loss=True, with_grad=True):
+    def compute_loss(self, tracks, i, ref_adcs, ref_unique_pixels, ref_ticks, with_loss=True, with_grad=True, epoch=0):
         if self.sim_seed_strategy == "same":
             rngkey = i
         elif self.sim_seed_strategy == "different":
@@ -315,11 +315,11 @@ class ParamFitter:
                 grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
         else:
             if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, diffusion_in_current_sim = self.diffusion_in_current_sim, **self.loss_fn_kw)
             elif with_loss:
-                loss_val, aux = params_loss_parametrized(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                loss_val, aux = params_loss_parametrized(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, diffusion_in_current_sim = self.diffusion_in_current_sim, **self.loss_fn_kw)
             elif with_grad:
-                grads, aux = grad(params_loss_parametrized, (0), has_aux=True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                grads, aux = grad(params_loss_parametrized, (0), has_aux=True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, diffusion_in_current_sim = self.diffusion_in_current_sim, **self.loss_fn_kw)
         return loss_val, grads, aux
     
     def prepare_fit(self):
@@ -486,7 +486,7 @@ class GradientDescentFitter(ParamFitter):
                     selected_tracks_tgt = jax.device_put(selected_tracks_bt_tgt)
 
                     ref_adcs, ref_unique_pixels, ref_ticks = self.get_simulated_target(selected_tracks_tgt, i, regen=False)
-                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_unique_pixels, ref_ticks)
+                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_unique_pixels, ref_ticks, epoch)
 
                     modified_grads = self.process_grads(grads) #Grads are modified ans applied in this function
 
