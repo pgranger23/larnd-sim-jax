@@ -147,7 +147,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv pip install .[dev] pytest-xdist  # parallelize tests
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
 
       - name: Run tests
         run: |
