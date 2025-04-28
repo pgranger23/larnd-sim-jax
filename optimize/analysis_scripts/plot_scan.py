@@ -60,6 +60,7 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
         return
 
     param = params[ipar]
+    nparams = len(params)
 
     nb_iter = results['config'].iterations
 
@@ -73,14 +74,14 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
 
     # param_value = np.average(np.array(results[f"{param}_iter"][1:max_index + 1]).reshape(-1, nbatches), axis=1)
     param_value = np.sort(np.unique(results[f"{param}_iter"][1:]))
-    nbatches = len(results["losses_iter"])//nb_iter
-    if len(results["losses_iter"]) % nb_iter != 0:
+    nbatches = len(results["losses_iter"])//(nb_iter*nparams)
+    if len(results["losses_iter"]) % (nb_iter*nparams) != 0:
         raise ValueError(f"Expected losses_iter to be divisible by param_value, found {len(results['losses_iter'])} and {param_value}")
 
 
-    param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, -1)
-    grad = np.array(results[f"{param}_grad"]).reshape(nbatches, -1)
-    loss = np.array(results["losses_iter"]).reshape(nbatches, -1)
+    param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, nparams, -1)[:, ipar, :]
+    grad = np.array(results[f"{param}_grad"]).reshape(nbatches, nparams, -1)[:, ipar, :]
+    loss = np.array(results["losses_iter"]).reshape(nbatches, nparams, -1)[:, ipar, :]
 
     if not plot_all:
         grad = np.nanmean(grad, axis=0)
