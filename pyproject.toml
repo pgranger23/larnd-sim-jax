@@ -22,6 +22,7 @@ dependencies = [
     "matplotlib",
     "jax",
     "jaxlib",
+    "iminuit"
 ]
 [project.optional-dependencies]
 docs = [
