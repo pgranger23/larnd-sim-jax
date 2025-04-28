@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import numpy as np
@@ -25,8 +25,16 @@ def parse_args():
         "--input_dir",
         type=str,
         default="scan_results",
-        help="Path to the input dir",
+        help="Path to the input dir. Expect single param per file",
     )
+
+    parser.add_argument(
+        "--input_file",
+        type=str,
+        default=None,
+        help="Path to the input file. Expect all params in the same file",
+    )
+
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -36,23 +44,23 @@ def parse_args():
     return parser.parse_args()
 
 
-def plot_gradient_scan(fname, ax=None, plot_all=False):
+def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     with open(fname, 'rb') as f:
         results = pickle.load(f)
     # print_config(results['config'])
     params = [key.replace('_grad', '') for key in results.keys() if '_grad' in key]
-    nb_params = len(params)
 
-    if nb_params != 1:
-        raise ValueError(f"Expected 1 parameter, found {nb_params} in {fname}")
-    
     if 'fit_type' not in results['config']:
         raise ValueError(f"Expected fit_type in {fname}")
     
     if results['config'].fit_type != 'scan':
         raise ValueError(f"Expected fit_type scan, found {results['config']['fit_type']} in {fname}")
+    
+    if ipar >= len(params):
+        return
 
-    param = params[0]
+    param = params[ipar]
+    nparams = len(params)
 
     nb_iter = results['config'].iterations
 
@@ -66,14 +74,14 @@ def plot_gradient_scan(fname, ax=None, plot_all=False):
 
     # param_value = np.average(np.array(results[f"{param}_iter"][1:max_index + 1]).reshape(-1, nbatches), axis=1)
     param_value = np.sort(np.unique(results[f"{param}_iter"][1:]))
-    nbatches = len(results["losses_iter"])//nb_iter
-    if len(results["losses_iter"]) % nb_iter != 0:
+    nbatches = len(results["losses_iter"])//(nb_iter*nparams)
+    if len(results["losses_iter"]) % (nb_iter*nparams) != 0:
         raise ValueError(f"Expected losses_iter to be divisible by param_value, found {len(results['losses_iter'])} and {param_value}")
 
 
-    param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, -1)
-    grad = np.array(results[f"{param}_grad"]).reshape(nbatches, -1)
-    loss = np.array(results["losses_iter"]).reshape(nbatches, -1)
+    param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, nparams, -1)[:, ipar, :]
+    grad = np.array(results[f"{param}_grad"]).reshape(nbatches, nparams, -1)[:, ipar, :]
+    loss = np.array(results["losses_iter"]).reshape(nbatches, nparams, -1)[:, ipar, :]
 
     if not plot_all:
         grad = np.nanmean(grad, axis=0)
@@ -105,15 +113,23 @@ if __name__ == "__main__":
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    list_of_files = glob.glob(f'{input_dir}/*.pkl')
-
-    logger.info(f"Found {len(list_of_files)} files in {input_dir}")
+    if args.input_file is not None:
+        if not os.path.exists(args.input_file):
+            raise ValueError(f"Input file {args.input_file} does not exist")
+        list_of_files = [args.input_file] * 9
+        logger.info(f"Using input file {args.input_file}")
+    else:
+        list_of_files = glob.glob(f'{input_dir}/*.pkl')
+        logger.info(f"Found {len(list_of_files)} files in {input_dir}")
 
     fig, axs = plt.subplots(3, 3, figsize=(20, 15))
 
     for i, f in enumerate(list_of_files):
         ax = axs[i//3, i%3]
-        plot_gradient_scan(f, ax, True)
+        if args.input_file is not None:
+            plot_gradient_scan(f, ax, True, i)
+        else:
+            plot_gradient_scan(f, ax, True, 0)
     fig.tight_layout()
     fig.savefig(f'{output_dir}/gradient_scan.pdf')
     fig.savefig(f'{output_dir}/gradient_scan.png')
@@ -122,7 +138,10 @@ if __name__ == "__main__":
 
     for i, f in enumerate(list_of_files):
         ax = axs[i//3, i%3]
-        plot_gradient_scan(f, ax, False)
+        if args.input_file is not None:
+            plot_gradient_scan(f, ax, False, i)
+        else:
+            plot_gradient_scan(f, ax, False, 0)
     fig.tight_layout()
     fig.savefig(f'{output_dir}/gradient_scan_avg.pdf')
     fig.savefig(f'{output_dir}/gradient_scan_avg.png')

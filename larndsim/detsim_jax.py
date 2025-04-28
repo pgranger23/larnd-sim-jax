@@ -367,7 +367,7 @@ def current_mc(params, electrons, pixels_coord, apply_diffusion, fields):
 
     dt = 5./(nticks-1)
     if apply_diffusion:
-        return t0_tick, current_model_diff(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis], dt, electrons[:, fields.index("long_diff")].reshape((electrons.shape[0], 1)))*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))
+        return t0_tick, current_model_diff(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis], dt, electrons[:, fields.index("long_diff")].reshape((electrons.shape[0], 1))/get_vdrift(params))*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))
     else:
         return t0_tick, current_model(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis], dt)*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))
 
