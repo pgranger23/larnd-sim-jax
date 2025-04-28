@@ -157,10 +157,10 @@ if __name__ == '__main__':
                         default="/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim-output.h5",
                         help="Input target data file")
     parser.add_argument("--detector_props", dest="detector_props",
-                        default="larndsim/detector_properties/module0.yaml",
+                        default="src/larndsim/detector_properties/module0.yaml",
                         help="Path to detector properties YAML file")
     parser.add_argument("--pixel_layouts", dest="pixel_layouts",
-                        default="larndsim/pixel_layouts/multi_tile_layout-2.2.16.yaml",
+                        default="src/larndsim/pixel_layouts/multi_tile_layout-2.2.16.yaml",
                         help="Path to pixel layouts YAML file")
     parser.add_argument("--lr", dest="lr", default=1, type=float,
                         help="Learning rate -- used for all params")

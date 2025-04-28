@@ -2,6 +2,11 @@
 
 name: CI
 
+# Controls when the action will run, will cancel older workflows if a new one is triggered
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Controls when the action will run. 
 on:
   # Triggers the workflow on push or pull request events but only for the master branch
@@ -24,10 +29,22 @@ jobs:
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
 
       - name: Check simulation
         run: |
           ./optimize/simulate_test.sh
+
         continue-on-error: true
 
       - uses: actions/upload-artifact@v4
@@ -45,11 +62,21 @@ jobs:
 
   test-fit:
     runs-on: ubuntu-latest
-    container: pigranger/larndsim-jax:latest
 
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
       - name: Check fit
         run: |
           ./optimize/fit_test.sh
@@ -63,11 +90,22 @@ jobs:
 
   test-scan:
     runs-on: ubuntu-latest
-    container: pigranger/larndsim-jax:latest
 
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
+
       - name: Check fit
         run: |
           ./optimize/scan_test.sh
@@ -98,11 +136,21 @@ jobs:
 
   test-minuit:
     runs-on: ubuntu-latest
-    container: pigranger/larndsim-jax:latest
 
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
+
       - name: Check fit
         run: |
           ./optimize/minuit_test.sh
@@ -113,6 +161,39 @@ jobs:
           name: minuit-result
           path: fit_result/**/*.pkl
           if-no-files-found: error
+
+  tests:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      max-parallel: 12
+      fail-fast: true
+      matrix:
+        os: [ ubuntu-24.04 ]
+        python-version: [ '3.9', '3.13' ]
+        include:
+          - os: macos-latest
+            python-version: 3.9
+          - os: windows-latest
+            python-version: 3.9
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
+
+      - name: Run tests
+        run: |
+          pytest tests -n auto
 
   rtd:
     runs-on: ubuntu-latest
@@ -127,4 +208,4 @@ jobs:
           commit_ref: ${{ github.ref }}
 
 
-  
+
