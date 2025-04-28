@@ -29,6 +29,17 @@ jobs:
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
 
       - name: Check simulation
         run: |
@@ -51,11 +62,21 @@ jobs:
 
   test-fit:
     runs-on: ubuntu-latest
-    container: pigranger/larndsim-jax:latest
 
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
       - name: Check fit
         run: |
           ./optimize/fit_test.sh
@@ -69,11 +90,22 @@ jobs:
 
   test-scan:
     runs-on: ubuntu-latest
-    container: pigranger/larndsim-jax:latest
 
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
+
       - name: Check fit
         run: |
           ./optimize/scan_test.sh
@@ -104,11 +136,21 @@ jobs:
 
   test-minuit:
     runs-on: ubuntu-latest
-    container: pigranger/larndsim-jax:latest
 
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
+
       - name: Check fit
         run: |
           ./optimize/minuit_test.sh
