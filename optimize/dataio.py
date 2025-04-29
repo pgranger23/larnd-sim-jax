@@ -222,7 +222,7 @@ class TracksDataset:
         index = []
         all_tracks = []
 
-        selected_tracks = tracks[abs(tracks['z']) > min_abs_segz_sel]
+        selected_tracks = tracks[abs(tracks['z']) < min_abs_segz_sel]
 
         if 'eventID' in selected_tracks.dtype.names:
             self.evt_id = 'eventID'
