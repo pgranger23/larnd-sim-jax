@@ -97,6 +97,8 @@ if __name__ == "__main__":
                     label = 'valid' if idx==0 else 'invalid'
                 ax.errorbar(par_results[j], par_loss[j], xerr=results['minuit_result'][j]['errors'][par], fmt='o', color=color, label=label)
             ax2.hist(par_results, range=par_range, bins=20, histtype='step')
+            weighted_average = np.average(par_results, weights=1/np.array(par_loss)**2)
+            ax.axvline(weighted_average, color='g', linestyle='--', label='fit weighted average')
 
             ax.axvline(results[f'{par}_target'][0], color='r', linestyle='--', label='target')
             ax2.axvline(results[f'{par}_target'][0], color='r', linestyle='--', label='target')
