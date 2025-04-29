@@ -24,7 +24,6 @@ jobs:
   test-sim:
     # Steps represent a sequence of tasks that will be executed as part of the job
     runs-on: ubuntu-latest
-    container: pigranger/larndsim-jax:latest
 
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
@@ -44,8 +43,6 @@ jobs:
       - name: Check simulation
         run: |
           ./optimize/simulate_test.sh
-
-        continue-on-error: true
 
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
@@ -206,6 +203,3 @@ jobs:
           webhook_url: ${{ secrets.RTDS_WEBHOOK_URL }}
           webhook_token: ${{ secrets.RTDS_WEBHOOK_TOKEN }}
           commit_ref: ${{ github.ref }}
-
-
-

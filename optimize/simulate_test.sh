@@ -11,7 +11,7 @@ for ifile in $(seq 0 ${NFILES}); do
         --number_pix_neighbors 3 \
         --signal_length 100 \
         --mode 'lut' \
-        --lut_file larndsim/detector_properties/response_44.npy \
+        --lut_file src/larndsim/detector_properties/response_44.npy \
         --noise
     
     python3 -m optimize.simulate \

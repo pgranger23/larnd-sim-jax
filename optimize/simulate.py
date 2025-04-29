@@ -72,10 +72,10 @@ if __name__ == '__main__':
     parser.add_argument("--output_file", dest="output_file",
                         help="Output data file", required=True)
     parser.add_argument("--detector_props", dest="detector_props",
-                        default="larndsim/detector_properties/module0.yaml",
+                        default="src/larndsim/detector_properties/module0.yaml",
                         help="Path to detector properties YAML file")
     parser.add_argument("--pixel_layouts", dest="pixel_layouts",
-                        default="larndsim/pixel_layouts/multi_tile_layout-2.2.16.yaml",
+                        default="src/larndsim/pixel_layouts/multi_tile_layout-2.2.16.yaml",
                         help="Path to pixel layouts YAML file")
     parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
     parser.add_argument('--electron_sampling_resolution', type=float, required=True, help='Electron sampling resolution')
