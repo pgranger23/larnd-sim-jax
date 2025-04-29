@@ -674,6 +674,8 @@ class MinuitFitter(ParamFitter):
             "valid": result.valid,
         }
         self.training_history["minuit_result"].append(result_dict)
+        if 'cuda' in jax.devices():
+            self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
 
     def fit(self, dataloader_sim, dataloader_target, **kwargs):
         self.prepare_fit()
@@ -686,6 +688,7 @@ class MinuitFitter(ParamFitter):
         if self.separate_fits:
             for i, (selected_tracks_bt_target, selected_tracks_bt_sim) in enumerate(zip(dataloader_target, dataloader_sim)):
                 logger.info(f"Batch {i}/{len(dataloader_target)}")
+                start_time = time()
                 # target
                 selected_tracks_bt_tgt = selected_tracks_bt_target.reshape(-1, len(self.track_fields))
 
@@ -711,6 +714,9 @@ class MinuitFitter(ParamFitter):
 
                 self.configure_minimizer(loss_wrapper, grad_wrapper)
                 result = self.minimizer.migrad()
+
+                stop_time = time()
+                self.training_history['step_time'].append(stop_time - start_time)
                 self.push_minuit_result(result)
 
         else:
