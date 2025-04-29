@@ -24,7 +24,6 @@ jobs:
   test-sim:
     # Steps represent a sequence of tasks that will be executed as part of the job
     runs-on: ubuntu-latest
-    container: pigranger/larndsim-jax:latest
 
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
