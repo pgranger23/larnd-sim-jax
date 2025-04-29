@@ -292,9 +292,9 @@ class ParamFitter:
         if self.sim_seed_strategy == "same":
             rngkey = i
         elif self.sim_seed_strategy == "different":
-            rngkey = -i
+            rngkey = -i - 1 #Need some offset otherwise batch 0 has same seed
         elif self.sim_seed_strategy == "different_epoch":
-            rngkey = -i - epoch * 10000
+            rngkey = -i - 1 - epoch * 10000
         elif self.sim_seed_strategy == "random":
             rngkey = np.random.randint(0, 1000000)
         elif self.sim_seed_strategy == "constant":
