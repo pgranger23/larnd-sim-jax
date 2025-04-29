@@ -48,8 +48,7 @@ def main(config):
 
     logger.info(f"Jax devices: {jax.devices()}")
 
-    if config.print_input:
-        logger.info(f"fit label: {config.out_label}")
+    logger.info(f"fit label: {config.out_label}")
 
     if config.lut_file == "" and config.mode == 'lut':
         return 1, 'Error: LUT file is required for mode "lut"'
