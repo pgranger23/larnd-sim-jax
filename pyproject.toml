@@ -3,7 +3,7 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "larndsim"
+name = "larndsim_jax"
 dynamic = ["version"]
 description = "Differentiable DUNE ND simulator using JAX"
 readme = "README.md"
