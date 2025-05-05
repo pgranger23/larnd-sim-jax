@@ -56,14 +56,13 @@ def set_pixel_plane(params, tracks, fields):
     tracks[:, fields.index('pixel_plane')] = pixel_plane
     return tracks
 
-def pad_size(cur_size, tag):
+def pad_size(cur_size, tag, pad_threshold=0.05):
     global size_history_dict
 
     if tag not in size_history_dict:
         size_history_dict[tag] = []
     size_history = size_history_dict[tag]
 
-    pad_threshold = 0.05
     #If an input with this shape has already been used, we are fine
     if cur_size in size_history:
         logger.debug(f"Input size {cur_size} already existing.")
