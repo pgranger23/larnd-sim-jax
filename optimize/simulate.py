@@ -20,8 +20,8 @@ from .dataio import chop_tracks, jax_from_structured
 import jax.numpy as jnp
 from larndsim.fee_jax import digitize
 
-from ctypes import cdll
-libcudart = cdll.LoadLibrary('libcudart.so')
+# from ctypes import cdll
+# libcudart = cdll.LoadLibrary('libcudart.so')
 
 
 def load_events_as_batch(filename, sampling_resolution, swap_xz=True):
@@ -111,7 +111,7 @@ def main(config):
         
 
     with h5py.File(config.output_file, 'w') as f:
-        libcudart.cudaProfilerStart()
+        # libcudart.cudaProfilerStart()
 
         for ibatch, batch in tqdm(enumerate(dataset), desc="Loading tracks", total=len(dataset)):
             size = batch.shape[0]
@@ -146,7 +146,7 @@ def main(config):
 
 
                 # f.create_dataset('pixel_signals', data=signals_ref)
-        libcudart.cudaProfilerStop()
+        # libcudart.cudaProfilerStop()
     return 0, 'Success'
 
 
