@@ -58,6 +58,10 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     
     if ipar >= len(params):
         return
+    
+    batch_size = results['config'].max_batch_len
+    noise = (not results['config'].no_noise)
+    title = f"{batch_size:.0f}cm batches ; Noise: {'on' if noise else 'off'} ; Random strategy: {results['config'].sim_seed_strategy} ; Sampling resolution: {results['config'].electron_sampling_resolution*1e4:.0f}um"
 
     param = params[ipar]
     nparams = len(params)
@@ -103,6 +107,7 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     labs = [l.get_label() for l in lns]
     ax2.legend(lns, labs, loc=0)
     ax.set_xlabel(param)
+    ax.get_figure().suptitle(title)
     # print(len(results[f"{param}_grad"]))
 
 if __name__ == "__main__":
@@ -132,7 +137,7 @@ if __name__ == "__main__":
             plot_gradient_scan(f, ax, True, 0)
     fig.tight_layout()
     fig.savefig(f'{output_dir}/gradient_scan.pdf')
-    fig.savefig(f'{output_dir}/gradient_scan.png')
+    fig.savefig(f'{output_dir}/gradient_scan.png', dpi=300)
 
     fig, axs = plt.subplots(3, 3, figsize=(20, 15))
 
@@ -144,4 +149,4 @@ if __name__ == "__main__":
             plot_gradient_scan(f, ax, False, 0)
     fig.tight_layout()
     fig.savefig(f'{output_dir}/gradient_scan_avg.pdf')
-    fig.savefig(f'{output_dir}/gradient_scan_avg.png')
+    fig.savefig(f'{output_dir}/gradient_scan_avg.png', dpi=300)

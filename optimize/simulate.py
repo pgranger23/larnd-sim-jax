@@ -7,19 +7,65 @@ import argparse
 import sys
 import traceback
 from larndsim.consts_jax import build_params_class, load_detector_properties
-from larndsim.sim_jax import prepare_tracks, simulate, simulate_parametrized
+from larndsim.sim_jax import prepare_tracks, simulate, simulate_parametrized, id2pixel, get_pixel_coordinates
+from larndsim.losses_jax import get_hits_space_coords
 from pprint import pprint
 import numpy as np
 import h5py
 import jax
+from tqdm import tqdm
+from numpy.lib import recfunctions as rfn
+from larndsim.sim_jax import pad_size
+from .dataio import chop_tracks, jax_from_structured
+import jax.numpy as jnp
+from larndsim.fee_jax import digitize
 
-from .fit_params import ParamFitter
-from .dataio import TracksDataset
+from ctypes import cdll
+libcudart = cdll.LoadLibrary('libcudart.so')
+
+
+def load_events_as_batch(filename, sampling_resolution, swap_xz=True):
+    with h5py.File(filename, 'r') as f:
+        tracks = np.array(f['segments'])
+
+    if swap_xz:
+        x_start = np.copy(tracks['x_start'] )
+        x_end = np.copy(tracks['x_end'])
+        x = np.copy(tracks['x'])
+
+        tracks['x_start'] = np.copy(tracks['z_start'])
+        tracks['x_end'] = np.copy(tracks['z_end'])
+        tracks['x'] = np.copy(tracks['z'])
+
+        tracks['z_start'] = x_start
+        tracks['z_end'] = x_end
+        tracks['z'] = x
+
+    if not 't0' in tracks.dtype.names:
+        tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
+    
+    track_fields = tracks.dtype.names
+
+    if 'eventID' in tracks.dtype.names:
+        evt_id = 'eventID'
+    else:
+        evt_id = 'event_id'
+
+    unique_events, first_indices = np.unique(tracks[evt_id], return_index=True)
+
+    first_indices = np.sort(first_indices)
+    last_indices = np.r_[first_indices[1:] - 1, len(tracks) - 1]
+    
+    tracks = rfn.structured_to_unstructured(tracks, copy=True, dtype=np.float32)
+
+    logger.info(f"Loaded {len(first_indices)} events from {filename} with {tracks.shape[0]} tracks")
+    
+    return [chop_tracks(tracks[first_indices[i]:last_indices[i] + 1, :], track_fields, sampling_resolution) for i in range(len(first_indices))], track_fields
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 # jax.config.update('jax_log_compiles', True)
-jax.config.update('jax_platform_name', 'cpu')
 
 def load_lut(config):
     response = np.load(config.lut_file)
@@ -33,8 +79,20 @@ def load_lut(config):
 def main(config):
     if config.lut_file == "" and config.mode == 'lut':
         return 1, 'Error: LUT file is required for mode "lut"'
+    
+    if not config.gpu:
+        jax.config.update('jax_platform_name', 'cpu')
 
-    Params = build_params_class([])
+    if args.mode == 'lut':
+        response = load_lut(config)
+        pars = []
+    elif config.jac:
+        def sim_wrapper(params, tracks):
+            adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks = simulate_parametrized(params, tracks, fields, rngseed=config.seed, diffusion_in_current_sim=config.diffusion_in_current_sim)
+            return jnp.stack([adcs, ticks], axis=-1)
+        pars = ['Ab', 'kb', 'eField', 'long_diff', 'tran_diff', 'lifetime', 'shift_z']
+
+    Params = build_params_class(pars)
     ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts)
     ref_params = ref_params.replace(
         electron_sampling_resolution=config.electron_sampling_resolution,
@@ -46,21 +104,49 @@ def main(config):
     if not config.noise:
         ref_params = ref_params.replace(RESET_NOISE_CHARGE=0, UNCORRELATED_NOISE_CHARGE=0)
 
-    tracks, fields, original_tracks = prepare_tracks(ref_params, config.input_file)
-    logger.info(f"Loaded {len(tracks)} segments from {config.input_file}")
 
-    if args.mode == 'lut':
-        response = load_lut(config)
-        ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
-    else:
-        ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed, diffusion_in_current_sim=config.diffusion_in_current_sim)
+    dataset, fields = load_events_as_batch(config.input_file, config.electron_sampling_resolution, swap_xz=True)
+
+    
+        
 
     with h5py.File(config.output_file, 'w') as f:
-        f.create_dataset('adc', data=ref)
-        f.create_dataset('pixels', data=pixels_ref)
-        f.create_dataset('ticks', data=ticks_ref)
-        # f.create_dataset('pixel_signals', data=signals_ref)
-    
+        libcudart.cudaProfilerStart()
+
+        for ibatch, batch in tqdm(enumerate(dataset), desc="Loading tracks", total=len(dataset)):
+            size = batch.shape[0]
+            size = pad_size(size, "batch_size", 0.5)
+            batch = np.pad(batch, ((0, size - batch.shape[0]), (0, 0)), mode='constant', constant_values=0)
+            tracks = jax.device_put(batch)
+
+            if args.mode == 'lut':
+                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
+            else:
+                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed, diffusion_in_current_sim=config.diffusion_in_current_sim)
+            if config.jac:
+                jac_res = jax.jacfwd(sim_wrapper)(ref_params, tracks)
+
+            pix_x, pix_y, pix_z, eventID = get_hits_space_coords(ref_params, pixels_ref, ticks_ref)
+            adc_lowest = digitize(ref_params, ref_params.DISCRIMINATION_THRESHOLD)
+            ref = jnp.where(ref < adc_lowest, 0, ref - adc_lowest)
+            mask = (ref.flatten() > 0) & (jnp.repeat(eventID, 10) != -1)
+
+            group = f.create_group(f"batch_{ibatch}")
+            group.create_dataset('adc', data=ref.flatten()[mask])
+            group.create_dataset('pixels', data=jnp.repeat(pixels_ref, 10)[mask])
+            group.create_dataset('ticks', data=ticks_ref.flatten()[mask])
+            group.create_dataset('eventID', data=jnp.repeat(eventID, 10)[mask])
+            group.create_dataset('pix_x', data=jnp.repeat(pix_x, 10)[mask])
+            group.create_dataset('pix_y', data=jnp.repeat(pix_y, 10)[mask])
+            group.create_dataset('pix_z', data=pix_z.flatten()[mask])
+            if config.jac:
+                for par in pars:
+                    group.create_dataset(f'jac_{par}_adc', data=getattr(jac_res, par)[:, :, 0].flatten()[mask])
+                    group.create_dataset(f'jac_{par}_ticks', data=getattr(jac_res, par)[:, :, 1].flatten()[mask])
+
+
+                # f.create_dataset('pixel_signals', data=signals_ref)
+        libcudart.cudaProfilerStop()
     return 0, 'Success'
 
 
@@ -85,6 +171,9 @@ if __name__ == '__main__':
     parser.add_argument('--noise', action='store_true', help='Add noise to the simulation')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--diffusion_in_current_sim', action='store_true', help='Use diffusion in current simulation')
+    parser.add_argument('--batch_size', type=float, default=500, help='Batch size for simulation')
+    parser.add_argument('--gpu', action='store_true', help='Use GPU for simulation')
+    parser.add_argument('--jac', action='store_true', help='Compute jacobian')
 
     try:
         args = parser.parse_args()
