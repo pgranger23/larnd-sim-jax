@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax import vmap
 import jax
 from typing import List, Union, Tuple
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -98,40 +99,8 @@ def chop_tracks(tracks, fields, precision=0.001):
     return new_tracks
 
 def pad_sequence(sequences: List[jnp.ndarray],
-                 batch_first: bool = False,
                  padding_value: Union[float, int] = 0.0) -> jnp.ndarray:
-    """
-    Pads a list of variable-length JAX arrays to the same length.
-
-    This function takes a list of JAX arrays (sequences) and pads them
-    with a specified value so that all sequences in the list have the
-    same length, equal to the length of the longest sequence. The padded
-    sequences are then stacked together into a single JAX array.
-
-    Mimics the behavior of `torch.nn.utils.rnn.pad_sequence`.
-
-    Args:
-        sequences: A list or tuple of JAX numpy arrays (jnp.ndarray). Each array
-                   represents a sequence and is expected to have shape
-                   (sequence_length, ...features). The sequence_length
-                   can vary between arrays in the list.
-        batch_first: If True, the output tensor will have shape
-                     (batch_size, max_length, ...features).
-                     If False (default), the output tensor will have shape
-                     (max_length, batch_size, ...features).
-        padding_value: The value to use for padding. Defaults to 0.0.
-
-    Returns:
-        A single JAX numpy array containing all padded sequences, stacked
-        together. Returns an empty array with shape (0,) if the input
-        list is empty.
-
-    Raises:
-        TypeError: If the input `sequences` is not a list or tuple.
-        ValueError: If sequences within the list have inconsistent non-leading
-                    dimensions or if an element is not a JAX array or cannot
-                    be converted to one.
-    """
+    logger.info(f"Padding sequences with padding value: {padding_value}")
     # Input Validation
     if not isinstance(sequences, (list, tuple)):
         raise TypeError(f"Input 'sequences' must be a list or tuple of jnp arrays, got {type(sequences)}")
@@ -139,56 +108,19 @@ def pad_sequence(sequences: List[jnp.ndarray],
     if not sequences:
         return jnp.array([], dtype=jnp.float32)
 
-    if len(sequences) == 1:
-        return sequences
-
-    try:
-        shapes = [jnp.asarray(s).shape for s in sequences]
-        dtypes = [jnp.asarray(s).dtype for s in sequences]
-        sequences_jnp = [jnp.asarray(s) for s in sequences]
-    except Exception as e:
-        raise ValueError(f"Could not convert all elements in sequences to JAX arrays: {e}")
-
-    if any(len(s) == 0 for s in shapes):
-         raise ValueError("Cannot pad empty arrays.")
-    if any(len(s) == 1 and s[0] == 0 for s in shapes):
-         raise ValueError("Cannot pad arrays with zero length.")
-    if not all(len(s) > 0 for s in shapes):
-        raise ValueError("All sequences must have at least one dimension (sequence length).")
-
-    if len(sequences_jnp) > 1:
-        feature_shape = shapes[0][1:]
-        if not all(s[1:] == feature_shape for s in shapes):
-            raise ValueError(f"Sequences must have matching feature dimensions. Got shapes: {shapes}")
-
-    common_dtype = jnp.result_type(*dtypes)
-    try:
-        padding_value_casted = jnp.array(padding_value, dtype=common_dtype).item()
-    except (TypeError, ValueError):
-         raise TypeError(f"Padding value {padding_value} cannot be cast to the common dtype {common_dtype}")
+    shapes = [s.shape for s in sequences]
 
     max_len = max(s[0] for s in shapes)
 
     def pad_single_sequence(seq, max_len):
         current_len = seq.shape[0]
         pad_len = max_len - current_len
-        safe_pad_len = jnp.maximum(0, pad_len)
-        padding_shape = (safe_pad_len,) + seq.shape[1:]
-        padding = jnp.full(padding_shape, padding_value_casted, dtype=common_dtype)
-        padded_seq = jax.lax.concatenate([seq.astype(common_dtype), padding], dimension=0)
+        padded_seq = jnp.pad(seq, ((0, pad_len), (0, 0)), constant_values=padding_value)
         return padded_seq
 
-    padded_sequences = [pad_single_sequence(seq, max_len) for seq in sequences_jnp]
-    padded_sequences = jnp.stack(padded_sequences)
-
-    if not batch_first:
-        num_dims = padded_sequences.ndim
-        if num_dims >= 2:
-             axes_order = (1, 0) + tuple(range(2, num_dims))
-             padded_sequences = padded_sequences.transpose(axes_order)
+    padded_sequences = [pad_single_sequence(seq, max_len) for seq in sequences]
 
     return padded_sequences
-
 
 
 class TracksDataset:
@@ -329,7 +261,7 @@ class TracksDataset:
             logger.info(f"-- The number of batches is {len(batches)}.")
 
         if pad:
-            self.tracks = pad_sequence(fit_tracks, batch_first=True, padding_value = 0)
+            self.tracks = pad_sequence(fit_tracks, padding_value = 0)
         else:
             self.tracks = fit_tracks
 
