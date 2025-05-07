@@ -69,6 +69,7 @@ class ParamFitter:
                  target_seed=0, target_fixed_range=None,
                  adc_norm=10, match_z=True,
                  diffusion_in_current_sim=False,
+                 mc_diff = False,
                  config = {}):
         
         self.shift_no_fit = shift_no_fit
@@ -80,6 +81,7 @@ class ParamFitter:
         self.target_seed = target_seed
         self.target_fixed_range = target_fixed_range
         self.diffusion_in_current_sim = diffusion_in_current_sim
+        self.mc_diff = mc_diff
 
         self.out_label = out_label
         self.test_name = test_name
@@ -180,6 +182,13 @@ class ParamFitter:
             number_pix_neighbors=self.number_pix_neighbors,
             signal_length=self.signal_length,
             time_window=self.signal_length)
+        
+        params_to_apply = [
+            "diffusion_in_current_sim",
+            "mc_diff"
+        ]
+
+        ref_params = ref_params.replace(**{key: getattr(self, key) for key in params_to_apply})
 
         initial_params = {}
 
@@ -254,7 +263,7 @@ class ParamFitter:
             if self.current_mode == 'lut':
                 ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate(self.target_params, self.response, tracks, self.track_fields, i) #Setting a different random seed for each target
             else:
-                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate_parametrized(self.target_params, tracks, self.track_fields, i, self.diffusion_in_current_sim) #Setting a different random seed for each target
+                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate_parametrized(self.target_params, tracks, self.track_fields, i) #Setting a different random seed for each target
 
             if self.compute_target_hessian:
                 logger.error("Computing target hessian is not implemented yet")
@@ -308,18 +317,18 @@ class ParamFitter:
         # Simulate and get output
         if self.current_mode == 'lut':
             if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, mc_diff=self.mc_diff, **self.loss_fn_kw)
             elif with_loss:
-                loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, mc_diff=self.mc_diff, **self.loss_fn_kw)
             elif with_grad:
-                grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, mc_diff=self.mc_diff, **self.loss_fn_kw)
         else:
             if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, diffusion_in_current_sim = self.diffusion_in_current_sim, **self.loss_fn_kw)
+                (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_loss:
-                loss_val, aux = params_loss_parametrized(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, diffusion_in_current_sim = self.diffusion_in_current_sim, **self.loss_fn_kw)
+                loss_val, aux = params_loss_parametrized(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_grad:
-                grads, aux = grad(params_loss_parametrized, (0), has_aux=True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, diffusion_in_current_sim = self.diffusion_in_current_sim, **self.loss_fn_kw)
+                grads, aux = grad(params_loss_parametrized, (0), has_aux=True)(self.current_params, ref_adcs, ref_unique_pixels, ref_ticks, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
         return loss_val, grads, aux
     
     def prepare_fit(self):

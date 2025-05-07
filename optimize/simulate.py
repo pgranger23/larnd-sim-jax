@@ -88,18 +88,23 @@ def main(config):
         pars = []
     elif config.jac:
         def sim_wrapper(params, tracks):
-            adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks = simulate_parametrized(params, tracks, fields, rngseed=config.seed, diffusion_in_current_sim=config.diffusion_in_current_sim)
+            adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks = simulate_parametrized(params, tracks, fields, rngseed=config.seed)
             return jnp.stack([adcs, ticks], axis=-1)
         pars = ['Ab', 'kb', 'eField', 'long_diff', 'tran_diff', 'lifetime', 'shift_z']
 
     Params = build_params_class(pars)
     ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts)
-    ref_params = ref_params.replace(
-        electron_sampling_resolution=config.electron_sampling_resolution,
-        number_pix_neighbors=config.number_pix_neighbors,
-        signal_length=config.signal_length,
-        time_window=config.signal_length,
-        )
+
+    
+    params_to_apply = [
+        'diffusion_in_current_sim',
+        'mc_diff',
+        'electron_sampling_resolution',
+        'number_pix_neighbors',
+        'signal_length',
+        'time_window'
+    ]
+    ref_params = ref_params.replace(**{k: getattr(config, k) for k in params_to_apply})
     
     if not config.noise:
         ref_params = ref_params.replace(RESET_NOISE_CHARGE=0, UNCORRELATED_NOISE_CHARGE=0)
@@ -122,7 +127,7 @@ def main(config):
             if args.mode == 'lut':
                 ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
             else:
-                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed, diffusion_in_current_sim=config.diffusion_in_current_sim)
+                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
             if config.jac:
                 jac_res = jax.jacfwd(sim_wrapper)(ref_params, tracks)
 
@@ -174,6 +179,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=float, default=500, help='Batch size for simulation')
     parser.add_argument('--gpu', action='store_true', help='Use GPU for simulation')
     parser.add_argument('--jac', action='store_true', help='Compute jacobian')
+    parser.add_argument('--mc_diff', action='store_true', help='Use Monte Carlo diffusion')
 
     try:
         args = parser.parse_args()

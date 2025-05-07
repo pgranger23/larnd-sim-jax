@@ -130,6 +130,34 @@ def get_hit_z(params, ticks, plane):
     z_high = jnp.take(params.tpc_borders, plane.astype(int), axis=0)[..., 2, 1]
     return z_anode + ticks * params.t_sampling*get_vdrift(params) * jnp.sign(z_high - z_anode)
 
+@jit
+def gaussian_1d_integral(bin_edges, std):
+    # Use the error function to compute the integral
+
+    erf_at_borders = jnp.ones(bin_edges.shape[0])
+    erf_at_borders = erf_at_borders.at[0].set(-1)
+
+    erf_at_borders = erf_at_borders.at[1:-1].set(erf(bin_edges[1:-1] / (jnp.sqrt(2) * std)))
+
+    return 0.5*(erf_at_borders[1:] - erf_at_borders[:-1])
+
+@partial(jit, static_argnames=['fields'])
+def apply_tran_diff(params, electrons, fields):
+    # Compute the 1D Gaussian integral for the x dimension
+    gaussian_integral_x = gaussian_1d_integral(params.tran_diff_bin_edges, electrons[:, fields.index("tran_diff")])
+    gaussian_integral_2d = gaussian_integral_x[:, :, None] * gaussian_integral_x[:, None, :]
+
+    nbins_sym = params.tran_diff_bin_edges.shape[0]/2 - 1
+
+    X, Y = jnp.mgrid[-nbins_sym:nbins_sym+1, -nbins_sym:nbins_sym+1]
+    shifts = jnp.vstack([X.ravel(), Y.ravel()]).T
+    
+   # Foreach electrons entry, apply the possible shifts and give the corresponding weight to the number of electrons using only vectorized operations
+    new_electrons = jnp.repeat(electrons[:, None, :], shifts.shape[0], axis=1)
+    new_electrons = new_electrons.at[:, :, fields.index("x")].add(shifts[:, 0])
+    new_electrons = new_electrons.at[:, :, fields.index("y")].add(shifts[:, 1])
+    new_electrons = new_electrons.at[:, :, fields.index("n_electrons")].multiply(gaussian_integral_2d.reshape(-1, shifts.shape[0]))
+    return new_electrons.reshape(-1, electrons.shape[1])
 
 # @annotate_function
 @partial(jit, static_argnames=['fields', 'apply_long_diffusion'])
@@ -145,6 +173,7 @@ def generate_electrons(tracks, fields, rngkey, apply_long_diffusion=True):
     Returns:
         electrons: Generated electrons.
     """
+
     sigmas = jnp.stack([tracks[:, fields.index("tran_diff")],
                         tracks[:, fields.index("tran_diff")],
                         tracks[:, fields.index("long_diff")]], axis=1)
@@ -348,8 +377,8 @@ def current_model_diff(t, t0, x, y, dt, sigma):
     return a * integrated_expon_diff(-t, -shifted_t0, b, dt=dt, diff=sigma) + (1 - a) * integrated_expon_diff(-t, -shifted_t0, c, dt=dt, diff=sigma)
 
 # @annotate_function
-@partial(jit, static_argnames=['fields', 'apply_diffusion'])
-def current_mc(params, electrons, pixels_coord, apply_diffusion, fields):
+@partial(jit, static_argnames=['fields'])
+def current_mc(params, electrons, pixels_coord, fields):
     nticks = int(5/params.t_sampling) + 1
     ticks = jnp.linspace(0, 5, nticks).reshape((1, nticks)).repeat(electrons.shape[0], axis=0)#
 
@@ -366,7 +395,7 @@ def current_mc(params, electrons, pixels_coord, apply_diffusion, fields):
     t0 = t0 - t0_tick*params.t_sampling # Only taking the floating part of the ticks
 
     dt = 5./(nticks-1)
-    if apply_diffusion:
+    if params.diffusion_in_current_sim:
         return t0_tick, current_model_diff(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis], dt, electrons[:, fields.index("long_diff")].reshape((electrons.shape[0], 1))/get_vdrift(params))*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))
     else:
         return t0_tick, current_model(ticks, t0[:, jnp.newaxis], x_dist[:, jnp.newaxis], y_dist[:, jnp.newaxis], dt)*electrons[:, fields.index("n_electrons")].reshape((electrons.shape[0], 1))

@@ -8,7 +8,7 @@ import logging
 # from jax.experimental import checkify
 
 # from larndsim.consts_jax import consts
-from larndsim.detsim_jax import generate_electrons, get_pixels, id2pixel, accumulate_signals, accumulate_signals_parametrized, current_lut, get_pixel_coordinates, current_mc
+from larndsim.detsim_jax import generate_electrons, get_pixels, id2pixel, accumulate_signals, accumulate_signals_parametrized, current_lut, get_pixel_coordinates, current_mc, apply_tran_diff
 from larndsim.quenching_jax import quench
 from larndsim.drifting_jax import drift
 from larndsim.fee_jax import get_adc_values, digitize
@@ -96,8 +96,8 @@ def shift_tracks(params, tracks, fields):
     return shifted_tracks
 
 
-@partial(jit, static_argnames=['fields', 'apply_long_diffusion'])
-def simulate_drift(params, tracks, fields, rngkey, apply_long_diffusion=True):
+@partial(jit, static_argnames=['fields'])
+def simulate_drift(params, tracks, fields, rngkey):
     #Shifting tracks
     new_tracks = shift_tracks(params, tracks, fields)
     #Quenching and drifting
@@ -105,7 +105,11 @@ def simulate_drift(params, tracks, fields, rngkey, apply_long_diffusion=True):
     new_tracks = drift(params, new_tracks, fields)
 
     #Simulating the electron generation according to the diffusion coefficients
-    electrons = generate_electrons(new_tracks, fields, rngkey, apply_long_diffusion)
+
+    if params.mc_diff:
+        electrons = generate_electrons(new_tracks, fields, rngkey, not params.diffusion_in_current_sim)
+    else:
+        electrons = apply_tran_diff(params, new_tracks, fields)
     #Getting the pixels where the electrons are
     pIDs = get_pixels(params, electrons, fields)
 
@@ -144,12 +148,12 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     adcs = digitize(params, integral)
     return adcs, ticks, start_ticks
 
-@partial(jit, static_argnames=['fields', 'diffusion_in_current_sim'])
-def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, diffusion_in_current_sim, fields):
+@partial(jit, static_argnames=['fields'])
+def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, fields):
     xpitch, ypitch, plane, eid = id2pixel(params, pIDs)
     
     pixels_coord = get_pixel_coordinates(params, xpitch, ypitch, plane)
-    t0, signals = current_mc(params, electrons, pixels_coord, diffusion_in_current_sim, fields)
+    t0, signals = current_mc(params, electrons, pixels_coord, fields)
 
     pix_renumbering = jnp.searchsorted(unique_pixels, pIDs)
 
@@ -166,7 +170,7 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey
 
 from typing import Any, Tuple, List
 
-def simulate_parametrized(params: Any, tracks: jnp.ndarray, fields: List[str], rngseed: int = 0, diffusion_in_current_sim: bool = False) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+def simulate_parametrized(params: Any, tracks: jnp.ndarray, fields: List[str], rngseed: int = 0) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Simulates the signal from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
     Args:
@@ -174,7 +178,6 @@ def simulate_parametrized(params: Any, tracks: jnp.ndarray, fields: List[str], r
         tracks (jnp.ndarray): Tracks of the particles as a JAX array.
         fields (List[str]): List of field names corresponding to the tracks.
         rngseed (int): Random seed for the simulation.
-        diffusion_in_current_sim (bool): If True, use diffusion in current simulation.
     Returns:
         Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
             - adcs: ADC values.
@@ -187,20 +190,20 @@ def simulate_parametrized(params: Any, tracks: jnp.ndarray, fields: List[str], r
 
     master_key = jax.random.key(rngseed)
     rngkey1, rngkey2 = jax.random.split(master_key)
-    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1, not diffusion_in_current_sim)
+    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1)
     pIDs = pIDs.ravel()
     unique_pixels = jnp.unique(pIDs)
     padded_size = pad_size(unique_pixels.shape[0], "unique_pixels")
 
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
-    adcs, ticks, pix_renumbering, start_ticks = simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, diffusion_in_current_sim, fields)
+    adcs, ticks, pix_renumbering, start_ticks = simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, fields)
     return adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks
 
-def simulate(params, response, tracks, fields, rngseed = 0):
+def simulate(params, response, tracks, fields, rngseed = 0, mc_diff = False):
     master_key = jax.random.key(rngseed)
     rngkey1, rngkey2 = jax.random.split(master_key)
-    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1)
+    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1, mc_diff=mc_diff)
 
     main_pixels = pIDs[:, 2*params.number_pix_neighbors*(params.number_pix_neighbors+1)] #Getting the main pixel
     #Sorting the pixels and getting the unique ones
