@@ -134,12 +134,12 @@ def get_hit_z(params, ticks, plane):
 def gaussian_1d_integral(bin_edges, std):
     # Use the error function to compute the integral
 
-    erf_at_borders = jnp.ones(bin_edges.shape[0])
-    erf_at_borders = erf_at_borders.at[0].set(-1)
+    erf_at_borders = jnp.ones((std.shape[0], bin_edges.shape[0]))
+    erf_at_borders = erf_at_borders.at[:, 0].set(-1)
 
-    erf_at_borders = erf_at_borders.at[1:-1].set(erf(bin_edges[1:-1] / (jnp.sqrt(2) * std)))
+    erf_at_borders = erf_at_borders.at[:, 1:-1].set(erf(bin_edges[1:-1] / (jnp.sqrt(2) * std[:, None])))
 
-    return 0.5*(erf_at_borders[1:] - erf_at_borders[:-1])
+    return 0.5*(erf_at_borders[:, 1:] - erf_at_borders[:, :-1])
 
 @partial(jit, static_argnames=['fields'])
 def apply_tran_diff(params, electrons, fields):
