@@ -83,9 +83,10 @@ def main(config):
     if not config.gpu:
         jax.config.update('jax_platform_name', 'cpu')
 
+    pars = []
     if args.mode == 'lut':
         response = load_lut(config)
-        pars = []
+
     elif config.jac:
         def sim_wrapper(params, tracks):
             adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks = simulate_parametrized(params, tracks, fields, rngseed=config.seed)
