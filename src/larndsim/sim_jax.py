@@ -200,10 +200,10 @@ def simulate_parametrized(params: Any, tracks: jnp.ndarray, fields: List[str], r
     adcs, ticks, pix_renumbering, start_ticks = simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, fields)
     return adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks
 
-def simulate(params, response, tracks, fields, rngseed = 0, mc_diff = False):
+def simulate(params, response, tracks, fields, rngseed = 0):
     master_key = jax.random.key(rngseed)
     rngkey1, rngkey2 = jax.random.split(master_key)
-    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1, mc_diff=mc_diff)
+    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1)
 
     main_pixels = pIDs[:, 2*params.number_pix_neighbors*(params.number_pix_neighbors+1)] #Getting the main pixel
     #Sorting the pixels and getting the unique ones
