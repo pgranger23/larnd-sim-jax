@@ -102,9 +102,10 @@ def main(config):
         'electron_sampling_resolution',
         'number_pix_neighbors',
         'signal_length',
-        'time_window'
     ]
-    ref_params = ref_params.replace(**{k: getattr(config, k) for k in params_to_apply})
+
+
+    ref_params = ref_params.replace(**{k: getattr(config, k) for k in params_to_apply}, time_window=config.signal_length)
     
     if not config.noise:
         ref_params = ref_params.replace(RESET_NOISE_CHARGE=0, UNCORRELATED_NOISE_CHARGE=0)
