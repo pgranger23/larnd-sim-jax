@@ -76,9 +76,9 @@ def asciihist(it, bins=10, minmax=None, str_tag='',
 
 def load_results(fname):
     with h5py.File(fname, 'r') as f:
-        pixels = np.array(f['pixels'])
-        adc = np.array(f['adc'])
-        ticks = np.array(f['ticks'])
+        pixels = np.array(f['batch_0']['pixels'])
+        adc = np.array(f['batch_0']['adc'])
+        ticks = np.array(f['batch_0']['ticks'])
     return pixels, adc, ticks
 
 def make_grids(pixels, adcs, ref_params):
