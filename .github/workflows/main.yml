@@ -194,7 +194,7 @@ jobs:
 
   rtd:
     runs-on: ubuntu-latest
-    needs: [test-sim, test-scan]
+    needs: [test-scan]
 
     steps:
       - name: Trigger RTDs build
