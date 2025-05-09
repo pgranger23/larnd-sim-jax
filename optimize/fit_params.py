@@ -261,9 +261,9 @@ class ParamFitter:
         fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
         if regen or not os.path.exists(fname):
             if self.current_mode == 'lut':
-                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate(self.target_params, self.response, tracks, self.track_fields, i) #Setting a different random seed for each target
+                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate(self.target_params, self.response, tracks, self.track_fields, i+1) #Setting a different random seed for each target
             else:
-                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate_parametrized(self.target_params, tracks, self.track_fields, i) #Setting a different random seed for each target
+                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons = simulate_parametrized(self.target_params, tracks, self.track_fields, i+1) #Setting a different random seed for each target
 
             if self.compute_target_hessian:
                 logger.error("Computing target hessian is not implemented yet")
@@ -299,7 +299,7 @@ class ParamFitter:
 
     def compute_loss(self, tracks, i, ref_adcs, ref_unique_pixels, ref_ticks, with_loss=True, with_grad=True, epoch=0):
         if self.sim_seed_strategy == "same":
-            rngkey = i
+            rngkey = i + 1
         elif self.sim_seed_strategy == "different":
             rngkey = -i - 1 #Need some offset otherwise batch 0 has same seed
         elif self.sim_seed_strategy == "different_epoch":
