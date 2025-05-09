@@ -206,7 +206,7 @@ def params_loss(params, response, ref, pixels_ref, ticks_ref, tracks, fields, rn
     loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
     return loss_val, aux
 
-def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_adc, diffusion_in_current_sim=False, **loss_kwargs):
+def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
     """
     Loss function for parametrized simulation.
     Args:
@@ -218,14 +218,13 @@ def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields,
         fields: Fields for the simulation.
         rngkey: Random key for simulation.
         loss_fn: Loss function to use.
-        diffusion_in_current_sim: Flag for diffusion in current simulation.
         **loss_kwargs: Additional arguments for the loss function.
     Returns:
         loss_val: Loss value.
         aux: Auxiliary values.
     """
     
-    adcs, pixels, ticks, _, _, _ = simulate_parametrized(params, tracks, fields, rngkey, diffusion_in_current_sim)
+    adcs, pixels, ticks, _, _, _ = simulate_parametrized(params, tracks, fields, rngkey)
 
     ref, adcs = cleaning_outputs(params, ref, adcs)
     

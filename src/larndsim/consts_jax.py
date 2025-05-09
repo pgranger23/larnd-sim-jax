@@ -98,6 +98,7 @@ class Params_template:
     number_pix_neighbors: int = struct.field(pytree_node=False)
     electron_sampling_resolution: float = struct.field(pytree_node=False)
     signal_length: float = struct.field(pytree_node=False)
+    tran_diff_bin_edges: jax.Array = struct.field(pytree_node=False)
     #: Maximum number of ADC values stored per pixel
     MAX_ADC_VALUES: int = struct.field(pytree_node=False)
     #: Discrimination threshold
@@ -132,6 +133,8 @@ class Params_template:
     shift_y: float = struct.field(pytree_node=False)
     shift_z: float = struct.field(pytree_node=False)
     size_margin: float = struct.field(pytree_node=False)
+    diffusion_in_current_sim: bool = struct.field(pytree_node=False, default=True)
+    mc_diff: bool = struct.field(pytree_node=False, default=False)
 
 def build_params_class(params_with_grad):
     """
@@ -256,7 +259,10 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "RESET_NOISE_CHARGE": 900,
         "UNCORRELATED_NOISE_CHARGE": 500,
         "ELECTRON_MOBILITY_PARAMS": (551.6, 7158.3, 4440.43, 4.29, 43.63, 0.2053),
-        "size_margin": 2e-2
+        "size_margin": 2e-2,
+        "tran_diff_bin_edges": jnp.linspace(-0.22, 0.22, 6),
+        "diffusion_in_current_sim": True,
+        "mc_diff": False,
     }
 
     mm2cm = 0.1
