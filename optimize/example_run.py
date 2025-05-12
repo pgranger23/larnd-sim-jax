@@ -105,6 +105,7 @@ def main(config):
                                 set_target_vals=config.set_target_vals, vary_init=config.vary_init, compute_target_hessian=config.compute_target_hessian,
                                 config = config, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory,
                                 diffusion_in_current_sim=config.diffusion_in_current_sim,
+                                mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,)
     elif config.fit_type == "scan":
@@ -117,6 +118,7 @@ def main(config):
                                 set_target_vals=config.set_target_vals, vary_init=config.vary_init,
                                 config = config, keep_in_memory=config.keep_in_memory,
                                 diffusion_in_current_sim=config.diffusion_in_current_sim,
+                                mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,
                                 scan_tgt_nom=config.scan_tgt_nom)
@@ -130,6 +132,7 @@ def main(config):
                                 set_target_vals=config.set_target_vals, vary_init=config.vary_init,
                                 config = config, keep_in_memory=config.keep_in_memory,
                                 diffusion_in_current_sim=config.diffusion_in_current_sim,
+                                mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,
                                 minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits)
@@ -248,6 +251,7 @@ if __name__ == '__main__':
                         help='Strategy to choose the seed for the simulation (the seed for target is the batch id). It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs), "different_epoch" (different for target and sim, and in the simulation the key is different per epoch)"random" (different between target and sim and random across epochs), "constant" (the seed is constant across batches).')
     parser.add_argument('--chamfer_adc_norm', default=10., type=float, help='ADC normalisation wrt to position (cm)')
     parser.add_argument('--chamfer_match_z', default=False, action="store_true", help='match z (converted using the iterated simulation v_drift value for both the target and simulation) instead of t')
+    parser.add_argument('--mc_diff', default=False, action="store_true", help='Use MC diffusion')
 
     try:
         args = parser.parse_args()

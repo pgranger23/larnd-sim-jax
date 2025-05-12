@@ -17,21 +17,21 @@ Gradient and loss scan (no-noise, long diff in current calc) avg
    :align: center
 
 
-Some debug plots
-----------------
+.. Some debug plots
+.. ----------------
 
-.. image:: debug-plots/diff.png
-   :alt: Description of the plot
-   :align: center
+.. .. image:: debug-plots/diff.png
+..    :alt: Description of the plot
+..    :align: center
 
-.. image:: debug-plots/ref.png
-   :alt: Description of the plot
-   :align: center
+.. .. image:: debug-plots/ref.png
+..    :alt: Description of the plot
+..    :align: center
    
-.. image:: debug-plots/new.png
-   :alt: Description of the plot
-   :align: center
+.. .. image:: debug-plots/new.png
+..    :alt: Description of the plot
+..    :align: center
 
-.. image:: debug-plots/diffff.png
-   :alt: Description of the plot
-   :align: center
+.. .. image:: debug-plots/diffff.png
+..    :alt: Description of the plot
+..    :align: center
