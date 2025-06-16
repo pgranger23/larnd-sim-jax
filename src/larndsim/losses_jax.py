@@ -199,7 +199,7 @@ def cleaning_outputs(params, ref, adcs):
     return ref, adcs
 
 def params_loss(params, response, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
-    adcs, pixels, ticks, _, _, _ = simulate(params, response, tracks, fields, rngkey)
+    adcs, pixels, ticks, _, _, _, _ = simulate(params, response, tracks, fields, rngkey)
 
     ref, adcs = cleaning_outputs(params, ref, adcs)
     
@@ -224,7 +224,7 @@ def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields,
         aux: Auxiliary values.
     """
     
-    adcs, pixels, ticks, _, _, _ = simulate_parametrized(params, tracks, fields, rngkey)
+    adcs, pixels, ticks, _, _, _, _ = simulate_parametrized(params, tracks, fields, rngkey)
 
     ref, adcs = cleaning_outputs(params, ref, adcs)
     
