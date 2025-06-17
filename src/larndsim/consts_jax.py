@@ -291,12 +291,12 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
     if 'temperatrue' in detprop:
         params_dict['temperature'] = detprop['temperature']
 
+        params_dict['RESET_NOISE_CHARGE'] = detprop['RESET_NOISE_CHARGE']
+        params_dict['UNCORRELATED_NOISE_CHARGE'] = detprop['UNCORRELATED_NOISE_CHARGE']
+        params_dict['DISCRIMINATION_THRESHOLD'] = detprop['DISCRIMINATION_THRESHOLD']
+
     with open(pixel_file, 'r') as pf:
         tile_layout = yaml.load(pf, Loader=yaml.FullLoader)
-
-    params_dict['RESET_NOISE_CHARGE'] = detprop['RESET_NOISE_CHARGE']
-    params_dict['UNCORRELATED_NOISE_CHARGE'] = detprop['UNCORRELATED_NOISE_CHARGE']
-    params_dict['DISCRIMINATION_THRESHOLD'] = detprop['DISCRIMINATION_THRESHOLD']
 
     params_dict['pixel_pitch'] = tile_layout['pixel_pitch'] * mm2cm
     chip_channel_to_position = tile_layout['chip_channel_to_position']
