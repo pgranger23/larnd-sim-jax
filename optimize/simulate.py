@@ -147,7 +147,7 @@ def main(config):
             group.create_dataset('pix_y', data=jnp.repeat(pix_y, 10)[mask])
             group.create_dataset('pix_z', data=pix_z.flatten()[mask])
             if config.save_wfs:
-                group.create_dataset('waveforms', data=wfs[mask, :])
+                group.create_dataset('wfs', data=jnp.repeat(wfs, 10, axis=0)[mask, :])
             if config.jac:
                 for par in pars:
                     group.create_dataset(f'jac_{par}_adc', data=getattr(jac_res, par)[:, :, 0].flatten()[mask])
