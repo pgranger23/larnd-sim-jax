@@ -17,5 +17,8 @@ MeVToElectrons: 4.237e+04
 Ab: 0.8 
 kb: 0.0486 
 
-long_diff: 4.0e-6  # cm * cm / us
-tran_diff: 8.8e-6  # cm * cm / us
+long_diff: 0  # cm * cm / us
+tran_diff: 0  # cm * cm / us
+RESET_NOISE_CHARGE: 0
+UNCORRELATED_NOISE_CHARGE: 0
+DISCRIMINATION_THRESHOLD: 5000

@@ -294,6 +294,10 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
     with open(pixel_file, 'r') as pf:
         tile_layout = yaml.load(pf, Loader=yaml.FullLoader)
 
+    params_dict['RESET_NOISE_CHARGE'] = detprop['RESET_NOISE_CHARGE']
+    params_dict['UNCORRELATED_NOISE_CHARGE'] = detprop['UNCORRELATED_NOISE_CHARGE']
+    params_dict['DISCRIMINATION_THRESHOLD'] = detprop['DISCRIMINATION_THRESHOLD']
+
     params_dict['pixel_pitch'] = tile_layout['pixel_pitch'] * mm2cm
     chip_channel_to_position = tile_layout['chip_channel_to_position']
     params_dict['pixel_connection_dict'] = {tuple(pix): (chip_channel//1000,chip_channel%1000) for chip_channel, pix in chip_channel_to_position.items()}
