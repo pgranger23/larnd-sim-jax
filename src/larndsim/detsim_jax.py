@@ -62,10 +62,6 @@ def accumulate_signals_parametrized(wfs, signals, pixID, start_ticks):
 
     end_indices = start_indices[..., None] + time_ticks
 
-    # Compute indices for updating wfs, taking into account start_ticks
-    start_indices = jnp.expand_dims(pixID, axis=1) * Nticks + start_ticks[:, jnp.newaxis]
-    end_indices = start_indices + jnp.arange(signals.shape[1])
-
     # Flatten the indices
     flat_indices = jnp.ravel(end_indices)
 
