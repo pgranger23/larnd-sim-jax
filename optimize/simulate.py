@@ -89,7 +89,7 @@ def main(config):
 
     elif config.jac:
         def sim_wrapper(params, tracks):
-            adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks = simulate_parametrized(params, tracks, fields, rngseed=config.seed)
+            adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks, _ = simulate_parametrized(params, tracks, fields, rngseed=config.seed)
             return jnp.stack([adcs, ticks], axis=-1)
         pars = ['Ab', 'kb', 'eField', 'long_diff', 'tran_diff', 'lifetime', 'shift_z']
 
@@ -127,9 +127,9 @@ def main(config):
             tracks = jax.device_put(batch)
 
             if args.mode == 'lut':
-                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
+                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons, wfs = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
             else:
-                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
+                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
             if config.jac:
                 jac_res = jax.jacfwd(sim_wrapper)(ref_params, tracks)
 
@@ -146,6 +146,8 @@ def main(config):
             group.create_dataset('pix_x', data=jnp.repeat(pix_x, 10)[mask])
             group.create_dataset('pix_y', data=jnp.repeat(pix_y, 10)[mask])
             group.create_dataset('pix_z', data=pix_z.flatten()[mask])
+            if config.save_wfs:
+                group.create_dataset('waveforms', data=wfs[mask, :])
             if config.jac:
                 for par in pars:
                     group.create_dataset(f'jac_{par}_adc', data=getattr(jac_res, par)[:, :, 0].flatten()[mask])
@@ -182,9 +184,13 @@ if __name__ == '__main__':
     parser.add_argument('--gpu', action='store_true', help='Use GPU for simulation')
     parser.add_argument('--jac', action='store_true', help='Compute jacobian')
     parser.add_argument('--mc_diff', action='store_true', help='Use Monte Carlo diffusion')
+    parser.add_argument('--save_wfs', action='store_true', help='Save waveforms')
 
     try:
         args = parser.parse_args()
+        if args.save_wfs and args.jac:
+            raise ValueError("Cannot save waveforms and compute jacobian at the same time. Please choose one of the two options.")
+
         retval, status_message = main(args)
     except Exception as e:
         print(traceback.format_exc(), file=sys.stderr)
