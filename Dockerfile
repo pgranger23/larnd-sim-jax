@@ -26,6 +26,4 @@ ENV SCRATCH_VOLUME=/scratch
 RUN echo creating ${SCRATCH_VOLUME} && mkdir -p ${SCRATCH_VOLUME}
 VOLUME ${SCRATCH_VOLUME}
 
-ADD requirements.txt /work/requirements.txt
-
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install .
