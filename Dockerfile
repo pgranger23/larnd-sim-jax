@@ -13,6 +13,9 @@ RUN apt-get update && \
 
 WORKDIR /work
 
+# Copy the entire project directory into the Docker image
+COPY . .
+
 RUN python3 -m pip install --no-cache-dir  --upgrade pip && \
     python3 -m pip install --no-cache-dir "jax[cuda]" \
         -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
