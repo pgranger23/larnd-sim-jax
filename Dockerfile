@@ -13,6 +13,9 @@ RUN apt-get update && \
 
 WORKDIR /work
 
+# Copy the entire project directory into the Docker image
+COPY . .
+
 RUN python3 -m pip install --no-cache-dir  --upgrade pip && \
     python3 -m pip install --no-cache-dir "jax[cuda]" \
         -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
@@ -26,6 +29,4 @@ ENV SCRATCH_VOLUME=/scratch
 RUN echo creating ${SCRATCH_VOLUME} && mkdir -p ${SCRATCH_VOLUME}
 VOLUME ${SCRATCH_VOLUME}
 
-ADD requirements.txt /work/requirements.txt
-
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install .
