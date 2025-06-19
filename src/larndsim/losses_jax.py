@@ -198,6 +198,11 @@ def cleaning_outputs(params, ref, adcs):
     adcs = jnp.where(adcs < adc_lowest, 0, adcs - adc_lowest)
     return ref, adcs
 
+@jit
+def adc2charge(dw, params):
+    # return in ke
+    return (dw / params.ADC_COUNTS * (params.V_REF - params.V_CM) + params.V_CM - params.V_PEDESTAL) / params.GAIN *1E-3
+
 def params_loss(params, response, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
     adcs, pixels, ticks, _, _, _, _ = simulate(params, response, tracks, fields, rngkey)
 

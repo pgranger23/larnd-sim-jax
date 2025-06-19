@@ -19,14 +19,30 @@ from larndsim.sim_jax import pad_size
 from .dataio import chop_tracks, jax_from_structured
 import jax.numpy as jnp
 from larndsim.fee_jax import digitize
+from larndsim.losses_jax import adc2charge
 
 # from ctypes import cdll
 # libcudart = cdll.LoadLibrary('libcudart.so')
 
 
-def load_events_as_batch(filename, sampling_resolution, swap_xz=True):
+def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-1):
     with h5py.File(filename, 'r') as f:
         tracks = np.array(f['segments'])
+
+    if not 't0' in tracks.dtype.names:
+        tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
+
+    track_fields = tracks.dtype.names
+
+    if 'eventID' in tracks.dtype.names:
+        evt_id = 'eventID'
+    else:
+        evt_id = 'event_id'
+
+    if n_events > 0:
+        evID = np.unique(tracks[evt_id])[n_events-1]
+        ev_msk = np.isin(tracks[evt_id], evID)
+        tracks = tracks[ev_msk]
 
     if swap_xz:
         x_start = np.copy(tracks['x_start'] )
@@ -40,16 +56,6 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True):
         tracks['z_start'] = x_start
         tracks['z_end'] = x_end
         tracks['z'] = x
-
-    if not 't0' in tracks.dtype.names:
-        tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
-    
-    track_fields = tracks.dtype.names
-
-    if 'eventID' in tracks.dtype.names:
-        evt_id = 'eventID'
-    else:
-        evt_id = 'event_id'
 
     unique_events, first_indices = np.unique(tracks[evt_id], return_index=True)
 
@@ -112,7 +118,9 @@ def main(config):
         ref_params = ref_params.replace(RESET_NOISE_CHARGE=0, UNCORRELATED_NOISE_CHARGE=0)
 
 
-    dataset, fields = load_events_as_batch(config.input_file, config.electron_sampling_resolution, swap_xz=True)
+    dataset, fields = load_events_as_batch(config.input_file, config.electron_sampling_resolution, swap_xz=True, n_events=config.n_events)
+
+    
         
 
     with h5py.File(config.output_file, 'w') as f:
@@ -133,11 +141,14 @@ def main(config):
 
             pix_x, pix_y, pix_z, eventID = get_hits_space_coords(ref_params, pixels_ref, ticks_ref)
             adc_lowest = digitize(ref_params, ref_params.DISCRIMINATION_THRESHOLD)
-            ref = jnp.where(ref < adc_lowest, 0, ref - adc_lowest)
-            mask = (ref.flatten() > 0) & (jnp.repeat(eventID, 10) != -1)
+            ref_clean = jnp.where(ref < adc_lowest, 0, ref - adc_lowest)
+            mask = (ref_clean.flatten() > 0) & (jnp.repeat(eventID, 10) != -1)
+            Q = adc2charge(ref.flatten()[mask], ref_params)
 
             group = f.create_group(f"batch_{ibatch}")
+            group.create_dataset('adc_clean', data=ref_clean.flatten()[mask])
             group.create_dataset('adc', data=ref.flatten()[mask])
+            group.create_dataset('Q', data=Q)
             group.create_dataset('pixels', data=jnp.repeat(pixels_ref, 10)[mask])
             group.create_dataset('ticks', data=ticks_ref.flatten()[mask])
             group.create_dataset('eventID', data=jnp.repeat(eventID, 10)[mask])
@@ -184,6 +195,7 @@ if __name__ == '__main__':
     parser.add_argument('--jac', action='store_true', help='Compute jacobian')
     parser.add_argument('--mc_diff', action='store_true', help='Use Monte Carlo diffusion')
     parser.add_argument('--save_wfs', action='store_true', help='Save waveforms')
+    parser.add_argument('--n_events', type=int, default=-1, help='Number of events to be simulated')
 
     try:
         args = parser.parse_args()

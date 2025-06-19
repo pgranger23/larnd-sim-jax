@@ -5,7 +5,6 @@ tpc_centers: # cm
 time_interval: [0, 200.] # us
 
 drift_length: 30.27225 # cm
-vdrift_static: 0.1587 # cm / us
 
 eField: 0.50 #kV/cm
 lifetime: 2.2e+3 # us
@@ -17,5 +16,10 @@ MeVToElectrons: 4.237e+04
 Ab: 0.8 
 kb: 0.0486 
 
-long_diff: 4.0e-6  # cm * cm / us
-tran_diff: 8.8e-6  # cm * cm / us
+long_diff: 0  # cm * cm / us
+tran_diff: 0  # cm * cm / us
+RESET_NOISE_CHARGE: 0
+UNCORRELATED_NOISE_CHARGE: 0
+DISCRIMINATION_THRESHOLD: 5000
+V_CM: 284.27734375
+V_REF: 1282.71484375
