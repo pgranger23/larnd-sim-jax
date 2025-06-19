@@ -243,6 +243,8 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "e_charge": 1.602e-19,
         "t_sampling": 0.1,
         "time_padding": 190,
+        "time_interval": [0, 200], #us
+        "drift_length": 0,
         "response_bin_size": 0.04434,
         "number_pix_neighbors": 1,
         "electron_sampling_resolution": 0.001,
@@ -263,6 +265,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "tran_diff_bin_edges": jnp.linspace(-0.22, 0.22, 6),
         "diffusion_in_current_sim": True,
         "mc_diff": False,
+        "tpc_centers": np.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers
     }
 
     mm2cm = 0.1
@@ -272,24 +275,16 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
     with open(detprop_file) as df:
         detprop = yaml.load(df, Loader=yaml.FullLoader)
 
-    params_dict['tpc_centers'] = np.array(detprop['tpc_centers'])
+    for key, value in detprop.items():
+        if key in params_dict:
+            if isinstance(value, (list, np.ndarray)):
+                params_dict[key] = np.array(value)
+            else:
+                params_dict[key] = value
+        else:
+            raise ValueError(f"Key '{key}' in detector properties file is not recognized.")
+
     params_dict['tpc_centers'][:, [2, 0]] = params_dict['tpc_centers'][:, [0, 2]]
-
-    params_dict['time_interval'] = np.array(detprop['time_interval'])
-
-    params_dict['drift_length'] = detprop['drift_length']
-    params_dict['vdrift_static'] = detprop['vdrift_static']
-
-    params_dict['eField'] = detprop['eField']
-    params_dict['vdrift'] = detprop['vdrift']
-    params_dict['lifetime'] = detprop['lifetime']
-    params_dict['MeVToElectrons'] = detprop['MeVToElectrons']
-    params_dict['Ab'] = detprop['Ab']
-    params_dict['kb'] = detprop['kb']
-    params_dict['long_diff'] = detprop['long_diff']
-    params_dict['tran_diff'] = detprop['tran_diff']
-    if 'temperatrue' in detprop:
-        params_dict['temperature'] = detprop['temperature']
 
     with open(pixel_file, 'r') as pf:
         tile_layout = yaml.load(pf, Loader=yaml.FullLoader)
