@@ -22,14 +22,15 @@ logger.info("DETSIM MODULE PARAMETERS")
 
 
 @partial(jit, static_argnames='signal_length')
-def accumulate_signals(wfs, currents_idx, charge, response, pixID, start_ticks, signal_length):
+def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID, cathode_ticks, signal_length):
     # Get the number of pixels and ticks
     Npixels, Nticks = wfs.shape
 
     # Compute indices for updating wfs, taking into account start_ticks
+    start_ticks = response.shape[-1] - signal_length - cathode_ticks
     time_ticks = start_ticks[..., None] + jnp.arange(signal_length)
 
-    time_ticks = jnp.where((time_ticks <= 0 ) | (time_ticks >= wfs.shape[1] - 1), 0, time_ticks+1) # it should be start_ticks +1 in theory but we cheat by putting the cumsum in the garbage too when strarting at 0 to mimic the expected behavior
+    time_ticks = jnp.where((time_ticks <= 0 ) | (time_ticks >= Nticks - 1), 0, time_ticks+1) # it should be start_ticks +1 in theory but we cheat by putting the cumsum in the garbage too when strarting at 0 to mimic the expected behavior
 
     start_indices = pixID * Nticks
 
@@ -40,12 +41,25 @@ def accumulate_signals(wfs, currents_idx, charge, response, pixID, start_ticks, 
 
     Nx, Ny, Nt = response.shape
 
-    signal_indices = jnp.ravel((currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt + jnp.arange(response.shape[-1] - signal_length, response.shape[-1]))
 
+    signal_indices = jnp.ravel((currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt + jnp.arange(response.shape[-1] - signal_length, response.shape[-1]))
+    # baseline_indices = jnp.ravel(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length))
+    # print(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length, axis=0))
+    
 
     # Update wfs with accumulated signals
     wfs = wfs.ravel()
-    wfs = wfs.at[(flat_indices,)].add(response.take(signal_indices)*jnp.repeat(charge, signal_length))
+    # wfs = wfs.at[(flat_indices,)].add((response.take(signal_indices) - response.take(baseline_indices))*jnp.repeat(charge, signal_length))
+    wfs = wfs.at[(flat_indices,)].add((response.take(signal_indices))*jnp.repeat(charge, signal_length))
+
+    #Now correct for the missed ticks at the beginning
+    integrated_start = response_cum.take(jnp.ravel((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + response.shape[-1] - signal_length))
+    real_start = response_cum.take(jnp.ravel((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks))
+    difference = (integrated_start - real_start)*charge
+
+    start_ticks = jnp.where((start_ticks <= 0 ) | (start_ticks >= Nticks - 1), 0, start_ticks) + pixID * Nticks
+    wfs = wfs.at[start_ticks].add(difference)
+
     return wfs.reshape((Npixels, Nticks))
 
 @jit
@@ -400,8 +414,8 @@ def current_mc(params, electrons, pixels_coord, fields):
 def current_lut(params, response, electrons, pixels_coord, fields):
     x_dist = abs(electrons[:, fields.index('x')] - pixels_coord[..., 0])
     y_dist = abs(electrons[:, fields.index('y')] - pixels_coord[..., 1])
-    z_anode = jnp.take(params.tpc_borders, electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 0]
-    t0 = jnp.abs(electrons[:, fields.index('z')] - z_anode) / get_vdrift(params)
+    z_cathode = jnp.take(params.tpc_borders, electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 1]
+    t0 = (jnp.abs(electrons[:, fields.index('z')] - z_cathode)) / get_vdrift(params) #Getting t0 as the equivalent time to cathode
     
     i = (x_dist/params.response_bin_size).astype(int)
     j = (y_dist/params.response_bin_size).astype(int)

@@ -7,7 +7,7 @@ import numpy as np
 from .ranges import ranges
 from larndsim.sim_jax import simulate, simulate_parametrized, get_size_history
 from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc
-from larndsim.consts_jax import build_params_class, load_detector_properties
+from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
 import logging
@@ -93,10 +93,6 @@ class ParamFitter:
         self.number_pix_neighbors = config.number_pix_neighbors
         self.signal_length = config.signal_length
 
-        if self.current_mode == 'lut':
-            self.lut_file = config.lut_file
-            self.load_lut()
-
         self.track_fields = track_fields
         if type(relevant_params) == dict:
             self.relevant_params_list = list(relevant_params.keys())
@@ -120,6 +116,10 @@ class ParamFitter:
 
         self.setup_params()
         self.make_target_sim()
+
+        if self.current_mode == 'lut':
+            self.lut_file = config.lut_file
+            self.load_lut()
 
         loss_functions = {
             "mse_adc": (mse_adc, {}),
@@ -212,13 +212,7 @@ class ParamFitter:
         self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
 
     def load_lut(self):
-        response = np.load(self.lut_file)
-        extended_response = np.zeros((50, 50, 1891))
-        extended_response[:45, :45, :] = response
-        response = extended_response
-        baseline = np.sum(response[:, :, :-self.signal_length+1], axis=-1)
-        response = np.concatenate([baseline[..., None], response[..., -self.signal_length+1:]], axis=-1)
-        self.response = response
+        self.response = load_lut(self.lut_file)
 
     def update_params(self):
         self.current_params = self.norm_params.replace(**{key: getattr(self.norm_params, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list})

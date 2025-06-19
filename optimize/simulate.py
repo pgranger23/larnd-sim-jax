@@ -6,7 +6,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 import argparse
 import sys
 import traceback
-from larndsim.consts_jax import build_params_class, load_detector_properties
+from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.sim_jax import prepare_tracks, simulate, simulate_parametrized, id2pixel, get_pixel_coordinates
 from larndsim.losses_jax import get_hits_space_coords
 from pprint import pprint
@@ -73,14 +73,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 # jax.config.update('jax_log_compiles', True)
 
-def load_lut(config):
-    response = np.load(config.lut_file)
-    extended_response = np.zeros((50, 50, response.shape[-1]), dtype=response.dtype)
-    extended_response[:45, :45, :] = response
-    response = extended_response
-    baseline = np.sum(response[:, :, :-config.signal_length+1], axis=-1)
-    response = np.concatenate([baseline[..., None], response[..., -config.signal_length+1:]], axis=-1)
-    return response
 
 def main(config):
     if config.lut_file == "" and config.mode == 'lut':
@@ -90,17 +82,17 @@ def main(config):
         jax.config.update('jax_platform_name', 'cpu')
 
     pars = []
-    if args.mode == 'lut':
-        response = load_lut(config)
-
-    elif config.jac:
+    if config.jac:
         def sim_wrapper(params, tracks):
             adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks, _ = simulate_parametrized(params, tracks, fields, rngseed=config.seed)
             return jnp.stack([adcs, ticks], axis=-1)
         pars = ['Ab', 'kb', 'eField', 'long_diff', 'tran_diff', 'lifetime', 'shift_z']
-
     Params = build_params_class(pars)
     ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts)
+
+    if args.mode == 'lut':
+        response = load_lut(config.lut_file)
+    
 
     
     params_to_apply = [

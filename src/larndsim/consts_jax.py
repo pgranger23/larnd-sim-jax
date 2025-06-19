@@ -327,3 +327,9 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
     params_dict['tpc_borders'] = jnp.asarray(params_dict['tpc_borders'])
     filtered_dict = {key: value for key, value in params_dict.items() if key in params_cls.__match_args__}
     return params_cls(**filtered_dict)
+
+def load_lut(lut_file):
+    response = np.load(lut_file)
+
+    return response
+    # return np.cumsum(response, axis=-1)

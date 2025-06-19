@@ -48,7 +48,8 @@ def get_adc_values(params, pixels_signals, noise_rng_key):
     q = pixels_signals*params.t_sampling
 
     # Collect cumulative charge over all time ticks + add baseline noise
-    q_cumsum = q.cumsum(axis=1)
+    # q_cumsum = q #Assuming the input is cumulated signal
+    q_cumsum = q.cumsum(axis=-1)  # Cumulative sum over time ticks
     q_sum = q_sum_base[:, jnp.newaxis] + q_cumsum
 
 
