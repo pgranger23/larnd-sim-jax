@@ -69,7 +69,7 @@ logger.setLevel(logging.INFO)
 
 def load_lut(config):
     response = np.load(config.lut_file)
-    extended_response = np.zeros((50, 50, 1891))
+    extended_response = np.zeros((50, 50, response.shape[-1]), dtype=response.dtype)
     extended_response[:45, :45, :] = response
     response = extended_response
     baseline = np.sum(response[:, :, :-config.signal_length+1], axis=-1)
@@ -113,8 +113,6 @@ def main(config):
 
 
     dataset, fields = load_events_as_batch(config.input_file, config.electron_sampling_resolution, swap_xz=True)
-
-    
         
 
     with h5py.File(config.output_file, 'w') as f:
@@ -146,6 +144,7 @@ def main(config):
             group.create_dataset('pix_x', data=jnp.repeat(pix_x, 10)[mask])
             group.create_dataset('pix_y', data=jnp.repeat(pix_y, 10)[mask])
             group.create_dataset('pix_z', data=pix_z.flatten()[mask])
+
             if config.save_wfs:
                 group.create_dataset('wfs', data=jnp.repeat(wfs, 10, axis=0)[mask, :])
             if config.jac:
@@ -170,7 +169,7 @@ if __name__ == '__main__':
                         default="src/larndsim/detector_properties/module0.yaml",
                         help="Path to detector properties YAML file")
     parser.add_argument("--pixel_layouts", dest="pixel_layouts",
-                        default="src/larndsim/pixel_layouts/multi_tile_layout-2.2.16.yaml",
+                        default="src/larndsim/pixel_layouts/multi_tile_layout-2.4.16_v4.yaml",
                         help="Path to pixel layouts YAML file")
     parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
     parser.add_argument('--electron_sampling_resolution', type=float, required=True, help='Electron sampling resolution')
