@@ -6,7 +6,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 import argparse
 import sys
 import traceback
-from larndsim.consts_jax import build_params_class, load_detector_properties
+from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.sim_jax import prepare_tracks, simulate, simulate_parametrized, id2pixel, get_pixel_coordinates
 from larndsim.losses_jax import get_hits_space_coords
 from pprint import pprint
@@ -73,14 +73,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 # jax.config.update('jax_log_compiles', True)
 
-def load_lut(config):
-    response = np.load(config.lut_file)
-    extended_response = np.zeros((50, 50, 1891))
-    extended_response[:45, :45, :] = response
-    response = extended_response
-    baseline = np.sum(response[:, :, :-config.signal_length+1], axis=-1)
-    response = np.concatenate([baseline[..., None], response[..., -config.signal_length+1:]], axis=-1)
-    return response
 
 def main(config):
     if config.lut_file == "" and config.mode == 'lut':
@@ -90,17 +82,17 @@ def main(config):
         jax.config.update('jax_platform_name', 'cpu')
 
     pars = []
-    if args.mode == 'lut':
-        response = load_lut(config)
-
-    elif config.jac:
+    if config.jac:
         def sim_wrapper(params, tracks):
             adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks, _ = simulate_parametrized(params, tracks, fields, rngseed=config.seed)
             return jnp.stack([adcs, ticks], axis=-1)
         pars = ['Ab', 'kb', 'eField', 'long_diff', 'tran_diff', 'lifetime', 'shift_z']
-
     Params = build_params_class(pars)
     ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts)
+
+    if args.mode == 'lut':
+        response = load_lut(config.lut_file)
+    
 
     
     params_to_apply = [
@@ -155,6 +147,7 @@ def main(config):
             group.create_dataset('pix_x', data=jnp.repeat(pix_x, 10)[mask])
             group.create_dataset('pix_y', data=jnp.repeat(pix_y, 10)[mask])
             group.create_dataset('pix_z', data=pix_z.flatten()[mask])
+
             if config.save_wfs:
                 group.create_dataset('wfs', data=jnp.repeat(wfs, 10, axis=0)[mask, :])
             if config.jac:
@@ -179,7 +172,7 @@ if __name__ == '__main__':
                         default="src/larndsim/detector_properties/module0.yaml",
                         help="Path to detector properties YAML file")
     parser.add_argument("--pixel_layouts", dest="pixel_layouts",
-                        default="src/larndsim/pixel_layouts/multi_tile_layout-2.2.16.yaml",
+                        default="src/larndsim/pixel_layouts/multi_tile_layout-2.4.16_v4.yaml",
                         help="Path to pixel layouts YAML file")
     parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
     parser.add_argument('--electron_sampling_resolution', type=float, required=True, help='Electron sampling resolution')

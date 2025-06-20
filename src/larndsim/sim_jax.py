@@ -140,13 +140,14 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     nticks_wf = int(params.time_interval[1]/params.t_sampling) + 1 #Adding one first element to serve as a garbage collector
     wfs = jnp.zeros((npixels, nticks_wf))
 
-    start_ticks = (t0/params.t_sampling + 0.5).astype(int) - params.signal_length
-    
-    wfs = accumulate_signals(wfs, currents_idx, electrons_renumbered[:, fields.index("n_electrons")], response, pix_renumbering, start_ticks, params.signal_length)
+    # start_ticks = response.shape[-1] - (t0/params.t_sampling).astype(int) - params.signal_length #Start tick from distance to the end of the cathode
+    cathode_ticks = (t0/params.t_sampling).astype(int) #Start tick from distance to the end of the cathode
+    response_cum = jnp.cumsum(response, axis=-1)
+    wfs = accumulate_signals(wfs, currents_idx, electrons_renumbered[:, fields.index("n_electrons")], response, response_cum, pix_renumbering, cathode_ticks, params.signal_length)
     integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey)
 
     adcs = digitize(params, integral)
-    return adcs, ticks, start_ticks, wfs[:, 1:]
+    return adcs, ticks, cathode_ticks, wfs[:, 1:]
 
 @partial(jit, static_argnames=['fields'])
 def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, fields):

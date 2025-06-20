@@ -5,7 +5,6 @@ tpc_centers: # cm
 time_interval: [0, 200.] # us
 
 drift_length: 30.27225 # cm
-vdrift_static: 0.1587 # cm / us
 
 eField: 0.50 #kV/cm
 lifetime: 2.2e+3 # us
@@ -22,3 +21,5 @@ tran_diff: 0  # cm * cm / us
 RESET_NOISE_CHARGE: 0
 UNCORRELATED_NOISE_CHARGE: 0
 DISCRIMINATION_THRESHOLD: 5000
+V_CM: 284.27734375
+V_REF: 1282.71484375

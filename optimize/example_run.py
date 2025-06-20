@@ -162,7 +162,7 @@ if __name__ == '__main__':
                         default="src/larndsim/detector_properties/module0.yaml",
                         help="Path to detector properties YAML file")
     parser.add_argument("--pixel_layouts", dest="pixel_layouts",
-                        default="src/larndsim/pixel_layouts/multi_tile_layout-2.2.16.yaml",
+                        default="src/larndsim/pixel_layouts/multi_tile_layout-2.4.16_v4.yaml",
                         help="Path to pixel layouts YAML file")
     parser.add_argument("--lr", dest="lr", default=1, type=float,
                         help="Learning rate -- used for all params")
