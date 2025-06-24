@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 import dataclasses
 from types import MappingProxyType
+from collections import defaultdict
 
 @dataclasses.dataclass
 class Params_template:
@@ -304,17 +305,44 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
     tpcs = np.unique(params_dict['tile_positions'][:,0])
     params_dict['tpc_borders'] = np.zeros((len(tpcs), 3, 2))
 
-    for itpc,tpc_id in enumerate(tpcs):
-        this_tpc_tile = params_dict['tile_positions'][params_dict['tile_positions'][:,0] == tpc_id]
-        this_orientation = params_dict['tile_orientations'][params_dict['tile_positions'][:,0] == tpc_id]
-        x_border = min(this_tpc_tile[:,2])+params_dict['tile_borders'][0][0]+params_dict['tpc_centers'][itpc][0], \
-                    max(this_tpc_tile[:,2])+params_dict['tile_borders'][0][1]+params_dict['tpc_centers'][itpc][0]
-        y_border = min(this_tpc_tile[:,1])+params_dict['tile_borders'][1][0]+params_dict['tpc_centers'][itpc][1], \
-                    max(this_tpc_tile[:,1])+params_dict['tile_borders'][1][1]+params_dict['tpc_centers'][itpc][1]
-        z_border = min(this_tpc_tile[:,0])+params_dict['tpc_centers'][itpc][2], \
-                    max(this_tpc_tile[:,0])+detprop['drift_length']*this_orientation[:,0][0]+params_dict['tpc_centers'][itpc][2]
+    tile_indeces = tile_layout['tile_indeces']
+    tpc_ids = np.unique(np.array(list(tile_indeces.values()))[:,0], axis=0)
+
+    anodes = defaultdict(list)
+    cathode_directions = dict() # What direction the cathode is relative to anode
+
+    for tpc_id in tpc_ids:
+        tile_cathode_directions = []
+        for tile in tile_indeces:
+            if tile_indeces[tile][0] == tpc_id:
+                anodes[tpc_id].append(tile_layout['tile_positions'][tile])
+                tile_cathode_directions.append(tile_layout['tile_orientations'][tile][0])
+
+        if len(set(tile_cathode_directions)) != 1:
+            raise ValueError("Tiles in same anode plane have different drift directions.")
+
+        if tile_cathode_directions[0] not in [1, -1]:
+            raise ValueError("Cathode direction should be either 1 or -1.")
+
+        cathode_directions[tpc_id] = tile_cathode_directions[0]
+
+    try:
+        params_dict['drift_length'] = tile_layout['drift_length'] * mm2cm
+    except:
+        mod_anodes = params_dict['tile_positions'][:, 0]
+        params_dict['drift_length'] = 0.5 * (max(mod_anodes) - min(mod_anodes)) * mm2cm
+
+    for itpc,tpc_id in enumerate(anodes):
+        tiles = np.vstack(anodes[tpc_id]) * mm2cm
+        x_border = min(tiles[:,2])+params_dict['tile_borders'][0][0]+params_dict['tpc_centers'][itpc][0], \
+                    max(tiles[:,2])+params_dict['tile_borders'][0][1]+params_dict['tpc_centers'][itpc][0]
+        y_border = min(tiles[:,1])+params_dict['tile_borders'][1][0]+params_dict['tpc_centers'][itpc][1], \
+                    max(tiles[:,1])+params_dict['tile_borders'][1][1]+params_dict['tpc_centers'][itpc][1]
+        z_border = min(tiles[:,0])+params_dict['tpc_centers'][itpc][2], \
+                    max(tiles[:,0])+params_dict['drift_length']*cathode_directions[tpc_id]+params_dict['tpc_centers'][itpc][2]
 
         params_dict['tpc_borders'][itpc] = (x_border, y_border, z_border)
+
     
     #: Number of pixels per axis
     # params_dict['n_pixels'] = len(np.unique(params_dict['xs']))*2, len(np.unique(params_dict['ys']))*4
