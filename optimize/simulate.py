@@ -40,7 +40,7 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-
         evt_id = 'event_id'
 
     if n_events > 0:
-        evID = np.unique(tracks[evt_id])[n_events-1]
+        evID = np.unique(tracks[evt_id])[:n_events]
         ev_msk = np.isin(tracks[evt_id], evID)
         tracks = tracks[ev_msk]
 
@@ -178,7 +178,7 @@ if __name__ == '__main__':
     parser.add_argument('--electron_sampling_resolution', type=float, required=True, help='Electron sampling resolution')
     parser.add_argument('--number_pix_neighbors', type=int, required=True, help='Number of pixel neighbors')
     parser.add_argument('--signal_length', type=int, required=True, help='Signal length')
-    parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
+    parser.add_argument('--lut_file', type=str, required=False, default="src/larndsim/detector_properties/response_44_v2a_full_tick.npz", help='Path to the LUT file')
     parser.add_argument('--noise', action='store_true', help='Add noise to the simulation')
     parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
     parser.add_argument('--diffusion_in_current_sim', action='store_true', help='Use diffusion in current simulation')
