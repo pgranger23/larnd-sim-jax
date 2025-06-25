@@ -358,6 +358,11 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
 
 def load_lut(lut_file):
     response = np.load(lut_file)
+    try:
+        response.keys()
+        response = response['response']
+    except:
+        response = response
 
     return response
     # return np.cumsum(response, axis=-1)
