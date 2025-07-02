@@ -40,7 +40,7 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-
         evt_id = 'event_id'
 
     if n_events > 0:
-        evID = np.unique(tracks[evt_id])[n_events-1]
+        evID = np.unique(tracks[evt_id])[:n_events]
         ev_msk = np.isin(tracks[evt_id], evID)
         tracks = tracks[ev_msk]
 
@@ -84,7 +84,7 @@ def main(config):
     pars = []
     if config.jac:
         def sim_wrapper(params, tracks):
-            adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks, _ = simulate_parametrized(params, tracks, fields, rngseed=config.seed)
+            adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, _ = simulate_parametrized(params, tracks, fields, rngseed=config.seed)
             return jnp.stack([adcs, ticks], axis=-1)
         pars = ['Ab', 'kb', 'eField', 'long_diff', 'tran_diff', 'lifetime', 'shift_z']
     Params = build_params_class(pars)
@@ -125,25 +125,24 @@ def main(config):
             tracks = jax.device_put(batch)
 
             if args.mode == 'lut':
-                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons, wfs = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
+                adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
             else:
-                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
+                adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
             if config.jac:
                 jac_res = jax.jacfwd(sim_wrapper)(ref_params, tracks)
 
-            pix_x, pix_y, pix_z, eventID = get_hits_space_coords(ref_params, pixels_ref, ticks_ref)
             adc_lowest = digitize(ref_params, ref_params.DISCRIMINATION_THRESHOLD)
-            ref_clean = jnp.where(ref < adc_lowest, 0, ref - adc_lowest)
-            mask = (ref_clean.flatten() > 0) & (jnp.repeat(eventID, 10) != -1)
-            Q = adc2charge(ref.flatten()[mask], ref_params)
+            adcs_clean = adcs - adc_lowest
+            mask = (adcs_clean.flatten() != 0) & (jnp.repeat(eventID, 10) != -1)
+            Q = adc2charge(adcs.flatten()[mask], ref_params)
 
             group = f.create_group(f"batch_{ibatch}")
-            group.create_dataset('adc_clean', data=ref_clean.flatten()[mask])
-            group.create_dataset('adc', data=ref.flatten()[mask])
+            group.create_dataset('adc_clean', data=adcs_clean.flatten()[mask])
+            group.create_dataset('adc', data=adcs.flatten()[mask])
             group.create_dataset('Q', data=Q)
-            group.create_dataset('pixels', data=jnp.repeat(pixels_ref, 10)[mask])
-            group.create_dataset('ticks', data=ticks_ref.flatten()[mask])
-            group.create_dataset('eventID', data=jnp.repeat(eventID, 10)[mask])
+            group.create_dataset('pixels', data=jnp.repeat(unique_pixels, 10)[mask])
+            group.create_dataset('ticks', data=ticks.flatten()[mask])
+            group.create_dataset('eventID', data=jnp.repeat(event, 10)[mask])
             group.create_dataset('pix_x', data=jnp.repeat(pix_x, 10)[mask])
             group.create_dataset('pix_y', data=jnp.repeat(pix_y, 10)[mask])
             group.create_dataset('pix_z', data=pix_z.flatten()[mask])

@@ -20,7 +20,7 @@ def digitize(params, integral_list):
         numpy.ndarray: list of ADC values for each pixel
     """
     adcs = jnp.minimum((jnp.maximum((integral_list*params.GAIN+params.V_PEDESTAL - params.V_CM), 0) \
-                        * params.ADC_COUNTS/(params.V_REF-params.V_CM)+0.5), params.ADC_COUNTS)
+                        * params.ADC_COUNTS/(params.V_REF-params.V_CM)), params.ADC_COUNTS)
 
     return adcs
 

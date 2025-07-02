@@ -130,15 +130,20 @@ def chamfer_distance_3d(pos_a, pos_b, w_a, w_b):
     )
     return chamfer_dist
 
-def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref, adc_norm=10., match_z=False):
-    pixel_x, pixel_y, drift, adcs, eventID = prepare_hits(params, adcs, pixels, ticks, match_z)
-    pixel_x_ref, pixel_y_ref, drift_ref, adcs_ref, eventID_ref = prepare_hits(params, adcs_ref, pixels_ref, ticks_ref, match_z)
-    mask = (adcs.flatten() > 0) & (jnp.repeat(eventID, 10) != -1)
-    mask_ref = adcs_ref.flatten() > 0
+def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref, pixel_x_ref, pixel_y_ref, pixel_z_ref, ticks_ref, eventID_ref , adc_norm=10., match_z=False):
+    if match_z:
+        drift = pixel_z
+        drift_ref = pixel_z_ref
+    else:
+        drift = ticks
+        drift_ref = ticks_ref
+
+    mask = (adcs.flatten() > params.DISCRIMINATION_THRESHOLD/1e3) & (jnp.repeat(eventID, 10) >=0)
+    mask_ref = (adcs_ref.flatten() > params.DISCRIMINATION_THRESHOLD/1e3) & (eventID_ref >= 0)
 
     nb_selected = jnp.count_nonzero(mask)
     nb_selected_ref = jnp.count_nonzero(mask_ref)
-    
+
     padded_size = pad_size(max(nb_selected, nb_selected_ref), "batch_hits")
 
     eventID_masked = jnp.pad(jnp.repeat(eventID, 10)[mask], (0, padded_size - nb_selected), mode='constant', constant_values=-1e9)
@@ -147,15 +152,13 @@ def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref, adc
     drift_masked = jnp.pad(drift.flatten()[mask], (0, padded_size - nb_selected), mode='constant', constant_values=-1e9)
     adcs_masked = jnp.pad(adcs.flatten()[mask], (0, padded_size - nb_selected), mode='constant', constant_values=0)/adc_norm
 
-    eventID_masked_ref = jnp.pad(jnp.repeat(eventID_ref, 10)[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
-    pixel_x_masked_ref = jnp.pad(jnp.repeat(pixel_x_ref, 10)[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
-    pixel_y_masked_ref = jnp.pad(jnp.repeat(pixel_y_ref, 10)[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
-    drift_masked_ref = jnp.pad(drift_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
-    adcs_masked_ref = jnp.pad(adcs_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=0)/adc_norm
+    eventID_masked_ref = jnp.pad(eventID_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
+    pixel_x_masked_ref = jnp.pad(pixel_x_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
+    pixel_y_masked_ref = jnp.pad(pixel_y_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
+    drift_masked_ref = jnp.pad(drift_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
+    adcs_masked_ref = jnp.pad(adcs_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=0)/adc_norm
 
-    loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked, adcs_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref, adcs_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
-    # loss = softmin_charge_aware_chamfer(jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, pixel_z_masked_ref, adcs_masked_ref/jnp.sum(adcs_masked_ref)), axis=-1), jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, pixel_z_masked, adcs_masked/jnp.sum(adcs_masked)), axis=-1), adcs_masked_ref, adcs_masked)
-
+    loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
 
     return loss, dict()
 
@@ -203,41 +206,30 @@ def adc2charge(dw, params):
     # return in ke
     return (dw / params.ADC_COUNTS * (params.V_REF - params.V_CM) + params.V_CM - params.V_PEDESTAL) / params.GAIN *1E-3
 
-def params_loss(params, response, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
-    adcs, pixels, ticks, _, _, _, _ = simulate(params, response, tracks, fields, rngkey)
+def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
+    adcs, x, y, z, ticks, event, _, _, _, _ = simulate(params, response, tracks, fields, rngkey)
 
-    ref, adcs = cleaning_outputs(params, ref, adcs)
-    
-    loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
-    return loss_val, aux
+    Q = adc2charge(adcs, params)
 
-def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
-    """
-    Loss function for parametrized simulation.
-    Args:
-        params: Parameters of the simulation.
-        ref: Reference ADC values.
-        pixels_ref: Reference pixel IDs.
-        ticks_ref: Reference time ticks.
-        tracks: Particle tracks.
-        fields: Fields for the simulation.
-        rngkey: Random key for simulation.
-        loss_fn: Loss function to use.
-        **loss_kwargs: Additional arguments for the loss function.
-    Returns:
-        loss_val: Loss value.
-        aux: Auxiliary values.
-    """
-    
-    adcs, pixels, ticks, _, _, _, _ = simulate_parametrized(params, tracks, fields, rngkey)
-
-    ref, adcs = cleaning_outputs(params, ref, adcs)
-    
     if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
         loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
     else:
-        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
+        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, event, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event , **loss_kwargs)
+
     return loss_val, aux
+
+def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
+    adcs, x, y, z, ticks, event, _, _, _, _ = simulate_parametrized(params, tracks, fields, rngkey)
+
+    Q = adc2charge(adcs, params)
+
+    if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
+        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
+    else:
+        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, event, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event , **loss_kwargs)
+
+    return loss_val, aux
+
 
 #Code commented below is unused but I still want to keep it for future reference
 
