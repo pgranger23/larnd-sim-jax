@@ -504,7 +504,7 @@ class GradientDescentFitter(ParamFitter):
 
         if not self.read_target:
             # If explicit number of iterations, scale epochs accordingly
-            if len(dataloader_sim) != len(dataloader_target):
+            if len(dataloader_sim) != len(target):
                 raise Exception("Sim and target inputs do not match in size. Panic.")
 
 
@@ -531,7 +531,7 @@ class GradientDescentFitter(ParamFitter):
 
                     # target
                     if not self.read_target:
-                        selected_tracks_bt_tgt = dataloader_target[i].reshape(-1, len(self.track_fields))
+                        selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
                         target = jax.device_put(selected_tracks_bt_tgt)
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
 
@@ -618,7 +618,7 @@ class LikelihoodProfiler(ParamFitter):
         else:
             super().make_target_sim()
 
-    def fit(self, dataloader_sim, dataloader_target, iterations=100, **kwargs):
+    def fit(self, dataloader_sim, target, iterations=100, **kwargs):
 
         self.prepare_fit()
 
@@ -633,7 +633,7 @@ class LikelihoodProfiler(ParamFitter):
         self.ref_params = self.current_params
 
         for i in range(len(dataloader_sim)):
-            logger.info(f"Batch {i}/{len(dataloader_target)}")
+            logger.info(f"Batch {i}/{len(target)}")
 
             # sim
             selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.track_fields))
@@ -642,7 +642,7 @@ class LikelihoodProfiler(ParamFitter):
 
             # target
             if not self.read_target:
-                selected_tracks_bt_tgt = dataloader_target[i].reshape(-1, len(self.track_fields))
+                selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
                 target = jax.device_put(selected_tracks_bt_tgt)
             ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
 
@@ -728,7 +728,7 @@ class MinuitFitter(ParamFitter):
         if 'cuda' in jax.devices():
             self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
 
-    def fit(self, dataloader_sim, dataloader_target, **kwargs):
+    def fit(self, dataloader_sim, target, **kwargs):
         self.prepare_fit()
         logger.info("Using the fitter in a Minuit mode.")
         logger.warning(f"Arguments {kwargs} are ignored in this mode.")
@@ -738,7 +738,7 @@ class MinuitFitter(ParamFitter):
 
         if self.separate_fits:
             for i in range(len(dataloader_sim)):
-                logger.info(f"Batch {i}/{len(dataloader_target)}")
+                logger.info(f"Batch {i}/{len(dataloader_sim)}")
                 start_time = time()
 
                 # sim
@@ -748,7 +748,7 @@ class MinuitFitter(ParamFitter):
 
                 # target
                 if not self.read_target:
-                    selected_tracks_bt_tgt = dataloader_target[i].reshape(-1, len(self.track_fields))
+                    selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
                     target = jax.device_put(selected_tracks_bt_tgt)
                 ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
 
@@ -785,13 +785,13 @@ class MinuitFitter(ParamFitter):
 
                     # target
                     if not self.read_target:
-                        selected_tracks_bt_tgt = dataloader_target[i].reshape(-1, len(self.track_fields))
+                        selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
                         target = jax.device_put(selected_tracks_bt_tgt)
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
 
                     loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_grad=False)
                     avg_loss += loss_val
-                return avg_loss/len(dataloader_target)
+                return avg_loss/len(dataloader_sim)
             
             def grad_wrapper(args):
                 # Update the current params with the new values
@@ -805,13 +805,13 @@ class MinuitFitter(ParamFitter):
 
                     # target
                     if not self.read_target:
-                        selected_tracks_bt_tgt = dataloader_target[i].reshape(-1, len(self.track_fields))
+                        selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
                         target = jax.device_put(selected_tracks_bt_tgt)
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
 
                     _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_loss=False)
                     avg_grad = [getattr(grads, key) + avg_grad[i] for i, key in enumerate(self.relevant_params_list)]
-                return [g/len(dataloader_target) for g in avg_grad]
+                return [g/len(dataloader_sim) for g in avg_grad]
 
             self.configure_minimizer(loss_wrapper, grad_wrapper)
             result = self.minimizer.migrad()
