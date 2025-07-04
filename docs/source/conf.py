@@ -53,3 +53,12 @@ download_artifact(
     raise_error=True,
     retries=3,
 )
+
+download_artifact(
+    prefix="scan-lut-plots-",
+    path="scan-lut-plots",
+    repo="pgranger23/larnd-sim-jax",
+    token=os.environ["GITHUB_TOKEN"],
+    raise_error=True,
+    retries=3,
+)
