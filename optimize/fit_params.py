@@ -5,7 +5,7 @@ import shutil
 import pickle
 import numpy as np
 from .ranges import ranges
-from larndsim.sim_jax import simulate, simulate_parametrized, get_size_history
+from larndsim.sim_jax import simulate_new, simulate_parametrized, get_size_history
 from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.softdtw_jax import SoftDTW
@@ -255,7 +255,7 @@ class ParamFitter:
         fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
         if regen or not os.path.exists(fname):
             if self.current_mode == 'lut':
-                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons, _ = simulate(self.target_params, self.response, tracks, self.track_fields, i+1) #Setting a different random seed for each target
+                ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons, _ = simulate_new(self.target_params, self.response, tracks, self.track_fields, i+1) #Setting a different random seed for each target
             else:
                 ref_adcs, ref_unique_pixels, ref_ticks, ref_pix_matching, ref_electrons, ref_ticks_electrons, _ = simulate_parametrized(self.target_params, tracks, self.track_fields, i+1) #Setting a different random seed for each target
 

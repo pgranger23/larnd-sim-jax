@@ -3,7 +3,7 @@ from jax import jit, vmap
 import jax
 from jax.nn import softmax
 from functools import partial
-from larndsim.sim_jax import pad_size, simulate, simulate_parametrized
+from larndsim.sim_jax import pad_size, simulate_new, simulate_parametrized
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
 
@@ -204,7 +204,7 @@ def adc2charge(dw, params):
     return (dw / params.ADC_COUNTS * (params.V_REF - params.V_CM) + params.V_CM - params.V_PEDESTAL) / params.GAIN *1E-3
 
 def params_loss(params, response, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
-    adcs, pixels, ticks, _, _, _, _ = simulate(params, response, tracks, fields, rngkey)
+    adcs, pixels, ticks, _, _, _, _ = simulate_new(params, response, tracks, fields, rngkey)
 
     ref, adcs = cleaning_outputs(params, ref, adcs)
     

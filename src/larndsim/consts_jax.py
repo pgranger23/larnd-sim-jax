@@ -136,6 +136,7 @@ class Params_template:
     size_margin: float = struct.field(pytree_node=False)
     diffusion_in_current_sim: bool = struct.field(pytree_node=False, default=True)
     mc_diff: bool = struct.field(pytree_node=False, default=False)
+    nb_sampling_bins_per_pixel: int = struct.field(pytree_node=False, default=10)
 
 def build_params_class(params_with_grad):
     """
@@ -266,7 +267,8 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "tran_diff_bin_edges": jnp.linspace(-0.22, 0.22, 6),
         "diffusion_in_current_sim": True,
         "mc_diff": False,
-        "tpc_centers": np.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers
+        "tpc_centers": np.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
+        "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
     }
 
     mm2cm = 0.1

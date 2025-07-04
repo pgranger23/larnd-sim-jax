@@ -7,7 +7,7 @@ import argparse
 import sys
 import traceback
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
-from larndsim.sim_jax import prepare_tracks, simulate, simulate_parametrized, id2pixel, get_pixel_coordinates
+from larndsim.sim_jax import prepare_tracks, simulate_new, simulate_parametrized, id2pixel, get_pixel_coordinates
 from larndsim.losses_jax import get_hits_space_coords
 from pprint import pprint
 import numpy as np
@@ -125,7 +125,7 @@ def main(config):
             tracks = jax.device_put(batch)
 
             if args.mode == 'lut':
-                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons, wfs = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
+                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons, wfs = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed)
             else:
                 ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
             if config.jac:
