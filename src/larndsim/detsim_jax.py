@@ -173,18 +173,18 @@ def get_hit_z(params, ticks, plane):
     z_high = jnp.take(params.tpc_borders, plane.astype(int), axis=0)[..., 2, 1]
     return z_anode + ticks * params.t_sampling*get_vdrift(params) * jnp.sign(z_high - z_anode)
 
-# @jit
-# def gaussian_1d_integral(bin_edges, std):
-#     # Use the error function to compute the integral
+@jit
+def gaussian_1d_integral(bin_edges, std):
+    # Use the error function to compute the integral
 
-#     erf_at_borders = jnp.ones((std.shape[0], bin_edges.shape[0]))
-#     erf_at_borders = erf_at_borders.at[:, 0].set(-1)
+    erf_at_borders = jnp.ones((std.shape[0], bin_edges.shape[0]))
+    erf_at_borders = erf_at_borders.at[:, 0].set(-1)
 
-#     erf_at_borders = erf_at_borders.at[:, 1:-1].set(erf(bin_edges[1:-1] / (jnp.sqrt(2) * std[:, None])))
+    erf_at_borders = erf_at_borders.at[:, 1:-1].set(erf(bin_edges[1:-1] / (jnp.sqrt(2) * std[:, None])))
 
-#     return 0.5*(erf_at_borders[:, 1:] - erf_at_borders[:, :-1])
+    return 0.5*(erf_at_borders[:, 1:] - erf_at_borders[:, :-1])
 
-def gaussian_1d_integral(bin_edges, x0, std):
+def gaussian_1d_integral_new(bin_edges, x0, std):
     # Use the error function to compute the integral
 
     calculated_edges = bin_edges - x0
@@ -204,8 +204,8 @@ def density_2d(bins, x0, y0, sigma):
     y0: 1D array of y0 values
     sigma: 1D array of standard deviations
     """
-    estimated_x = gaussian_1d_integral(bins[None, :], x0[:, None], sigma[:, None])
-    estimated_y = gaussian_1d_integral(bins[None, :], y0[:, None], sigma[:, None])
+    estimated_x = gaussian_1d_integral_new(bins[None, :], x0[:, None], sigma[:, None])
+    estimated_y = gaussian_1d_integral_new(bins[None, :], y0[:, None], sigma[:, None])
     return jnp.einsum('ij,ik->ijk', estimated_x, estimated_y)
 
 @partial(jit, static_argnames=['fields'])
