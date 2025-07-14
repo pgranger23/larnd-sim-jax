@@ -675,10 +675,10 @@ class LikelihoodProfiler(ParamFitter):
                     if 'cuda' in jax.devices():
                         self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
 
-            with open(f'fit_result/{self.test_name}/history_batch{i}_{self.out_label}.pkl', "wb") as f_history:
+            with open(f'fit_result/{self.test_name}/history_{param}_batch{i}_{self.out_label}.pkl', "wb") as f_history:
                 pickle.dump(self.training_history, f_history)
-            if os.path.exists(f'fit_result/{self.test_name}/history_batch{i-1}_{self.out_label}.pkl'):
-                os.remove(f'fit_result/{self.test_name}/history_batch{i-1}_{self.out_label}.pkl')
+            if os.path.exists(f'fit_result/{self.test_name}/history_{param}_batch{i-1}_{self.out_label}.pkl'):
+                os.remove(f'fit_result/{self.test_name}/history_{param}_batch{i-1}_{self.out_label}.pkl')
 
         if os.path.exists('target_' + self.out_label):
             shutil.rmtree('target_' + self.out_label, ignore_errors=True)

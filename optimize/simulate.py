@@ -133,7 +133,7 @@ def main(config):
 
             adc_lowest = digitize(ref_params, ref_params.DISCRIMINATION_THRESHOLD)
             adcs_clean = adcs - adc_lowest
-            mask = (adcs_clean.flatten() != 0) & (jnp.repeat(eventID, 10) != -1)
+            mask = (adcs_clean.flatten() != 0) & (jnp.repeat(event, 10) != -1)
             Q = adc2charge(adcs.flatten()[mask], ref_params)
 
             group = f.create_group(f"batch_{ibatch}")
@@ -143,9 +143,9 @@ def main(config):
             group.create_dataset('pixels', data=jnp.repeat(unique_pixels, 10)[mask])
             group.create_dataset('ticks', data=ticks.flatten()[mask])
             group.create_dataset('eventID', data=jnp.repeat(event, 10)[mask])
-            group.create_dataset('pix_x', data=jnp.repeat(pix_x, 10)[mask])
-            group.create_dataset('pix_y', data=jnp.repeat(pix_y, 10)[mask])
-            group.create_dataset('pix_z', data=pix_z.flatten()[mask])
+            group.create_dataset('pix_x', data=jnp.repeat(pixel_x, 10)[mask])
+            group.create_dataset('pix_y', data=jnp.repeat(pixel_y, 10)[mask])
+            group.create_dataset('pix_z', data=pixel_z.flatten()[mask])
 
             if config.save_wfs:
                 group.create_dataset('wfs', data=jnp.repeat(wfs, 10, axis=0)[mask, :])

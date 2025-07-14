@@ -139,6 +139,10 @@ def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref
         drift_ref = ticks_ref
 
     mask = (adcs.flatten() > params.DISCRIMINATION_THRESHOLD/1e3) & (jnp.repeat(eventID, 10) >=0)
+    if len(adcs_ref.flatten()) == len(eventID_ref) * 10:
+        eventID_ref = jnp.repeat(eventID_ref,10)
+        pixel_x_ref = jnp.repeat(pixel_x_ref,10)
+        pixel_y_ref = jnp.repeat(pixel_y_ref,10)
     mask_ref = (adcs_ref.flatten() > params.DISCRIMINATION_THRESHOLD/1e3) & (eventID_ref >= 0)
 
     nb_selected = jnp.count_nonzero(mask)
@@ -156,7 +160,7 @@ def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref
     pixel_x_masked_ref = jnp.pad(pixel_x_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
     pixel_y_masked_ref = jnp.pad(pixel_y_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
     drift_masked_ref = jnp.pad(drift_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
-    adcs_masked_ref = jnp.pad(adcs_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=0)/adc_norm
+    adcs_masked_ref = jnp.pad(adcs_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=0)/adc_norm
 
     loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
 
