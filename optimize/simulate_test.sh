@@ -8,7 +8,7 @@ for ifile in $(seq 0 ${NFILES}); do
         --input_file ${INPUT_FILE} \
         --output_file output/output_${ifile}.h5 \
         --electron_sampling_resolution 0.005 \
-        --number_pix_neighbors 3 \
+        --number_pix_neighbors 4 \
         --signal_length 100 \
         --mode 'lut' \
         --lut_file src/larndsim/detector_properties/response_44.npy \

@@ -63,6 +63,14 @@ def main(config):
     dataset_sim = TracksDataset(filename=config.input_file_sim, ntrack=config.data_sz, max_nbatch=max_nbatch, seed=config.data_seed, random_ntrack=config.random_ntrack, 
                             track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, electron_sampling_resolution=config.electron_sampling_resolution, live_selection=config.live_selection)
 
+    if ".np" in config.input_file_tgt:
+        if not config.read_target:
+            logger.warning("read_target is not activated but a ready target are provided. Changing read_target to TRUE")
+            config.read_target = True
+    elif ".h5" in config.input_file_tgt or ".hdf5" in config.input_file_tgt:
+        if config.read_target:
+            logger.warning("read_target is activated but target is provided as a simulation input. Changing read_target to FALSE")
+            config.read_target = False
     if not config.read_target:
         dataset_target = TracksDataset(filename=config.input_file_tgt, ntrack=config.data_sz, max_nbatch=max_nbatch, seed=config.data_seed, random_ntrack=config.random_ntrack,
                                 track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, electron_sampling_resolution=config.electron_sampling_resolution, live_selection=config.live_selection)
