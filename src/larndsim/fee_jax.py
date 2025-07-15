@@ -5,6 +5,7 @@ Module that simulates the front-end electronics (triggering, ADC)
 import jax.numpy as jnp
 from jax.profiler import annotate_function
 from jax import jit, vmap, lax, random, debug
+from jax.scipy.special import erf
 
 @annotate_function
 @jit
@@ -23,6 +24,41 @@ def digitize(params, integral_list):
                         * params.ADC_COUNTS/(params.V_REF-params.V_CM)+0.5), params.ADC_COUNTS)
 
     return adcs
+
+@jit
+def get_adc_values_average_noise(params, pixels_signals):
+    q = pixels_signals*params.t_sampling
+    q_sum = q.cumsum(axis=-1)  # Cumulative sum over time ticks
+
+
+    def find_hit(q_sum_loc, it):
+        sigma = params.RESET_NOISE_CHARGE #Found out that only considering the reset noise was sufficient
+        guess = 0.5*(erf((q_sum_loc[:, 1:] - params.DISCRIMINATION_THRESHOLD)/(jnp.sqrt(2)*sigma)) - erf((q_sum_loc[:, :-1] - params.DISCRIMINATION_THRESHOLD)/(jnp.sqrt(2)*sigma)))
+        norm = 0.5*(erf((q_sum_loc[:, -1] - params.DISCRIMINATION_THRESHOLD)/(jnp.sqrt(2)*sigma)) - erf((q_sum_loc[:, 1] - params.DISCRIMINATION_THRESHOLD)/(jnp.sqrt(2)*sigma)))
+        no_hit_prob = 1 - norm
+
+        interval = round((3 * params.CLOCK_CYCLE + params.ADC_HOLD_DELAY * params.CLOCK_CYCLE) / params.t_sampling)
+
+        tick_avg  = jnp.sum(guess/ (1-no_hit_prob[:, None])*jnp.arange(guess.shape[1]), axis=1) + 0.5
+
+        shifted_ticks = jnp.arange(guess.shape[1]) + interval + 1
+
+        shifted_ticks = jnp.clip(shifted_ticks, 0, q_sum_loc.shape[1] - 1)
+        shifted_ticks2 = jnp.clip(shifted_ticks + 1, 0, q_sum_loc.shape[1] - 1)
+
+        charge_avg1 = jnp.sum(guess*(q_sum_loc[:, shifted_ticks]), axis=1)[:, jnp.newaxis]
+        charge_avg2 = jnp.sum(guess*(q_sum_loc[:, shifted_ticks2]), axis=1)[:, jnp.newaxis]
+
+        charge_avg = 0.5*(charge_avg1 + charge_avg2)
+        # q_sum_new = q_sum_loc - charge_avg[:, jnp.newaxis]
+        q_sum_new = q_sum_loc - charge_avg2
+
+        return q_sum_new, (charge_avg, tick_avg, no_hit_prob)
+    
+    init_loop = q_sum
+    _, (charge_avg, tick_avg, no_hit_prob) = lax.scan(find_hit, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
+
+    return (charge_avg, tick_avg, no_hit_prob)
 
 @annotate_function
 @jit
@@ -69,7 +105,7 @@ def get_adc_values(params, pixels_signals, noise_rng_key):
         # debug.print("idx_val: {idx_val}", idx_val=idx_val)
 
         ic = jnp.zeros((q_sum.shape[0],))
-        ic = ic.at[idx_pix].set(idx_val)
+        ic = ic.at[idx_pix].set(idx_t)
 
         # End point of integration
         interval = round((3 * params.CLOCK_CYCLE + params.ADC_HOLD_DELAY * params.CLOCK_CYCLE) / params.t_sampling)
@@ -85,8 +121,8 @@ def get_adc_values(params, pixels_signals, noise_rng_key):
         # end2d_idx = tuple(jnp.stack([jnp.arange(0, ic.shape[0]).astype(int), integrate_end.astype(int)]))
 
         end2d_idx_next = tuple(jnp.stack([jnp.arange(0, ic.shape[0]).astype(int), jnp.clip(integrate_end + 1, 0, q_sum.shape[1]-1)]))
-        q_vals = q_sum[end2d_idx] + (idx_val - idx_t) *(q_sum[end2d_idx_next] - q_sum[end2d_idx])
-        q_vals_no_noise = q_cumsum[end2d_idx] + (idx_val - idx_t) *(q_cumsum[end2d_idx_next] - q_cumsum[end2d_idx])
+        q_vals = q_sum[end2d_idx] #+ (idx_val - idx_t) *(q_sum[end2d_idx_next] - q_sum[end2d_idx])
+        q_vals_no_noise = q_cumsum[end2d_idx] #+ (idx_val - idx_t) *(q_cumsum[end2d_idx_next] - q_cumsum[end2d_idx])
 
         # Cumulative => value at end is desired value
         # q_vals = q_sum[end2d_idx] 
