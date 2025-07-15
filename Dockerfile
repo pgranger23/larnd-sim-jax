@@ -6,6 +6,7 @@ RUN apt-get update && \
         vim \
         htop \
         wget \
+        zsh \
         build-essential \
         python3 \
         python3-pip && \
