@@ -44,7 +44,8 @@ python3 -m optimize.example_run \
     --mode 'parametrized' \
     --loss_fn ${LOSS} \
     --fit_type 'minuit' \
-    --cpu_only
+    --cpu_only \
+    --read_target
 
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
 

@@ -45,6 +45,7 @@ python3 -m optimize.example_run \
     --fit_type 'scan' \
     --sim_seed_strategy 'same' \
     --cpu_only \
-    --scan_tgt_nom
+    --scan_tgt_nom \
+    --read_target
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
 
