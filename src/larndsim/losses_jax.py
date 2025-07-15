@@ -159,7 +159,7 @@ def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref
     eventID_masked_ref = jnp.pad(eventID_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
     pixel_x_masked_ref = jnp.pad(pixel_x_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
     pixel_y_masked_ref = jnp.pad(pixel_y_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
-    drift_masked_ref = jnp.pad(drift_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
+    drift_masked_ref = jnp.pad(drift_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
     adcs_masked_ref = jnp.pad(adcs_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=0)/adc_norm
 
     loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
