@@ -11,8 +11,8 @@ DATA_SEED=1
 LOSS=chamfer_3d
 
 ### proton 5000 events
-#INPUT_FILE_TGT=prepared_data/input_1.h5
-INPUT_FILE_TGT=output/jax_ref/output_parametrized_1.h5.npz
+INPUT_FILE_TGT=prepared_data/input_1.h5
+#INPUT_FILE_TGT=output/jax_ref/output_parametrized_1.h5.npz
 INPUT_FILE_SIM=prepared_data/input_1.h5
 
 #DECLARATIONS
@@ -46,6 +46,6 @@ python3 -m optimize.example_run \
     --sim_seed_strategy 'same' \
     --cpu_only \
     --scan_tgt_nom \
-    --read_target
+    #--read_target
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
 
