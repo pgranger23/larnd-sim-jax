@@ -318,7 +318,7 @@ class ParamFitter:
             else:
                 #Loading the target
                 if self.keep_in_memory:
-                    ref_adcs, ref_unique_pixels, ref_ticks = self.targets[i]
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.targets[i]
                 else:
                     with open(fname, 'rb') as f:
                         loaded = jnp.load(f)
@@ -736,7 +736,13 @@ class MinuitFitter(ParamFitter):
         logger.warning(f"Arguments {kwargs} are ignored in this mode.")
 
         logger.info(f"Running in {'separate' if self.separate_fits else 'joint'} fit mode")
-        
+
+        def get_target(self, i, evts_sim, target):
+            if not self.read_target:
+                selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
+                target = jax.device_put(selected_tracks_bt_tgt)
+            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
+            return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event
 
         if self.separate_fits:
             for i in range(len(dataloader_sim)):
@@ -786,10 +792,7 @@ class MinuitFitter(ParamFitter):
                     evts_sim = jnp.unique(selected_tracks_sim[:, self.track_fields.index(self.evt_id)])
 
                     # target
-                    if not self.read_target:
-                        selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
-                        target = jax.device_put(selected_tracks_bt_tgt)
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = get_target(self, i, evts_sim, target)
 
                     loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_grad=False)
                     avg_loss += loss_val
@@ -806,10 +809,7 @@ class MinuitFitter(ParamFitter):
                     evts_sim = jnp.unique(selected_tracks_sim[:, self.track_fields.index(self.evt_id)])
 
                     # target
-                    if not self.read_target:
-                        selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
-                        target = jax.device_put(selected_tracks_bt_tgt)
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = get_target(self, i, evts_sim, target)
 
                     _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_loss=False)
                     avg_grad = [getattr(grads, key) + avg_grad[i] for i, key in enumerate(self.relevant_params_list)]
