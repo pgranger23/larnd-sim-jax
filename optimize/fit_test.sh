@@ -12,7 +12,7 @@ LOSS=chamfer_3d
 
 ### proton 5000 events
 INPUT_FILE_TGT=prepared_data/input_1.h5
-#INPUT_FILE_TGT=output/jax_ref/output_parametrized_1.h5.npz
+#INPUT_FILE_TGT=output/jax_ref/output_parametrized_1.npz
 INPUT_FILE_SIM=prepared_data/input_1.h5
 
 #DECLARATIONS
