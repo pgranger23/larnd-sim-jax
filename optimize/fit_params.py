@@ -532,8 +532,8 @@ class GradientDescentFitter(ParamFitter):
                     # target
                     if not self.read_target:
                         selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
-                        target = jax.device_put(selected_tracks_bt_tgt)
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
+                        this_target = jax.device_put(selected_tracks_bt_tgt)
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
                     # loss
                     loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, epoch=epoch)
@@ -643,8 +643,8 @@ class LikelihoodProfiler(ParamFitter):
             # target
             if not self.read_target:
                 selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
-                target = jax.device_put(selected_tracks_bt_tgt)
-            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
+                this_target = jax.device_put(selected_tracks_bt_tgt)
+            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
             for param in self.relevant_params_list:
                 lower = ranges[param]['down']
@@ -740,8 +740,8 @@ class MinuitFitter(ParamFitter):
         def get_target(self, i, evts_sim, target):
             if not self.read_target:
                 selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
-                target = jax.device_put(selected_tracks_bt_tgt)
-            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
+                this_target = jax.device_put(selected_tracks_bt_tgt)
+            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
             return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event
 
         if self.separate_fits:
@@ -757,8 +757,8 @@ class MinuitFitter(ParamFitter):
                 # target
                 if not self.read_target:
                     selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
-                    target = jax.device_put(selected_tracks_bt_tgt)
-                ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(target, i, evts_sim, regen=False)
+                    this_target = jax.device_put(selected_tracks_bt_tgt)
+                ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
                 def loss_wrapper(args):
                     # Update the current params with the new values
