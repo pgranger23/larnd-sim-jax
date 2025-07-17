@@ -214,11 +214,12 @@ def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_
     adcs, x, y, z, ticks, event, _, _, _, _ = simulate(params, response, tracks, fields, rngkey)
 
     Q = adc2charge(adcs, params)
+    ref_Q = adc2charge(ref_adcs, params)
 
     if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
         loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
     else:
-        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, event, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event , **loss_kwargs)
+        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_event , **loss_kwargs)
 
     return loss_val, aux
 
