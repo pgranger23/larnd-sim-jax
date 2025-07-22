@@ -7,6 +7,7 @@ import yaml
 from flax import struct
 import jax
 import jax.numpy as jnp
+from jax.scipy.stats import norm
 import dataclasses
 from types import MappingProxyType
 from collections import defaultdict
@@ -137,6 +138,8 @@ class Params_template:
     diffusion_in_current_sim: bool = struct.field(pytree_node=False, default=True)
     mc_diff: bool = struct.field(pytree_node=False, default=False)
     nb_sampling_bins_per_pixel: int = struct.field(pytree_node=False, default=10)
+    long_diff_template: jax.Array = struct.field(pytree_node=False, default=None)
+    long_diff_extent: int = struct.field(pytree_node=False, default=20)
 
 def build_params_class(params_with_grad):
     """
@@ -267,8 +270,10 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "tran_diff_bin_edges": jnp.linspace(-0.22, 0.22, 6),
         "diffusion_in_current_sim": True,
         "mc_diff": False,
-        "tpc_centers": np.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
+        "tpc_centers": jnp.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
         "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
+        "long_diff_template": jnp.linspace(0, 10, 100), # Placeholder for long diffusion template
+        "long_diff_extent": 20
     }
 
     mm2cm = 0.1
@@ -358,8 +363,29 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
     filtered_dict = {key: value for key, value in params_dict.items() if key in params_cls.__match_args__}
     return params_cls(**filtered_dict)
 
-def load_lut(lut_file):
+def load_lut(lut_file, params):
     response = np.load(lut_file)
+    gaus = norm.pdf(jnp.arange(-params.long_diff_extent, params.long_diff_extent + 1, 1), scale=params.long_diff_template[:, None])  # Create Gaussian template
+    gaus = gaus / jnp.sum(gaus, axis=1, keepdims=True)  # Normalize the Gaussian
 
-    return response
+
+    conv = lambda x, y: jnp.convolve(x, y, mode='same')
+
+    batched_conv_last_axis = jax.vmap(conv, in_axes=(0, None))
+
+    # Vectorize again to apply the convolution to each kernel in the batch
+    batched_conv_kernels = jax.vmap(batched_conv_last_axis, in_axes=(None, 0))
+
+    # Reshape the input array to combine the first two dimensions for easier processing
+    input_reshaped = jnp.reshape(response, (-1, response.shape[-1]))
+
+    # Apply the batched convolution
+    output_reshaped = batched_conv_kernels(input_reshaped, gaus)
+
+    # Reshape the output back to the desired shape (41, 45, 45, 1950)
+    response_template = jnp.reshape(output_reshaped, (gaus.shape[0], *response.shape))
+
+    response_template = response_template.at[0].set(response) # Assuming the first element corresponds to no diffusion
+
+    return response_template
     # return np.cumsum(response, axis=-1)

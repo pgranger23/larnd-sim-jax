@@ -30,32 +30,81 @@ def get_adc_values_average_noise(params, pixels_signals):
     q = pixels_signals*params.t_sampling
     q_sum = q.cumsum(axis=-1)  # Cumulative sum over time ticks
 
+    # N_universe = 50
+    Nvalues_scaling = 200
+    Npix = pixels_signals.shape[0]
+    Nvalues = Nvalues_scaling*Npix
 
-    def find_hit(q_sum_loc, it):
+
+    def find_hit(carry, _):
+        #TODO: Maybe consider removing the -1 pixel to avoid it using too many weights
+        q_sum_loc, previous_prob, pixid = carry # q_sum_loc[Nvalues, Nticks] ; previous_prob[Nvalues] ; pixid[Nvalues]
         sigma = params.RESET_NOISE_CHARGE #Found out that only considering the reset noise was sufficient
-        guess = 0.5*(erf((q_sum_loc[:, 1:] - params.DISCRIMINATION_THRESHOLD)/(jnp.sqrt(2)*sigma)) - erf((q_sum_loc[:, :-1] - params.DISCRIMINATION_THRESHOLD)/(jnp.sqrt(2)*sigma)))
-        norm = 0.5*(erf((q_sum_loc[:, -1] - params.DISCRIMINATION_THRESHOLD)/(jnp.sqrt(2)*sigma)) - erf((q_sum_loc[:, 1] - params.DISCRIMINATION_THRESHOLD)/(jnp.sqrt(2)*sigma)))
-        no_hit_prob = 1 - norm
+        # sigma = jnp.sqrt(params.RESET_NOISE_CHARGE**2 + params.UNCORRELATED_NOISE_CHARGE**2)
+        eps = 1e-10
+
+        _, Nticks = q_sum_loc.shape
+
+        erf_term = erf((q_sum_loc - params.DISCRIMINATION_THRESHOLD)/(jnp.sqrt(2)*sigma)) # erf_term[Nvalues, Nticks]
+        erf_term_signal = jnp.frompyfunc(jnp.maximum, 2, 1).accumulate(erf_term, axis=-1) #erf is increasing so should be faster to make the re-ordering afterwards
+
+        guess = 0.5*(erf_term_signal[..., 1:] - erf_term_signal[..., :-1]) # guess[Nvalues, Nticks - 1]
+        guess = jnp.clip(guess, 0, 1)  # Ensure guess is between 0 and 1, should not be needed but erf got odd behavior for some reason
 
         interval = round((3 * params.CLOCK_CYCLE + params.ADC_HOLD_DELAY * params.CLOCK_CYCLE) / params.t_sampling)
+        shifted_ticks = jnp.arange(Nticks - 1) + interval + 1 # shifted_ticks[Nticks - 1]
+        shifted_ticks = jnp.clip(shifted_ticks, 0, Nticks - 1)
 
-        tick_avg  = jnp.sum(guess/ (1-no_hit_prob[:, None])*jnp.arange(guess.shape[1]), axis=1) + 0.5
+        prob_charge_pass = (
+            erf_term[..., shifted_ticks] - erf_term[..., :-1]
+            )/(2*guess + eps)
+        prob_charge_pass = jnp.clip(prob_charge_pass, 0, 1) # prob_charge_pass[Nvalues, Nticks - 1]
 
-        shifted_ticks = jnp.arange(guess.shape[1]) + interval + 1
+        esperance_value = q_sum_loc[..., shifted_ticks] + params.DISCRIMINATION_THRESHOLD - 0.5*(q_sum_loc[..., 1:] + q_sum_loc[..., :-1]) # esperance_value[Nvalues, Nticks - 1]
 
-        shifted_ticks = jnp.clip(shifted_ticks, 0, q_sum_loc.shape[1] - 1)
-        shifted_ticks2 = jnp.clip(shifted_ticks + 1, 0, q_sum_loc.shape[1] - 1)
+        norm = jnp.clip(jnp.sum(guess*prob_charge_pass, axis=-1) + eps, 0, 1)  # Adding a small epsilon to avoid division by zero ; norm[Nvalues]
 
-        charge_avg1 = jnp.sum(guess*(q_sum_loc[:, shifted_ticks]), axis=1)[:, jnp.newaxis]
-        charge_avg2 = jnp.sum(guess*(q_sum_loc[:, shifted_ticks2]), axis=1)[:, jnp.newaxis]
+        previous_prob_norm = jnp.full(Npix, eps, dtype=jnp.float32)  # Avoid division by zero
+        previous_prob_norm = previous_prob_norm.at[pixid].add(previous_prob)
 
-        charge_avg = 0.5*(charge_avg1 + charge_avg2)
-        # q_sum_new = q_sum_loc - charge_avg[:, jnp.newaxis]
-        q_sum_new = q_sum_loc - charge_avg2
+        no_hit_prob_across = jnp.ones(Npix, dtype=jnp.float32)  # Initialize no-hit probability across universes
+        no_hit_prob_across = no_hit_prob_across.at[pixid].subtract(norm*previous_prob)  # No-hit probability across universes
 
-        return q_sum_new, (charge_avg, tick_avg, no_hit_prob)
+        prob_distrib = guess*prob_charge_pass*previous_prob[:, None] # prob_distrib[Nvalues, Nticks - 1]
+
+        prob_distrib_across = jnp.zeros((Npix, Nticks - 1), dtype=jnp.float32)  # Initialize probability distribution across universes
+        prob_distrib_across = prob_distrib_across.at[pixid].add(prob_distrib)  # prob_distrib_across[Npix, Nticks - 1]
+
+        norm_across = jnp.sum(prob_distrib_across, axis=-1)  # Normalize across universes ; norm_across[Npix]
+
+        tick_avg = jnp.sum(prob_distrib_across/(norm_across[:, None])*jnp.arange(Nticks - 1), axis=-1)  # + 0.5
+
+        charge_avg = jnp.sum(guess*prob_charge_pass*esperance_value, axis=-1) # charge_avg[Nvalues]
+
+        charge_avg_across = jnp.zeros((Npix,), dtype=jnp.float32)  # Initialize average charge across universes
+        charge_avg_across = charge_avg_across.at[pixid].add(charge_avg*previous_prob)/previous_prob_norm/norm_across  # charge_avg_across[Npix]
+
+        best_paths = jnp.argsort(prob_distrib, axis=None, descending=True)[:Nvalues] # best_paths[Nvalues]
+        best_path_universe = best_paths // (Nticks - 1)
+        best_path_ticks = best_paths % (Nticks - 1)
+        best_path_pixid = pixid[best_path_universe]  # best_path_pixid[Nvalues]
+
+        best_path_next_ticks = jnp.clip(shifted_ticks + 1, 0, Nticks - 1) # best_path_next_ticks[Nticks - 1]
+        best_path_esperance = q_sum_loc[best_path_universe, best_path_next_ticks[best_path_ticks]]  # best_path_esperance[Nvalues]
+        best_path_wfs = q_sum_loc[best_path_universe, :]
+        q_sum_new = best_path_wfs - best_path_esperance[..., None]
+        # q_sum_new = jnp.clip(q_sum_new, 0, None)  # Ensure no negative values
+        new_prob = prob_distrib[best_path_universe, best_path_ticks] # new_prob[Nvalues]
+        return (q_sum_new, new_prob, best_path_pixid), (charge_avg_across, tick_avg, no_hit_prob_across)
     
-    init_loop = q_sum
+    q_sum_multi = jnp.zeros((Nvalues, q_sum.shape[1]), dtype=jnp.float32)  # Initialize q_sum for multiple universes
+    q_sum_multi = q_sum_multi.at[:q_sum.shape[0], :].set(q_sum)
+    previous_prob = jnp.zeros(Nvalues, dtype=jnp.float32)  # Initialize previous probability
+    previous_prob = previous_prob.at[:q_sum.shape[0]].set(1.0)  # Set the first universe probability to 1.0
+    pixid = jnp.full((Nvalues,), -1, dtype=jnp.int32)  # Initialize pixel IDs for multiple universes
+    pixid = pixid.at[:q_sum.shape[0]].set(jnp.arange(q_sum.shape[0]))  # Set pixel IDs for the first universe
+
+    init_loop = (q_sum_multi, previous_prob, pixid)  # Initialize previous_prob
     _, (charge_avg, tick_avg, no_hit_prob) = lax.scan(find_hit, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
 
     return (charge_avg, tick_avg, no_hit_prob)

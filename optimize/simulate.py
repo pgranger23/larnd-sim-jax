@@ -91,7 +91,7 @@ def main(config):
     ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts)
 
     if args.mode == 'lut':
-        response = load_lut(config.lut_file)
+        response = load_lut(config.lut_file, ref_params)
     
 
     
