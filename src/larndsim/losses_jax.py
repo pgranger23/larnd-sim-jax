@@ -128,7 +128,7 @@ def chamfer_distance_3d(pos_a, pos_b, w_a, w_b, nhit_ref):
     weight_diff_sq_a_to_b = (w_a - w_b_nn_for_a) ** 2
     weight_diff_sq_b_to_a = (w_b - w_a_nn_for_b) ** 2
     
-    chamfer_a_to_b = jnp.sum(weight_diff_sq_a_to_b, where=min_dists_b_to_a < 1e4)
+    chamfer_a_to_b = jnp.sum(weight_diff_sq_a_to_b, where=min_dists_a_to_b < 1e4)
     chamfer_b_to_a = jnp.sum(weight_diff_sq_b_to_a, where=min_dists_b_to_a < 1e4)
 
     # normalise by the target hit number
@@ -138,9 +138,11 @@ def chamfer_distance_3d(pos_a, pos_b, w_a, w_b, nhit_ref):
 
 def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref, pixel_x_ref, pixel_y_ref, pixel_z_ref, ticks_ref, eventID_ref , adc_norm=10., match_z=False):
     # normalise the time tick with the same drift velocity (in the current iteration)
-    drift = pixel_z
-    plane = pixel_z_ref < 0 #FIXME store this information in the reference, so it can be properly used.
-    drift_ref =  get_hit_z(params, ticks_ref.flatten(), plane.astype(int))
+    #drift = pixel_z
+    plane = pixel_z < 0 #FIXME store this information in the reference, so it can be properly used.
+    drift =  get_hit_z(params, ticks.flatten(), plane.astype(int), fixed_v = True)
+    plane_ref = pixel_z_ref < 0 #FIXME store this information in the reference, so it can be properly used.
+    drift_ref =  get_hit_z(params, ticks_ref.flatten(), plane_ref.astype(int), fixed_v = True)
 
     mask = (adcs.flatten() > params.DISCRIMINATION_THRESHOLD/1e3) & (jnp.repeat(eventID, 10) >=0)
     if len(adcs_ref.flatten()) == len(eventID_ref) * 10:
