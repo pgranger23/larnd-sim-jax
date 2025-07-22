@@ -212,7 +212,7 @@ class ParamFitter:
         self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
 
     def load_lut(self):
-        self.response = load_lut(self.lut_file)
+        self.response = load_lut(self.lut_file, self.ref_params)
 
     def update_params(self):
         self.current_params = self.norm_params.replace(**{key: getattr(self.norm_params, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list})
