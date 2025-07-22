@@ -30,22 +30,21 @@ def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID,
     start_ticks = response.shape[-1] - signal_length - cathode_ticks
     time_ticks = start_ticks[..., None] + jnp.arange(signal_length)
 
+    # either end of start_ticks or start_ticks + signal_length can be out of the readout range, which is non physical, but it can still have values from the response. They are assigned to time_tick 0, and is meant to be removed.
     time_ticks = jnp.where((time_ticks <= 0 ) | (time_ticks >= Nticks - 1), 0, time_ticks+1) # it should be start_ticks +1 in theory but we cheat by putting the cumsum in the garbage too when strarting at 0 to mimic the expected behavior
 
     start_indices = pixID * Nticks
 
     end_indices = start_indices[..., None] + time_ticks
 
-    # Flatten the indices
+    # Flatten the indices, which is not necessarily unique
     flat_indices = jnp.ravel(end_indices)
 
     Nx, Ny, Nt = response.shape
 
-
     signal_indices = jnp.ravel((currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt + jnp.arange(response.shape[-1] - signal_length, response.shape[-1]))
     # baseline_indices = jnp.ravel(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length))
     # print(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length, axis=0))
-    
 
     # Update wfs with accumulated signals
     wfs = wfs.ravel()

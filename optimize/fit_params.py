@@ -533,6 +533,8 @@ class GradientDescentFitter(ParamFitter):
                     if not self.read_target:
                         selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
                         this_target = jax.device_put(selected_tracks_bt_tgt)
+                    else:
+                        this_target = target
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
                     # loss
@@ -644,6 +646,8 @@ class LikelihoodProfiler(ParamFitter):
             if not self.read_target:
                 selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
                 this_target = jax.device_put(selected_tracks_bt_tgt)
+            else:
+                this_target = target
             ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
             for param in self.relevant_params_list:
@@ -741,6 +745,8 @@ class MinuitFitter(ParamFitter):
             if not self.read_target:
                 selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
                 this_target = jax.device_put(selected_tracks_bt_tgt)
+            else:
+                this_target = target
             ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
             return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event
 
@@ -758,6 +764,8 @@ class MinuitFitter(ParamFitter):
                 if not self.read_target:
                     selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
                     this_target = jax.device_put(selected_tracks_bt_tgt)
+                else:
+                    this_target = target
                 ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
                 def loss_wrapper(args):

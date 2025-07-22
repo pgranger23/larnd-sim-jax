@@ -118,22 +118,30 @@ def simulate_drift(params, tracks, fields, rngkey):
 @jit
 def get_renumbering(pIDs, unique_pixels):
     #Getting the renumbering of the pixels
+    #pIDs have the shape of (n_seg/n_electrons, n_pixels)
     pIDs = pIDs.ravel()
+
+    # The "jit" padding for unique_pixels is set to -1
+    # With the sort, the padding will be at the beginning
+    # Therefore pix_renumbering 0 is the padding
     pix_renumbering = jnp.searchsorted(unique_pixels, pIDs, method='sort')
 
     #Only getting the electrons for which the pixels are in the active region
-    mask = (pix_renumbering < unique_pixels.size) & (unique_pixels[pix_renumbering] == pIDs)
+    mask = (pix_renumbering > 0) & (pix_renumbering < (unique_pixels.size+1)) & (unique_pixels[pix_renumbering] == pIDs)
+
     return mask, pix_renumbering
 
 @partial(jit, static_argnames=['fields'])
 def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey, fields):
-    pix_renumbering = jnp.take(pix_renumbering, mask_indices, mode='fill', fill_value=0)
+    pix_renumbering = jnp.take(pix_renumbering, mask_indices, mode='fill', fill_value=0) # should we fill with 0? it's a valid index
     npix = (2*params.number_pix_neighbors + 1)**2
     elec_ids = mask_indices//npix
     electrons_renumbered = jnp.take(electrons, elec_ids, mode='fill', fill_value=0, axis=0)
+
     #Getting the pixel coordinates
-    xpitch, ypitch, plane, eid = id2pixel(params, unique_pixels)
+    xpitch, ypitch, plane, event = id2pixel(params, unique_pixels)
     pixels_coord = get_pixel_coordinates(params, xpitch, ypitch, plane)
+
     #Getting the right indices for the currents
     t0, currents_idx = current_lut(params, response, electrons_renumbered, pixels_coord[pix_renumbering], fields)
     npixels = unique_pixels.shape[0]
@@ -144,15 +152,14 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     cathode_ticks = (t0/params.t_sampling).astype(int) #Start tick from distance to the end of the cathode
     response_cum = jnp.cumsum(response, axis=-1)
     wfs = accumulate_signals(wfs, currents_idx, electrons_renumbered[:, fields.index("n_electrons")], response, response_cum, pix_renumbering, cathode_ticks, params.signal_length)
+    # The first time tick of wfs has the signal which would be out of range, but still have the response. It is meant to be discarded.
     integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey)
 
-    adcs = digitize(params, integral)
+    pixel_x = pixels_coord[:, 0]
+    pixel_y = pixels_coord[:, 1]
+    pixel_z  = get_hit_z(params, ticks.flatten(), jnp.repeat(plane, 10))
 
-    pixel_x, pixel_y, pixel_plane, event = id2pixel(params, unique_pixels)
-    pixel_coords = get_pixel_coordinates(params, pixel_x, pixel_y, pixel_plane)
-    pixel_x = pixel_coords[:, 0]
-    pixel_y = pixel_coords[:, 1]
-    pixel_z  = get_hit_z(params, ticks.flatten(), jnp.repeat(pixel_plane, 10))
+    adcs = digitize(params, integral)
 
     return adcs, pixel_x, pixel_y, pixel_z, ticks, event, pix_renumbering, wfs[:, 1:]
 
@@ -227,8 +234,10 @@ def simulate(params, response, tracks, fields, rngseed = 0):
     unique_pixels = jnp.unique(main_pixels.ravel())
     padded_size = pad_size(unique_pixels.shape[0], "unique_pixels")
 
+    # sort after padding so to use searchsorted
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
+    # mask_indices converted between pIDs (n_elec, n_pix) with unique_pixels
     mask, pix_renumbering = get_renumbering(pIDs, unique_pixels)
     mask_indices = jnp.nonzero(mask)[0]
 
