@@ -148,7 +148,15 @@ class TracksDataset:
         if not 't0' in tracks.dtype.names:
             tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
         
+        
         self.track_fields = tracks.dtype.names
+        replace_map = {
+            'event_id': 'eventID',
+            'traj_id': 'trackID',
+        }
+        self.track_fields = tuple([replace_map.get(field, field) for field in self.track_fields])
+
+        tracks.dtype.names = self.track_fields
 
         # flat index for all reasonable track [eventID, trackID] 
         index = []
@@ -156,14 +164,7 @@ class TracksDataset:
 
         selected_tracks = tracks[abs(tracks['z']) < min_abs_segz_sel]
 
-        if 'eventID' in selected_tracks.dtype.names:
-            self.evt_id = 'eventID'
-            self.trj_id = 'trackID'
-        else:
-            self.evt_id = 'event_id'
-            self.trj_id = 'traj_id'
-
-        unique_tracks, first_indices = np.unique(selected_tracks[[self.evt_id, self.trj_id]], return_index=True)
+        unique_tracks, first_indices = np.unique(selected_tracks[['eventID', 'trackID']], return_index=True)
 
         first_indices = np.sort(first_indices)
         last_indices = np.r_[first_indices[1:] - 1, len(selected_tracks) - 1]
@@ -184,7 +185,7 @@ class TracksDataset:
         trk_mask = trk_mask & (np.maximum(abs(tracks_start['z']), abs(tracks_end['z'])) < track_z_bound)
         mask = np.repeat(trk_mask, n_repeat)
 
-        keys = np.ascontiguousarray(selected_tracks[[self.evt_id, self.trj_id]])
+        keys = np.ascontiguousarray(selected_tracks[['eventID', 'trackID']])
         index = set(map(tuple, keys))  # Ensure index is a set of tuples
         #mask = np.array([tuple(row) in index for row in keys])
 
@@ -222,12 +223,9 @@ class TracksDataset:
             
             # Extract required fields as numpy arrays
             lengths = all_segments[:, self.track_fields.index("dx")]
-            try:
-                event_ids = all_segments[:, self.track_fields.index("eventID")]
-                track_ids = all_segments[:, self.track_fields.index("trackID")]
-            except:
-                event_ids = all_segments[:, self.track_fields.index("event_id")]
-                track_ids = all_segments[:, self.track_fields.index("traj_id")]
+
+            event_ids = all_segments[:, self.track_fields.index("eventID")]
+            track_ids = all_segments[:, self.track_fields.index("trackID")]
 
             # Mask out segments longer than max_batch_len
             valid_mask = lengths <= max_batch_len
