@@ -277,7 +277,6 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
     }
 
     mm2cm = 0.1
-    params_dict['tpc_borders'] = np.zeros((0, 3, 2))
     params_dict['tile_borders'] = np.zeros((2,2))
 
     with open(detprop_file) as df:

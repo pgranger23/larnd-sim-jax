@@ -42,15 +42,15 @@ def load_data(fname, invert_xz=True):
     return rfn.structured_to_unstructured(tracks, copy=True, dtype=np.float32), dtype
 
 def set_pixel_plane(params, tracks, fields):
-    zMin = np.minimum(params.tpc_borders[:, 2, 1] - params.size_margin, params.tpc_borders[:, 2, 0] - params.size_margin)
-    zMax = np.maximum(params.tpc_borders[:, 2, 1] + params.size_margin, params.tpc_borders[:, 2, 0] + params.size_margin)
+    zMin = jnp.minimum(params.tpc_borders[:, 2, 1] - params.size_margin, params.tpc_borders[:, 2, 0] - params.size_margin)
+    zMax = jnp.maximum(params.tpc_borders[:, 2, 1] + params.size_margin, params.tpc_borders[:, 2, 0] + params.size_margin)
 
     cond = tracks[:, fields.index("x")][..., None] >= params.tpc_borders[:, 0, 0][None, ...] - params.size_margin
-    cond = np.logical_and(tracks[:, fields.index("x")][..., None] <= params.tpc_borders[:, 0, 1][None, ...] + params.size_margin, cond)
-    cond = np.logical_and(tracks[:, fields.index("y")][..., None] >= params.tpc_borders[:, 1, 0][None, ...] - params.size_margin, cond)
-    cond = np.logical_and(tracks[:, fields.index("y")][..., None] <= params.tpc_borders[:, 1, 1][None, ...] + params.size_margin, cond)
-    cond = np.logical_and(tracks[:, fields.index("z")][..., None] >= zMin[None, ...], cond)
-    cond = np.logical_and(tracks[:, fields.index("z")][..., None] <= zMax[None, ...], cond)
+    cond = jnp.logical_and(tracks[:, fields.index("x")][..., None] <= params.tpc_borders[:, 0, 1][None, ...] + params.size_margin, cond)
+    cond = jnp.logical_and(tracks[:, fields.index("y")][..., None] >= params.tpc_borders[:, 1, 0][None, ...] - params.size_margin, cond)
+    cond = jnp.logical_and(tracks[:, fields.index("y")][..., None] <= params.tpc_borders[:, 1, 1][None, ...] + params.size_margin, cond)
+    cond = jnp.logical_and(tracks[:, fields.index("z")][..., None] >= zMin[None, ...], cond)
+    cond = jnp.logical_and(tracks[:, fields.index("z")][..., None] <= zMax[None, ...], cond)
 
     mask = cond.sum(axis=-1) >= 1
     pixel_plane = cond.astype(int).argmax(axis=-1)
@@ -268,7 +268,11 @@ def simulate_drift_new(params, tracks, fields, rngkey):
     z_cathode = jnp.take(params.tpc_borders, main_electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 1]
     t0 = (jnp.abs(main_electrons[:, fields.index('z')] - z_cathode)) / get_vdrift(params) #Getting t0 as the equivalent time to cathode
     t0_after_diff = (jnp.ones((main_electrons.shape[0], nb_tran_diff_bins, nb_tran_diff_bins))*t0[:, None, None]).reshape(-1) #Broadcasting t0 to the shape of the tran_diff_weights
-    long_diff = main_electrons[:, fields.index("long_diff")][:, None, None].repeat(nb_tran_diff_bins**2, axis=-1).reshape(-1) #Broadcasting long_diff to the shape of the tran_diff_weights
+
+    #Need to convert long_diff into a tick number
+    long_diff = main_electrons[:, fields.index("long_diff")]/ get_vdrift(params)/ params.t_sampling
+
+    long_diff = long_diff[:, None, None].repeat(nb_tran_diff_bins**2, axis=-1).reshape(-1) #Broadcasting long_diff to the shape of the tran_diff_weights
 
 
     bin_shifts = jnp.mgrid[-nb_tran_diff_bins_sym:nb_tran_diff_bins_sym+1, -nb_tran_diff_bins_sym:nb_tran_diff_bins_sym+1]
@@ -303,23 +307,10 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     Npixels = unique_pixels.shape[0]
     Nticks = int(params.time_interval[1]/params.t_sampling) + 1 #Adding one first element to serve as a garbage collector
     wfs = jnp.zeros((Npixels, Nticks))
+    wfs = wfs.ravel()
 
     cathode_ticks = (t0_after_diff/params.t_sampling).astype(int) #Start tick from distance to the end of the cathode
     response_cum = jnp.cumsum(response_template, axis=-1)
-
-    template_values = params.long_diff_template
-
-    idx = np.searchsorted(template_values, long_diff)
-    # Should make sure in first place that template values go from 0 to > max possible diff value
-
-    x0 = template_values[idx - 1]
-    x1 = template_values[idx]
-    x2 = template_values[idx + 1]
-
-    # Quadratic interpolation coefficients
-    a = (long_diff - x1) * (long_diff - x2) / ((x0 - x1) * (x0 - x2))
-    b = (long_diff - x0) * (long_diff - x2) / ((x1 - x0) * (x1 - x2))
-    c = (long_diff - x0) * (long_diff - x1) / ((x2 - x0) * (x2 - x1))
 
     # Compute indices for updating wfs, taking into account start_ticks
     start_ticks = response_template.shape[-1] - params.signal_length - cathode_ticks
@@ -334,24 +325,40 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     # Flatten the indices
     flat_indices = jnp.ravel(end_indices)
 
+    charge = (nelectrons[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the charge to the shape of the signal
+
     Ntemplates, Nx, Ny, Nt = response_template.shape
 
+    debug.print("long_diff: {long_diff}", long_diff=long_diff)
+
+    template_values = params.long_diff_template
+
+    idx = jnp.searchsorted(template_values, long_diff)
+    # Should make sure in first place that template values go from 0 to > max possible diff value
+
+    idx = jnp.clip(idx, 1, template_values.shape[0] - 2) #Ensuring idx is within bounds
+
+    x0 = template_values[idx - 1]
+    x1 = template_values[idx]
+    x2 = template_values[idx + 1]
+
+    # Quadratic interpolation coefficients
+    a = (long_diff - x1) * (long_diff - x2) / ((x0 - x1) * (x0 - x2))
+    b = (long_diff - x0) * (long_diff - x2) / ((x1 - x0) * (x1 - x2))
+    c = (long_diff - x0) * (long_diff - x1) / ((x2 - x0) * (x2 - x1))
+
+    debug.print("a: {a}, b: {b}, c: {c}", a=a, b=b, c=c)
+
+    a = (a[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
+    b = (b[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
+    c = (c[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
+
     signal_indices = jnp.ravel((idx[..., None]*Nx*Ny + currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt + jnp.arange(response_template.shape[-1] - params.signal_length, response_template.shape[-1]))
-    # baseline_indices = jnp.ravel(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length))
-    # print(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length, axis=0))
-    
-    charge = (nelectrons[:, None]*np.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the charge to the shape of the signal
-    a = (a[:, None]*np.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
-    b = (b[:, None]*np.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
-    c = (c[:, None]*np.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
 
     # Update wfs with accumulated signals
-    wfs = wfs.ravel()
-    # wfs = wfs.at[(flat_indices,)].add((response.take(signal_indices) - response.take(baseline_indices))*jnp.repeat(charge, signal_length))
     wfs = wfs.at[(flat_indices,)].add((response_template.take(signal_indices))*charge*b)
     wfs = wfs.at[(flat_indices,)].add((response_template.take(signal_indices - Nx*Ny*Nt))*charge*a)
     wfs = wfs.at[(flat_indices,)].add((response_template.take(signal_indices + Nx*Ny*Nt))*charge*c)
-
 
     #Now correct for the missed ticks at the beginning
     integrated_start = response_cum.take(jnp.ravel((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + response_template.shape[-1] - params.signal_length))
