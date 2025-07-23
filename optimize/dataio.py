@@ -29,6 +29,9 @@ class DataLoader:
             self.indices = random.permutation(random.PRNGKey(self.seed), self.indices)
         return self
 
+    def __getitem__(self, idx):
+        return self.dataset[idx]
+
     def __next__(self):
         if self.index >= len(self.dataset):
             raise StopIteration
@@ -126,7 +129,7 @@ def pad_sequence(sequences: List[jnp.ndarray],
 class TracksDataset:
     def __init__(self, filename, ntrack, max_nbatch=None, swap_xz=True, seed=3, random_ntrack=False, track_len_sel=2., 
                  max_abs_costheta_sel=0.966, min_abs_segz_sel=15., track_z_bound=28., max_batch_len=None, print_input=False,
-                 chopped=True, pad=True, electron_sampling_resolution=0.001):
+                 chopped=True, pad=True, electron_sampling_resolution=0.001, active_selection=False, live_selection=False):
 
         with h5py.File(filename, 'r') as f:
             tracks = np.array(f['segments'])
@@ -150,46 +153,51 @@ class TracksDataset:
         
         self.track_fields = tracks.dtype.names
 
-        # flat index for all reasonable track [eventID, trackID] 
-        index = []
-        all_tracks = []
-
-        selected_tracks = tracks[abs(tracks['z']) < min_abs_segz_sel]
-
-        if 'eventID' in selected_tracks.dtype.names:
+        if 'eventID' in self.track_fields:
             self.evt_id = 'eventID'
             self.trj_id = 'trackID'
         else:
             self.evt_id = 'event_id'
             self.trj_id = 'traj_id'
 
-        unique_tracks, first_indices = np.unique(selected_tracks[[self.evt_id, self.trj_id]], return_index=True)
+        if live_selection:
+            # flat index for all reasonable track [eventID, trackID] 
+            index = []
+            all_tracks = []
 
-        first_indices = np.sort(first_indices)
-        last_indices = np.r_[first_indices[1:] - 1, len(selected_tracks) - 1]
-        n_repeat = last_indices - first_indices + 1
+            selected_tracks = tracks[abs(tracks['z']) < min_abs_segz_sel]
 
-        tracks_start = selected_tracks[first_indices]
-        tracks_end = selected_tracks[last_indices]
-        tracks_xd = tracks_start['x_start'] - tracks_end['x_end']
-        tracks_yd = tracks_start['y_start'] - tracks_end['y_end']
-        tracks_zd = tracks_start['z_start'] - tracks_end['z_end']
+            unique_tracks, first_indices = np.unique(selected_tracks[[self.evt_id, self.trj_id]], return_index=True)
 
-        tracks_dir = np.column_stack((tracks_xd, tracks_yd, tracks_zd))
-        z_dir = np.array([0, 0, 1])
-        cos_theta = np.abs(np.dot(tracks_dir, z_dir))/ (np.linalg.norm(tracks_dir, axis=1) + 1e-10)
+            first_indices = np.sort(first_indices)
+            last_indices = np.r_[first_indices[1:] - 1, len(selected_tracks) - 1]
+            n_repeat = last_indices - first_indices + 1
 
-        trk_mask = np.sqrt(tracks_xd**2 + tracks_yd**2 + tracks_zd**2) > track_len_sel
-        trk_mask = trk_mask & (cos_theta < max_abs_costheta_sel)
-        trk_mask = trk_mask & (np.maximum(abs(tracks_start['z']), abs(tracks_end['z'])) < track_z_bound)
-        mask = np.repeat(trk_mask, n_repeat)
+            tracks_start = selected_tracks[first_indices]
+            tracks_end = selected_tracks[last_indices]
+            tracks_xd = tracks_start['x_start'] - tracks_end['x_end']
+            tracks_yd = tracks_start['y_start'] - tracks_end['y_end']
+            tracks_zd = tracks_start['z_start'] - tracks_end['z_end']
 
-        keys = np.ascontiguousarray(selected_tracks[[self.evt_id, self.trj_id]])
-        index = set(map(tuple, keys))  # Ensure index is a set of tuples
-        #mask = np.array([tuple(row) in index for row in keys])
+            tracks_dir = np.column_stack((tracks_xd, tracks_yd, tracks_zd))
+            z_dir = np.array([0, 0, 1])
+            cos_theta = np.abs(np.dot(tracks_dir, z_dir))/ (np.linalg.norm(tracks_dir, axis=1) + 1e-10)
 
-        all_tracks = [jax_from_structured(selected_tracks[mask])]
-        index = np.array(list(index))
+            trk_mask = np.sqrt(tracks_xd**2 + tracks_yd**2 + tracks_zd**2) > track_len_sel
+            trk_mask = trk_mask & (cos_theta < max_abs_costheta_sel)
+            trk_mask = trk_mask & (np.maximum(abs(tracks_start['z']), abs(tracks_end['z'])) < track_z_bound)
+            mask = np.repeat(trk_mask, n_repeat)
+
+            keys = np.ascontiguousarray(selected_tracks[[self.evt_id, self.trj_id]])
+            index = set(map(tuple, keys))  # Ensure index is a set of tuples
+            #mask = np.array([tuple(row) in index for row in keys])
+
+            all_tracks = [jax_from_structured(selected_tracks[mask])]
+            index = np.array(list(index))
+        else:
+            all_tracks = [jax_from_structured(tracks)]
+            index = np.array(list(np.unique(tracks[[self.evt_id, self.trj_id]])))
+
 
         # all fit with a sub-set of tracks
         fit_index = []
@@ -210,7 +218,7 @@ class TracksDataset:
 
             for i_rand in list_rand:
                 fit_index.append(index[i_rand])
-                trk_msk = ((all_tracks[0][:, self.track_fields.index("eventID")] == index[i_rand][0]) & (all_tracks[0][:, self.track_fields.index("trackID")] == index[i_rand][1]))
+                trk_msk = ((all_tracks[0][:, self.track_fields.index(self.evt_id)] == index[i_rand][0]) & (all_tracks[0][:, self.track_fields.index(self.trj_id)] == index[i_rand][1]))
                 fit_tracks.append(all_tracks[0][trk_msk])
 
         if print_input:
@@ -222,12 +230,8 @@ class TracksDataset:
             
             # Extract required fields as numpy arrays
             lengths = all_segments[:, self.track_fields.index("dx")]
-            try:
-                event_ids = all_segments[:, self.track_fields.index("eventID")]
-                track_ids = all_segments[:, self.track_fields.index("trackID")]
-            except:
-                event_ids = all_segments[:, self.track_fields.index("event_id")]
-                track_ids = all_segments[:, self.track_fields.index("traj_id")]
+            event_ids = all_segments[:, self.track_fields.index(self.evt_id)]
+            track_ids = all_segments[:, self.track_fields.index(self.trj_id)]
 
             # Mask out segments longer than max_batch_len
             valid_mask = lengths <= max_batch_len

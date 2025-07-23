@@ -71,6 +71,7 @@ class Params_template:
     kb: float = struct.field(pytree_node=False)
     lifetime: float = struct.field(pytree_node=False)
     vdrift: float = struct.field(pytree_node=False)
+    vdrift_static: float = struct.field(pytree_node=False)
     long_diff: float = struct.field(pytree_node=False)
     tran_diff: float = struct.field(pytree_node=False)
     tpc_borders: jax.Array = struct.field(pytree_node=False)
@@ -223,6 +224,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "Ab": 0.8,
         "kb": 0.0486,
         "vdrift": 0.1648,
+        "vdrift_static": 0.1648,
         "lifetime": 2.2e3,
         "long_diff": 4.0e-6,
         "tran_diff": 8.8e-6,
@@ -358,6 +360,10 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
 
 def load_lut(lut_file):
     response = np.load(lut_file)
+    try:
+        response.keys()
+        return response['response']
+    except:
+        return response
 
-    return response
     # return np.cumsum(response, axis=-1)

@@ -30,22 +30,21 @@ def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID,
     start_ticks = response.shape[-1] - signal_length - cathode_ticks
     time_ticks = start_ticks[..., None] + jnp.arange(signal_length)
 
+    # either end of start_ticks or start_ticks + signal_length can be out of the readout range, which is non physical, but it can still have values from the response. They are assigned to time_tick 0, and is meant to be removed.
     time_ticks = jnp.where((time_ticks <= 0 ) | (time_ticks >= Nticks - 1), 0, time_ticks+1) # it should be start_ticks +1 in theory but we cheat by putting the cumsum in the garbage too when strarting at 0 to mimic the expected behavior
 
     start_indices = pixID * Nticks
 
     end_indices = start_indices[..., None] + time_ticks
 
-    # Flatten the indices
+    # Flatten the indices, which is not necessarily unique
     flat_indices = jnp.ravel(end_indices)
 
     Nx, Ny, Nt = response.shape
 
-
     signal_indices = jnp.ravel((currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt + jnp.arange(response.shape[-1] - signal_length, response.shape[-1]))
     # baseline_indices = jnp.ravel(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length))
     # print(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length, axis=0))
-    
 
     # Update wfs with accumulated signals
     wfs = wfs.ravel()
@@ -131,14 +130,19 @@ def get_pixel_coordinates(params, xpitch, ypitch, plane):
     pix_y = ypitch * params.pixel_pitch + borders[..., 1, 0] + params.pixel_pitch/2
     return jnp.stack([pix_x, pix_y], axis=-1)
 
-@jit
-def get_hit_z(params, ticks, plane):
+#@jit
+@partial(jit, static_argnames=['fixed_v'])
+def get_hit_z(params, ticks, plane, fixed_v=False):
     """
     Returns the z position of the hit given the time tick with the right sign for the drift direction
     """
     z_anode = jnp.take(params.tpc_borders, plane.astype(int), axis=0)[..., 2, 0]
     z_high = jnp.take(params.tpc_borders, plane.astype(int), axis=0)[..., 2, 1]
-    return z_anode + ticks * params.t_sampling*get_vdrift(params) * jnp.sign(z_high - z_anode)
+    if fixed_v:
+        hit_z = z_anode + ticks * params.t_sampling * params.vdrift_static * jnp.sign(z_high - z_anode)
+    else:
+        hit_z = z_anode + ticks * params.t_sampling * get_vdrift(params) * jnp.sign(z_high - z_anode)
+    return hit_z
 
 @jit
 def gaussian_1d_integral(bin_edges, std):
