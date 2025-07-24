@@ -418,9 +418,19 @@ def current_mc(params, electrons, pixels_coord, fields):
 def current_lut(params, response, electrons, pixels_coord, fields):
     x_dist = abs(electrons[:, fields.index('x')] - pixels_coord[..., 0])
     y_dist = abs(electrons[:, fields.index('y')] - pixels_coord[..., 1])
-    z_cathode = jnp.take(params.tpc_borders, electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 1]
-    t0 = (jnp.abs(electrons[:, fields.index('z')] - z_cathode)) / get_vdrift(params) #Getting t0 as the equivalent time to cathode
-    
+    z_anode = jnp.take(params.tpc_borders, electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 0]
+    # response is produced assuming charge at the cathode
+    # t0 indicate the amount of time we would cut off from the beginning of the response time axis as shifting the readout plane closer
+    # In other part of the code, we always count from anode. Here if we assume the total time and use vdrift to shift t0, it would make the opposite effect.
+    # e.g larger eField, later in time wrt the anode (the assumption of the total time is a constant broke here). It would also compete with gradient 
+    # FIXME "t" contains t0 which is not necessarily the best practice
+    t0 = params.response_full_drift_t - electrons[:, fields.index('t')]
+    #t0 = params.response_full_drift_t - (jnp.abs(electrons[:, fields.index('z')] - z_anode)) / get_vdrift(params)
+    #t0 = params.response_full_drift_t - (jnp.abs(electrons[:, fields.index('z')] - z_anode)) / params.vdrift_static
+
+    #z_cathode = jnp.take(params.tpc_borders, electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 1]
+    #t0 = (jnp.abs(electrons[:, fields.index('z')] - z_cathode)) / get_vdrift(params) #Getting t0 as the equivalent time to cathode
+    #t0 = (jnp.abs(electrons[:, fields.index('z')] - z_cathode)) / params.vdrift_static #Getting t0 as the equivalent time to cathode
     i = (x_dist/params.response_bin_size).astype(int)
     j = (y_dist/params.response_bin_size).astype(int)
 

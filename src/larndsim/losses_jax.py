@@ -128,17 +128,56 @@ def chamfer_distance_3d(pos_a, pos_b, w_a, w_b, nhit_ref):
     weight_diff_sq_a_to_b = (w_a - w_b_nn_for_a) ** 2
     weight_diff_sq_b_to_a = (w_b - w_a_nn_for_b) ** 2
     
-    chamfer_a_to_b = jnp.sum(weight_diff_sq_a_to_b, where=min_dists_a_to_b < 1e4)
-    chamfer_b_to_a = jnp.sum(weight_diff_sq_b_to_a, where=min_dists_b_to_a < 1e4)
+    #chamfer_a_to_b = jnp.sum(weight_diff_sq_a_to_b, where=min_dists_a_to_b < 1e4)
+    #chamfer_b_to_a = jnp.sum(weight_diff_sq_b_to_a, where=min_dists_b_to_a < 1e4)
+
+    chamfer_a_to_b = jnp.sum(weight_diff_sq_a_to_b + min_dists_a_to_b, where=min_dists_a_to_b < 1e4)
+    chamfer_b_to_a = jnp.sum(weight_diff_sq_b_to_a + min_dists_b_to_a, where=min_dists_b_to_a < 1e4)
 
     # normalise by the target hit number
     chamfer_dist = (chamfer_a_to_b + chamfer_b_to_a) / nhit_ref
 
-    return chamfer_dist
+    return chamfer_dist, argmin_dists_a_to_b, argmin_dists_b_to_a
+
+@jax.jit
+def chamfer_distance_3d_og(pos_a, pos_b, w_a, w_b):
+    """
+    Compute the Chamfer Distance between two sets of 3D points (x, y, t).
+
+    Parameters:
+        pos_a: jnp.ndarray of shape (N, 3), positions and times of hits in distribution A.
+        pos_b: jnp.ndarray of shape (M, 3), positions and times of hits in distribution B.
+        w_a: jnp.ndarray of shape (N,), weights of hits in distribution A.
+        w_b: jnp.ndarray of shape (M,), weights of hits in distribution B.
+
+    Returns:
+        A scalar representing the Chamfer Distance between the two point sets.
+    """
+
+    # Calculate pairwise squared distances
+    dists_a_to_b = jnp.sum((pos_a[:, None, :] - pos_b[None, :, :])**2, axis=2)
+
+    # Find indices of minimum distances
+    argmin_dists_a_to_b = jnp.argmin(dists_a_to_b, axis=1)
+    argmin_dists_b_to_a = jnp.argmin(dists_a_to_b, axis=0)
+
+    # Extract minimum distances
+    min_dists_a_to_b = jnp.take_along_axis(dists_a_to_b, argmin_dists_a_to_b[:, None], axis=1).squeeze()
+    min_dists_b_to_a = jnp.take_along_axis(dists_a_to_b, argmin_dists_b_to_a[None, :], axis=0).squeeze()
+
+    # Extract weights of the closest points
+    closest_weights_a_to_b = jnp.take(w_b, argmin_dists_a_to_b)
+    closest_weights_b_to_a = jnp.take(w_a, argmin_dists_b_to_a)
+
+    # Calculate the weighted Chamfer distance
+    chamfer_dist = (
+        jnp.sum(min_dists_a_to_b * w_a * closest_weights_a_to_b, where=min_dists_a_to_b < 1e4) +
+        jnp.sum(min_dists_b_to_a * w_b * closest_weights_b_to_a, where=min_dists_b_to_a < 1e4)
+    )
+    return chamfer_dist, argmin_dists_a_to_b, argmin_dists_b_to_a
 
 def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref, pixel_x_ref, pixel_y_ref, pixel_z_ref, ticks_ref, eventID_ref , adc_norm=10., match_z=False):
     # normalise the time tick with the same drift velocity (in the current iteration)
-    #drift = pixel_z
     plane = pixel_z < 0 #FIXME store this information in the reference, so it can be properly used.
     drift =  get_hit_z(params, ticks.flatten(), plane.astype(int), fixed_v = True)
     plane_ref = pixel_z_ref < 0 #FIXME store this information in the reference, so it can be properly used.
@@ -169,7 +208,9 @@ def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref
     adcs_masked_ref = jnp.pad(adcs_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=0)/adc_norm
 
     nhit_ref = len(adcs_ref.flatten()[mask_ref])
-    loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref), axis=-1), adcs_masked, adcs_masked_ref, nhit_ref)
+    loss, argmin_dists_a_to_b, argmin_dists_b_to_a = chamfer_distance_3d_og(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
+    #loss, argmin_dists_a_to_b, argmin_dists_b_to_a = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref), axis=-1), adcs_masked, adcs_masked_ref, nhit_ref)
+
 
     return loss, dict()
 
