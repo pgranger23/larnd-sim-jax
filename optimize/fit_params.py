@@ -123,13 +123,16 @@ class ParamFitter:
                 param_val = set_target_vals[2*i_val+1]
                 self.target_val_dict[param_name] = float(param_val)
 
-        self.setup_params()
-        if not self.read_target:
-            self.make_target_sim()
-
         if self.current_mode == 'lut':
             self.lut_file = config.lut_file
             self.load_lut()
+        else:
+            self.lut_file = ""
+
+        self.setup_params()
+
+        if not self.read_target:
+            self.make_target_sim()
 
         loss_functions = {
             "mse_adc": (mse_adc, {}),
@@ -186,7 +189,7 @@ class ParamFitter:
 
     def setup_params(self):
         Params = build_params_class(self.relevant_params_list)
-        ref_params = load_detector_properties(Params, self.detector_props, self.pixel_layouts)
+        ref_params = load_detector_properties(Params, self.detector_props, self.pixel_layouts, self.lut_file)
         ref_params = ref_params.replace(
             electron_sampling_resolution=self.electron_sampling_resolution,
             number_pix_neighbors=self.number_pix_neighbors,

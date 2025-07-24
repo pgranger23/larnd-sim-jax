@@ -101,6 +101,7 @@ class Params_template:
     electron_sampling_resolution: float = struct.field(pytree_node=False)
     signal_length: float = struct.field(pytree_node=False)
     tran_diff_bin_edges: jax.Array = struct.field(pytree_node=False)
+    response_full_drift_t: float = struct.field(pytree_node=False)
     #: Maximum number of ADC values stored per pixel
     MAX_ADC_VALUES: int = struct.field(pytree_node=False)
     #: Discrimination threshold
@@ -193,9 +194,10 @@ def get_vdrift(params):
     mu = num / denom * temp_corr / 1000 #* V / kV
 
     return mu*params.eField
+    #return params.eField
 
 
-def load_detector_properties(params_cls, detprop_file, pixel_file):
+def load_detector_properties(params_cls, detprop_file, pixel_file, lut_file=""):
     """
     Loads detector properties and pixel geometry from YAML files and initializes a parameter class.
     This function reads detector and pixel layout properties from the provided YAML files,
@@ -224,7 +226,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "Ab": 0.8,
         "kb": 0.0486,
         "vdrift": 0.1648,
-        "vdrift_static": 0.1648,
+        "vdrift_static": 0.159645,
         "lifetime": 2.2e3,
         "long_diff": 4.0e-6,
         "tran_diff": 8.8e-6,
@@ -268,7 +270,8 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "tran_diff_bin_edges": jnp.linspace(-0.22, 0.22, 6),
         "diffusion_in_current_sim": True,
         "mc_diff": False,
-        "tpc_centers": np.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers
+        "tpc_centers": np.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
+        "response_full_drift_t": 190.61638
     }
 
     mm2cm = 0.1
@@ -307,6 +310,13 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
     tpcs = np.unique(params_dict['tile_positions'][:,0])
     params_dict['tpc_borders'] = np.zeros((len(tpcs), 3, 2))
 
+    if lut_file != "":
+        response = np.load(lut_file)
+        try:
+            response.keys()
+            params_dict['response_full_drift_t'] = response['drift_length'] / params_dict['vdrift_static']
+        except:
+            print("The response lut does not contain drift length information.")
     tile_indeces = tile_layout['tile_indeces']
     tpc_ids = np.unique(np.array(list(tile_indeces.values()))[:,0], axis=0)
 
