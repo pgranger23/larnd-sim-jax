@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import jit
+from jax import jit, random, debug
 import jax
 import numpy as np
 from numpy.lib import recfunctions as rfn
@@ -8,11 +8,12 @@ import logging
 # from jax.experimental import checkify
 
 # from larndsim.consts_jax import consts
-from larndsim.detsim_jax import generate_electrons, get_pixels, id2pixel, accumulate_signals, accumulate_signals_parametrized, current_lut, get_pixel_coordinates, current_mc, apply_tran_diff, get_hit_z
+from larndsim.detsim_jax import generate_electrons, get_pixels, id2pixel, accumulate_signals, accumulate_signals_parametrized, current_lut, get_pixel_coordinates, current_mc, apply_tran_diff, get_hit_z, pixel2id, get_bin_shifts, density_2d
 from larndsim.quenching_jax import quench
 from larndsim.drifting_jax import drift
-from larndsim.fee_jax import get_adc_values, digitize
+from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise
 from optimize.dataio import chop_tracks
+from larndsim.consts_jax import get_vdrift
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -41,15 +42,15 @@ def load_data(fname, invert_xz=True):
     return rfn.structured_to_unstructured(tracks, copy=True, dtype=np.float32), dtype
 
 def set_pixel_plane(params, tracks, fields):
-    zMin = np.minimum(params.tpc_borders[:, 2, 1] - params.size_margin, params.tpc_borders[:, 2, 0] - params.size_margin)
-    zMax = np.maximum(params.tpc_borders[:, 2, 1] + params.size_margin, params.tpc_borders[:, 2, 0] + params.size_margin)
+    zMin = jnp.minimum(params.tpc_borders[:, 2, 1] - params.size_margin, params.tpc_borders[:, 2, 0] - params.size_margin)
+    zMax = jnp.maximum(params.tpc_borders[:, 2, 1] + params.size_margin, params.tpc_borders[:, 2, 0] + params.size_margin)
 
     cond = tracks[:, fields.index("x")][..., None] >= params.tpc_borders[:, 0, 0][None, ...] - params.size_margin
-    cond = np.logical_and(tracks[:, fields.index("x")][..., None] <= params.tpc_borders[:, 0, 1][None, ...] + params.size_margin, cond)
-    cond = np.logical_and(tracks[:, fields.index("y")][..., None] >= params.tpc_borders[:, 1, 0][None, ...] - params.size_margin, cond)
-    cond = np.logical_and(tracks[:, fields.index("y")][..., None] <= params.tpc_borders[:, 1, 1][None, ...] + params.size_margin, cond)
-    cond = np.logical_and(tracks[:, fields.index("z")][..., None] >= zMin[None, ...], cond)
-    cond = np.logical_and(tracks[:, fields.index("z")][..., None] <= zMax[None, ...], cond)
+    cond = jnp.logical_and(tracks[:, fields.index("x")][..., None] <= params.tpc_borders[:, 0, 1][None, ...] + params.size_margin, cond)
+    cond = jnp.logical_and(tracks[:, fields.index("y")][..., None] >= params.tpc_borders[:, 1, 0][None, ...] - params.size_margin, cond)
+    cond = jnp.logical_and(tracks[:, fields.index("y")][..., None] <= params.tpc_borders[:, 1, 1][None, ...] + params.size_margin, cond)
+    cond = jnp.logical_and(tracks[:, fields.index("z")][..., None] >= zMin[None, ...], cond)
+    cond = jnp.logical_and(tracks[:, fields.index("z")][..., None] <= zMax[None, ...], cond)
 
     mask = cond.sum(axis=-1) >= 1
     pixel_plane = cond.astype(int).argmax(axis=-1)
@@ -163,6 +164,7 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
 
     return adcs, pixel_x, pixel_y, pixel_z, ticks, event, pix_renumbering, wfs[:, 1:]
 
+
 @partial(jit, static_argnames=['fields'])
 def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, fields):
     xpitch, ypitch, plane, eid = id2pixel(params, pIDs)
@@ -251,6 +253,216 @@ def simulate(params, response, tracks, fields, rngseed = 0):
 
     adcs, pixel_x, pixel_y, pixel_z, ticks, event, pix_renumbering, wfs =  simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey2, fields)
     return adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs
+
+
+@partial(jit, static_argnames=['fields'])
+def simulate_drift_new(params, tracks, fields, rngkey):
+    #Shifting tracks
+    new_tracks = shift_tracks(params, tracks, fields)
+    #Quenching and drifting
+    new_tracks = quench(params, new_tracks, 2, fields)
+    new_tracks = drift(params, new_tracks, fields)
+
+    #Getting the pixels where the electrons are
+    main_electrons = new_tracks
+
+    #Doing long_diff stuffs, MC only for now
+    # if params.mc_diff:
+    #     rnd_pos = random.normal(rngkey, tracks.shape[0])*main_electrons[:, fields.index("long_diff")]
+    #     main_electrons = main_electrons.at[:, fields.index('z')].set(main_electrons[:, fields.index('z')] + rnd_pos)
+
+
+    bins_pitches = get_bin_shifts(params, main_electrons, fields)
+
+    #Doing some tran diff fake stuff
+
+    nb_tran_diff_bins = 5
+    nb_tran_diff_bins_sym = (nb_tran_diff_bins - 1) // 2
+    bins = jnp.linspace(-nb_tran_diff_bins*params.pixel_pitch/params.nb_sampling_bins_per_pixel,
+                        nb_tran_diff_bins*params.pixel_pitch/params.nb_sampling_bins_per_pixel,
+                        nb_tran_diff_bins + 1)
+    x0 = main_electrons[:, fields.index("x")] % (params.pixel_pitch/params.nb_sampling_bins_per_pixel)
+    y0 = main_electrons[:, fields.index("y")] % (params.pixel_pitch/params.nb_sampling_bins_per_pixel)
+    sigma = main_electrons[:, fields.index("tran_diff")]
+    tran_diff_weights = density_2d(bins, x0, y0, sigma)
+
+    nelectrons = (tran_diff_weights*main_electrons[:, fields.index("n_electrons")][:, None, None]).reshape(-1) #Multiplying by the number of electron
+
+    z_cathode = jnp.take(params.tpc_borders, main_electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 1]
+    t0 = (jnp.abs(main_electrons[:, fields.index('z')] - z_cathode)) / get_vdrift(params) #Getting t0 as the equivalent time to cathode
+    t0_after_diff = (jnp.ones((main_electrons.shape[0], nb_tran_diff_bins, nb_tran_diff_bins))*t0[:, None, None]).reshape(-1) #Broadcasting t0 to the shape of the tran_diff_weights
+
+    #Need to convert long_diff into a tick number
+    long_diff = main_electrons[:, fields.index("long_diff")]/ get_vdrift(params)/ params.t_sampling
+
+    long_diff = long_diff[:, None, None].repeat(nb_tran_diff_bins**2, axis=-1).reshape(-1) #Broadcasting long_diff to the shape of the tran_diff_weights
+
+
+    bin_shifts = jnp.mgrid[-nb_tran_diff_bins_sym:nb_tran_diff_bins_sym+1, -nb_tran_diff_bins_sym:nb_tran_diff_bins_sym+1]
+
+    bins_pitches_new = (bins_pitches[..., jnp.newaxis, jnp.newaxis] + bin_shifts).swapaxes(1, -1)
+    pix_pitches = bins_pitches_new // params.nb_sampling_bins_per_pixel
+    pixels = pixel2id(params, pix_pitches[..., 0], pix_pitches[..., 1], main_electrons[:, fields.index("pixel_plane")][:, None, None].astype(int), main_electrons[:, fields.index("eventID")][:, None, None].astype(int))
+    main_pixels = pixels[:, nb_tran_diff_bins_sym, nb_tran_diff_bins_sym] #Getting the main pixel, not considering pixels that would only see some diffusion charge
+    currents_idx = jnp.abs(bins_pitches_new % params.nb_sampling_bins_per_pixel - params.nb_sampling_bins_per_pixel//2 + 0.5).reshape(-1, 2).astype(int)
+
+
+    #########################################################
+    #################Adding neighbors########################
+    #########################################################
+    pix_grid = jnp.mgrid[-params.number_pix_neighbors:params.number_pix_neighbors+1, -params.number_pix_neighbors:params.number_pix_neighbors+1]
+    bin_shifts_neighbors = pix_grid * params.nb_sampling_bins_per_pixel
+    currents_idx_neigh = jnp.moveaxis(jnp.abs(bins_pitches[:, :, None, None] % params.nb_sampling_bins_per_pixel - params.nb_sampling_bins_per_pixel//2 + 0.5 - bin_shifts_neighbors).astype(int), 1, -1).reshape(-1, 2)
+
+    principal_pitches = pix_pitches[:, nb_tran_diff_bins_sym, nb_tran_diff_bins_sym, :] #Getting the main pixel
+    new_pitches = jnp.moveaxis((principal_pitches[:, :, None, None] + pix_grid), 1, -1)
+    pIDs = pixel2id(params, new_pitches[..., 0], new_pitches[..., 1], main_electrons[:, fields.index("pixel_plane")][:, None, None].astype(int), main_electrons[:, fields.index("eventID")][:, None, None].astype(int))
+    pIDs_neigh = pIDs.at[:, params.number_pix_neighbors, params.number_pix_neighbors].set(-999) # Getting rid of the main pixel, which is already in the main_pixels
+    nelectrons_neigh = main_electrons[:, fields.index("n_electrons")]
+    t0_neigh = t0
+    return main_pixels, pixels, nelectrons, t0_after_diff, long_diff, currents_idx, pIDs_neigh ,currents_idx_neigh, nelectrons_neigh, t0_neigh
+
+@jit
+def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, mask_indices, pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
+    pix_renumbering = jnp.searchsorted(unique_pixels, pixels.ravel(), method='sort')
+    #Getting the right indices for the currents
+   
+    Npixels = unique_pixels.shape[0]
+    Nticks = int(params.time_interval[1]/params.t_sampling) + 1 #Adding one first element to serve as a garbage collector
+    wfs = jnp.zeros((Npixels, Nticks))
+    wfs = wfs.ravel()
+
+    cathode_ticks = (t0_after_diff/params.t_sampling).astype(int) #Start tick from distance to the end of the cathode
+    response_cum = jnp.cumsum(response_template, axis=-1)
+
+    # Compute indices for updating wfs, taking into account start_ticks
+    start_ticks = response_template.shape[-1] - params.signal_length - cathode_ticks
+    time_ticks = start_ticks[..., None] + jnp.arange(params.signal_length)
+
+    time_ticks = jnp.where((time_ticks <= 0 ) | (time_ticks >= Nticks - 1), 0, time_ticks+1) # it should be start_ticks +1 in theory but we cheat by putting the cumsum in the garbage too when strarting at 0 to mimic the expected behavior
+
+    start_indices = pix_renumbering * Nticks
+
+    end_indices = start_indices[..., None] + time_ticks
+
+    # Flatten the indices
+    flat_indices = jnp.ravel(end_indices)
+
+    charge = (nelectrons[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the charge to the shape of the signal
+
+    Ntemplates, Nx, Ny, Nt = response_template.shape
+
+    debug.print("long_diff: {long_diff}", long_diff=long_diff)
+
+    template_values = params.long_diff_template
+
+    idx = jnp.searchsorted(template_values, long_diff)
+    # Should make sure in first place that template values go from 0 to > max possible diff value
+
+    idx = jnp.clip(idx, 1, template_values.shape[0] - 2) #Ensuring idx is within bounds
+
+    x0 = template_values[idx - 1]
+    x1 = template_values[idx]
+    x2 = template_values[idx + 1]
+
+    # Quadratic interpolation coefficients
+    a = (long_diff - x1) * (long_diff - x2) / ((x0 - x1) * (x0 - x2))
+    b = (long_diff - x0) * (long_diff - x2) / ((x1 - x0) * (x1 - x2))
+    c = (long_diff - x0) * (long_diff - x1) / ((x2 - x0) * (x2 - x1))
+
+    debug.print("a: {a}, b: {b}, c: {c}", a=a, b=b, c=c)
+
+    a = (a[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
+    b = (b[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
+    c = (c[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
+
+    signal_indices = jnp.ravel((idx[..., None]*Nx*Ny + currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt + jnp.arange(response_template.shape[-1] - params.signal_length, response_template.shape[-1]))
+
+    # Update wfs with accumulated signals
+    wfs = wfs.at[(flat_indices,)].add((response_template.take(signal_indices))*charge*b)
+    wfs = wfs.at[(flat_indices,)].add((response_template.take(signal_indices - Nx*Ny*Nt))*charge*a)
+    wfs = wfs.at[(flat_indices,)].add((response_template.take(signal_indices + Nx*Ny*Nt))*charge*c)
+
+    #Now correct for the missed ticks at the beginning
+    integrated_start = response_cum.take(jnp.ravel((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + response_template.shape[-1] - params.signal_length))
+    real_start = response_cum.take(jnp.ravel((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks))
+    difference = (integrated_start - real_start)*nelectrons
+
+    start_ticks = jnp.where((start_ticks <= 0 ) | (start_ticks >= Nticks - 1), 0, start_ticks) + pix_renumbering * Nticks
+    wfs = wfs.at[start_ticks].add(difference)
+
+    wfs = wfs.reshape((Npixels, Nticks))
+
+
+    pix_renumbering_neigh = jnp.take(pix_renumbering_neigh, mask_indices, mode='fill', fill_value=0)
+    npix = (2*params.number_pix_neighbors + 1)**2
+    elec_ids = mask_indices//npix
+    nelectrons_neigh = jnp.take(nelectrons_neigh, elec_ids, mode='fill', fill_value=0)
+    currents_idx_neigh = jnp.take(currents_idx_neigh, mask_indices, mode='fill', fill_value=0, axis=0)
+
+    t0_neighbors = jnp.take(t0_neigh, elec_ids, mode='fill', fill_value=0)
+
+    cathode_ticks_neigh = (t0_neighbors/params.t_sampling).astype(int) #Start tick from distance to the end of the cathode
+    #WARNING: Assuming here that response_template[0] corresponds to no diff
+    wfs = accumulate_signals(wfs, currents_idx_neigh, nelectrons_neigh, response_template[0], response_cum, pix_renumbering_neigh, cathode_ticks_neigh, params.signal_length)
+
+    return wfs
+
+def simulate_new(params, response_template, tracks, fields, rngseed = 0):
+    """
+    Simulates the signal from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
+    Args:
+        params (Any): Parameters of the simulation.
+        response (jnp.ndarray): Response function.
+        tracks (jnp.ndarray): Tracks of the particles as a JAX array.
+        fields (List[str]): List of field names corresponding to the tracks.
+        rngseed (int): Random seed for the simulation.
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
+            - adcs: ADC values.
+            - unique_pixels: Unique pixels.
+            - ticks: Ticks of the signals.
+            - pix_renumbering: Renumbering of the pixels.
+            - electrons: Electrons generated.
+            - start_ticks: Start ticks of the signals.
+            - wfs: Waveforms of the signals.
+
+    """
+
+    master_key = jax.random.key(rngseed)
+    rngkey1, rngkey2 = jax.random.split(master_key)
+
+    main_pixels, pixels, nelectrons, t0_after_diff, long_diff, currents_idx, pIDs_neigh, currents_idx_neigh, nelectrons_neigh, t0_neigh = simulate_drift_new(params, tracks, fields, rngkey1)
+
+    ################################################
+    ################################################
+
+    #Sorting the pixels and getting the unique ones
+    unique_pixels = jnp.unique(main_pixels.ravel())
+    padded_size = pad_size(unique_pixels.shape[0], "unique_pixels")
+
+    unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
+
+    mask, pix_renumbering_neigh = get_renumbering(pIDs_neigh, unique_pixels)
+    mask_indices = jnp.nonzero(mask)[0]
+    padded_size = pad_size(mask_indices.shape[0], "pix_renumbering")
+    mask_indices = jnp.pad(mask_indices, (0, padded_size - mask_indices.shape[0]), mode='constant', constant_values=-1)
+
+    ###############################################
+    ###############################################
+
+    wfs = simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, mask_indices, pix_renumbering_neigh, t0_neigh, currents_idx_neigh)
+
+    ###############################################
+    ###############################################
+
+    # integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey2)
+    integral, ticks, no_hit_prob = get_adc_values_average_noise(params, wfs[:, 1:])
+
+    adcs = digitize(params, integral)
+    return adcs, unique_pixels, ticks, None, None, wfs[:, 1:], currents_idx
+    # return adcs, ticks, cathode_ticks, wfs[:, 1:]
+    
 
 def prepare_tracks(params, tracks_file, invert_xz=True):
     tracks, dtype = load_data(tracks_file, invert_xz)

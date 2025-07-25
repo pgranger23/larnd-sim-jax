@@ -3,7 +3,7 @@ from jax import jit, vmap
 import jax
 from jax.nn import softmax
 from functools import partial
-from larndsim.sim_jax import pad_size, simulate, simulate_parametrized
+from larndsim.sim_jax import pad_size, simulate_new, simulate_parametrized
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
 
@@ -192,8 +192,8 @@ def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref
 
     nb_selected = jnp.count_nonzero(mask)
     nb_selected_ref = jnp.count_nonzero(mask_ref)
-
-    padded_size = pad_size(max(nb_selected, nb_selected_ref), "batch_hits")
+    
+    padded_size = pad_size(max(int(nb_selected), int(nb_selected_ref)), "batch_hits")
 
     eventID_masked = jnp.pad(jnp.repeat(eventID, 10)[mask], (0, padded_size - nb_selected), mode='constant', constant_values=-1e9)
     pixel_x_masked = jnp.pad(jnp.repeat(pixel_x, 10)[mask], (0, padded_size - nb_selected), mode='constant', constant_values=-1e9)
@@ -259,7 +259,7 @@ def adc2charge(dw, params):
     return (dw / params.ADC_COUNTS * (params.V_REF - params.V_CM) + params.V_CM - params.V_PEDESTAL) / params.GAIN *1E-3
 
 def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
-    adcs, x, y, z, ticks, event, _, _, _, _ = simulate(params, response, tracks, fields, rngkey)
+    adcs, x, y, z, ticks, event, _ = simulate_new(params, response, tracks, fields, rngkey)
 
     Q = adc2charge(adcs, params)
     ref_Q = adc2charge(ref_adcs, params)

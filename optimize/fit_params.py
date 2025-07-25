@@ -5,7 +5,7 @@ import shutil
 import pickle
 import numpy as np
 from .ranges import ranges
-from larndsim.sim_jax import simulate, simulate_parametrized, get_size_history
+from larndsim.sim_jax import simulate_new, simulate_parametrized, get_size_history
 from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.softdtw_jax import SoftDTW
@@ -225,7 +225,7 @@ class ParamFitter:
         self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
 
     def load_lut(self):
-        self.response = load_lut(self.lut_file)
+        self.response = load_lut(self.lut_file, self.ref_params)
 
     def update_params(self):
         self.current_params = self.norm_params.replace(**{key: getattr(self.norm_params, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list})
@@ -268,34 +268,36 @@ class ParamFitter:
         if self.read_target:
             with open(target, 'rb') as f:
                 loaded = jnp.load(f, allow_pickle=True)
-                try:
+                if 'event_id' in loaded:
                     mask = jnp.isin(loaded['event_id'], evts_sim)
-                except:
+                    ref_event = loaded['event_id'][mask]
+                elif 'event' in loaded:
                     mask = jnp.isin(loaded['event'], evts_sim)
-                try:
-                    ref_adcs = loaded['adcs'][mask]
-                except:
-                    print("no adcs in the input target")
-                try:
+                    ref_event = loaded['event'][mask]
+                else:
+                    raise ValueError("No event_id or event in the target file")
+
+                if not 'adcs' in loaded:
+                    raise ValueError("No adcs in the target file")
+
+                ref_adcs = loaded['adcs'][mask]
+                if 'Q' in loaded:
                     ref_Q = loaded['Q'][mask]
-                except:
+                else:
                     ref_Q = adc2charge(ref_adcs, self.current_params)
+    
                 # switch x and z
                 # as x is the drift in data, and z is the drift in sim
                 ref_pixel_x = loaded['z'][mask]
                 ref_pixel_y = loaded['y'][mask]
                 ref_pixel_z = loaded['x'][mask]
                 ref_ticks = loaded['ticks'][mask]
-                try:
-                    ref_event = loaded['event_id'][mask]
-                except:
-                    ref_event = loaded['event'][mask]
         else:
             #Simulating the reference during the first epoch
             fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
             if regen or not os.path.exists(fname):
                 if self.current_mode == 'lut':
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, _, _, _, _ = simulate(self.target_params, self.response, target, self.track_fields, i+1) #Setting a different random seed for each target
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, _ = simulate_new(self.target_params, self.response, target, self.track_fields, i+1) #Setting a different random seed for each target
                 else:
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, _, _, _, _ = simulate_parametrized(self.target_params, target, self.track_fields, i+1) #Setting a different random seed for each target
 
