@@ -139,7 +139,7 @@ def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref, adc
     nb_selected = jnp.count_nonzero(mask)
     nb_selected_ref = jnp.count_nonzero(mask_ref)
     
-    padded_size = pad_size(max(nb_selected, nb_selected_ref), "batch_hits")
+    padded_size = pad_size(max(int(nb_selected), int(nb_selected_ref)), "batch_hits")
 
     eventID_masked = jnp.pad(jnp.repeat(eventID, 10)[mask], (0, padded_size - nb_selected), mode='constant', constant_values=-1e9)
     pixel_x_masked = jnp.pad(jnp.repeat(pixel_x, 10)[mask], (0, padded_size - nb_selected), mode='constant', constant_values=-1e9)

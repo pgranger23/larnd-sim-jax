@@ -100,7 +100,7 @@ class Params_template:
     number_pix_neighbors: int = struct.field(pytree_node=False)
     electron_sampling_resolution: float = struct.field(pytree_node=False)
     signal_length: float = struct.field(pytree_node=False)
-    tran_diff_bin_edges: jax.Array = struct.field(pytree_node=False)
+
     #: Maximum number of ADC values stored per pixel
     MAX_ADC_VALUES: int = struct.field(pytree_node=False)
     #: Discrimination threshold
@@ -140,6 +140,10 @@ class Params_template:
     nb_sampling_bins_per_pixel: int = struct.field(pytree_node=False, default=10)
     long_diff_template: jax.Array = struct.field(pytree_node=False, default=None)
     long_diff_extent: int = struct.field(pytree_node=False, default=20)
+    roi_threshold: float = struct.field(pytree_node=False, default=0.01)  # Threshold for region of interest selection
+    roi_split_length: int = struct.field(pytree_node=False, default=400)  # Length of the region of interest split
+    fee_paths_scaling: int = struct.field(pytree_node=False, default=20)  # Scaling factor for fee paths
+    nb_tran_diff_bins: int = struct.field(pytree_node=False, default=5)
 
 def build_params_class(params_with_grad):
     """
@@ -267,12 +271,11 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "UNCORRELATED_NOISE_CHARGE": 500,
         "ELECTRON_MOBILITY_PARAMS": (551.6, 7158.3, 4440.43, 4.29, 43.63, 0.2053),
         "size_margin": 2e-2,
-        "tran_diff_bin_edges": jnp.linspace(-0.22, 0.22, 6),
         "diffusion_in_current_sim": True,
         "mc_diff": False,
         "tpc_centers": jnp.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
         "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
-        "long_diff_template": jnp.linspace(0, 10, 100), # Placeholder for long diffusion template
+        "long_diff_template": jnp.linspace(0.001, 10, 100), # Placeholder for long diffusion template
         "long_diff_extent": 20
     }
 
@@ -364,7 +367,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
 
 def load_lut(lut_file, params):
     response = np.load(lut_file)
-    gaus = norm.pdf(jnp.arange(-params.long_diff_extent, params.long_diff_extent + 1, 1), scale=params.long_diff_template[:, None])  # Create Gaussian template
+    gaus = norm.pdf(jnp.arange(-params.long_diff_extent, params.long_diff_extent + 1, 1), scale=params.long_diff_template[:, None])  # Create Gaussian template TEST
     gaus = gaus / jnp.sum(gaus, axis=1, keepdims=True)  # Normalize the Gaussian
 
 
