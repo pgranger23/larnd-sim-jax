@@ -11,12 +11,12 @@ import logging
 from larndsim.detsim_jax import generate_electrons, get_pixels, id2pixel, accumulate_signals, accumulate_signals_parametrized, current_lut, get_pixel_coordinates, current_mc, apply_tran_diff, pixel2id, get_bin_shifts, density_2d
 from larndsim.quenching_jax import quench
 from larndsim.drifting_jax import drift
-from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise
+from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise, select_split_roi
 from optimize.dataio import chop_tracks
 from larndsim.consts_jax import get_vdrift
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 size_history_dict = {}
 
@@ -58,27 +58,47 @@ def set_pixel_plane(params, tracks, fields):
     return tracks
 
 def pad_size(cur_size, tag, pad_threshold=0.05):
+    """
+    Pads the input size(s) to avoid frequent recompilations. Works for N-dimensional input sizes.
+    Args:
+        cur_size (int or tuple/list of ints): Current size(s) of the input.
+        tag (str): Tag to identify the input type.
+        pad_threshold (float): Padding threshold.
+    Returns:
+        tuple: Padded size(s).
+    """
     global size_history_dict
+
+    # Ensure cur_size is a tuple for uniformity
+    if isinstance(cur_size, (int, np.integer)):
+        cur_size = (cur_size,)
+        return_val = lambda x: x[0]  # If the input was a single integer, return an integer
+    else:
+        cur_size = tuple(cur_size)
+        return_val = lambda x: x  # If the input was a tuple, return a tuple
 
     if tag not in size_history_dict:
         size_history_dict[tag] = []
     size_history = size_history_dict[tag]
 
-    #If an input with this shape has already been used, we are fine
+    # If an input with this shape has already been used, we are fine
     if cur_size in size_history:
-        logger.debug(f"Input size {cur_size} already existing.")
-        return cur_size
-    #Otherwise we want to see if there is something available not too far
+        logger.debug(f"Input size {cur_size} already existing for {tag}.")
+        return return_val(cur_size)
+
+    # Otherwise, see if there is something available not too far in all dimensions
     for size in size_history:
-        if cur_size <= size <= cur_size*(1 + pad_threshold):
-            logger.debug(f"Input size {cur_size} not existing. Using close size of {size}")
-            return size
-    #If nothing exists we will have to recompile. We still use some padding to try limiting further recompilations if the size is reduced
-    new_size = int(cur_size*(1 + pad_threshold/2) + 0.5)
+        if all(cs <= s <= cs * (1 + pad_threshold) for cs, s in zip(cur_size, size)):
+            logger.debug(f"Input size {cur_size} not existing for {tag}. Using close size of {size}")
+            return return_val(size)
+
+    # If nothing exists, create a new padded size
+    new_size = tuple(int(cs * (1 + pad_threshold / 2) + 0.5) for cs in cur_size)
     size_history.append(new_size)
     size_history.sort()
-    logger.debug(f"Input size {cur_size} not existing. Creating new size of {new_size}")
-    return new_size
+    logger.debug(f"Input size {cur_size} not existing for {tag}. Creating new size of {new_size}")
+
+    return return_val(new_size)
 
 def get_size_history():
     return size_history_dict
@@ -253,7 +273,7 @@ def simulate_drift_new(params, tracks, fields, rngkey):
 
     #Doing some tran diff fake stuff
 
-    nb_tran_diff_bins = 5
+    nb_tran_diff_bins = params.nb_tran_diff_bins
     nb_tran_diff_bins_sym = (nb_tran_diff_bins - 1) // 2
     bins = jnp.linspace(-nb_tran_diff_bins*params.pixel_pitch/params.nb_sampling_bins_per_pixel,
                         nb_tran_diff_bins*params.pixel_pitch/params.nb_sampling_bins_per_pixel,
@@ -329,8 +349,6 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
 
     Ntemplates, Nx, Ny, Nt = response_template.shape
 
-    debug.print("long_diff: {long_diff}", long_diff=long_diff)
-
     template_values = params.long_diff_template
 
     idx = jnp.searchsorted(template_values, long_diff)
@@ -346,8 +364,6 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     a = (long_diff - x1) * (long_diff - x2) / ((x0 - x1) * (x0 - x2))
     b = (long_diff - x0) * (long_diff - x2) / ((x1 - x0) * (x1 - x2))
     c = (long_diff - x0) * (long_diff - x1) / ((x2 - x0) * (x2 - x1))
-
-    debug.print("a: {a}, b: {b}, c: {c}", a=a, b=b, c=c)
 
     a = (a[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
     b = (b[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
@@ -416,14 +432,14 @@ def simulate_new(params, response_template, tracks, fields, rngseed = 0):
 
     #Sorting the pixels and getting the unique ones
     unique_pixels = jnp.unique(main_pixels.ravel())
-    padded_size = pad_size(unique_pixels.shape[0], "unique_pixels")
+    padded_unique, padded_mask = pad_size((unique_pixels.shape[0], pIDs_neigh.size), "unique_pixels", 0.2)
 
-    unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
+    unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_unique - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
     mask, pix_renumbering_neigh = get_renumbering(pIDs_neigh, unique_pixels)
     mask_indices = jnp.nonzero(mask)[0]
-    padded_size = pad_size(mask_indices.shape[0], "pix_renumbering")
-    mask_indices = jnp.pad(mask_indices, (0, padded_size - mask_indices.shape[0]), mode='constant', constant_values=-1)
+    # padded_size = pad_size(mask_indices.shape[0], "pix_renumbering", 0.2)
+    mask_indices = jnp.pad(mask_indices, (0, padded_mask - mask_indices.shape[0]), mode='constant', constant_values=-1)
 
     ###############################################
     ###############################################
@@ -433,11 +449,34 @@ def simulate_new(params, response_template, tracks, fields, rngseed = 0):
     ###############################################
     ###############################################
 
+    small_rois, small_roi_start, small_roi_idx, large_rois, large_roi_start, large_roi_idx = select_split_roi(params, wfs[:, 1:])
+    padded_small_nb = pad_size(small_rois.shape[0], "wfs_roi", 0.2) #We already enforced the length of the samllest ones, no need for padding
+    padded_large_nb, padded_large_length = pad_size((large_rois.shape[0], large_rois.shape[1]), "wfs_roi", 0.2)
+    small_rois = jnp.pad(small_rois, ((0, padded_small_nb - small_rois.shape[0]), (0, 0)), mode='constant', constant_values=0)
+    large_rois = jnp.pad(large_rois, ((0, padded_large_nb - large_rois.shape[0]), (0, padded_large_length - large_rois.shape[1])), mode='constant', constant_values=0)
+
+    integral_small, ticks_small, no_hit_prob_small = get_adc_values_average_noise(params, small_rois)
+    integral_large, ticks_large, no_hit_prob_large = get_adc_values_average_noise(params, large_rois)
+
+    integral = jnp.zeros((integral_small.shape[0], unique_pixels.shape[0]))
+
+    integral = integral.at[:, small_roi_idx].set(integral_small[:, :small_roi_idx.shape[0]])
+    integral = integral.at[:, large_roi_idx].set(integral_large[:, :large_roi_idx.shape[0]])
+
+    ticks = jnp.zeros((ticks_small.shape[0], unique_pixels.shape[0]))
+    ticks = ticks.at[:, small_roi_idx].set(ticks_small[:, :small_roi_idx.shape[0]] + small_roi_start)
+    ticks = ticks.at[:, large_roi_idx].set(ticks_large[:, :large_roi_idx.shape[0]] + large_roi_start)
+
+    no_prob = jnp.zeros((no_hit_prob_small.shape[0], unique_pixels.shape[0]))
+    no_prob = no_prob.at[:, small_roi_idx].set(no_hit_prob_small[:, :small_roi_idx.shape[0]])
+    no_prob = no_prob.at[:, large_roi_idx].set(no_hit_prob_large[:, :large_roi_idx.shape[0]])
+
+
     # integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey2)
-    integral, ticks, no_hit_prob = get_adc_values_average_noise(params, wfs[:, 1:])
+    # 
 
     adcs = digitize(params, integral)
-    return adcs, unique_pixels, ticks, None, None, wfs[:, 1:], currents_idx
+    return adcs.T, unique_pixels, ticks.T, None, None, wfs[:, 1:], currents_idx
     # return adcs, ticks, cathode_ticks, wfs[:, 1:]
     
 
