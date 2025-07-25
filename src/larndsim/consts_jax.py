@@ -12,6 +12,10 @@ import dataclasses
 from types import MappingProxyType
 from collections import defaultdict
 
+import logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 @dataclasses.dataclass
 class Params_template:
     """
@@ -72,6 +76,7 @@ class Params_template:
     kb: float = struct.field(pytree_node=False)
     lifetime: float = struct.field(pytree_node=False)
     vdrift: float = struct.field(pytree_node=False)
+    vdrift_static: float = struct.field(pytree_node=False)
     long_diff: float = struct.field(pytree_node=False)
     tran_diff: float = struct.field(pytree_node=False)
     tpc_borders: jax.Array = struct.field(pytree_node=False)
@@ -101,6 +106,7 @@ class Params_template:
     electron_sampling_resolution: float = struct.field(pytree_node=False)
     signal_length: float = struct.field(pytree_node=False)
 
+    response_full_drift_t: float = struct.field(pytree_node=False)
     #: Maximum number of ADC values stored per pixel
     MAX_ADC_VALUES: int = struct.field(pytree_node=False)
     #: Discrimination threshold
@@ -200,9 +206,10 @@ def get_vdrift(params):
     mu = num / denom * temp_corr / 1000 #* V / kV
 
     return mu*params.eField
+    #return params.eField
 
 
-def load_detector_properties(params_cls, detprop_file, pixel_file):
+def load_detector_properties(params_cls, detprop_file, pixel_file, lut_file=""):
     """
     Loads detector properties and pixel geometry from YAML files and initializes a parameter class.
     This function reads detector and pixel layout properties from the provided YAML files,
@@ -231,6 +238,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "Ab": 0.8,
         "kb": 0.0486,
         "vdrift": 0.1648,
+        "vdrift_static": 0.159645,
         "lifetime": 2.2e3,
         "long_diff": 4.0e-6,
         "tran_diff": 8.8e-6,
@@ -274,6 +282,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "diffusion_in_current_sim": True,
         "mc_diff": False,
         "tpc_centers": jnp.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
+        "response_full_drift_t": 190.61638,
         "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
         "long_diff_template": jnp.linspace(0.001, 10, 100), # Placeholder for long diffusion template
         "long_diff_extent": 20
@@ -314,6 +323,13 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
     tpcs = np.unique(params_dict['tile_positions'][:,0])
     params_dict['tpc_borders'] = np.zeros((len(tpcs), 3, 2))
 
+    if lut_file != "":
+        response = np.load(lut_file)
+        try:
+            response.keys()
+            params_dict['response_full_drift_t'] = response['drift_length'] / params_dict['vdrift_static']
+        except:
+            print("The response lut does not contain drift length information.")
     tile_indeces = tile_layout['tile_indeces']
     tpc_ids = np.unique(np.array(list(tile_indeces.values()))[:,0], axis=0)
 
@@ -367,6 +383,18 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
 
 def load_lut(lut_file, params):
     response = np.load(lut_file)
+
+    if isinstance(response, np.lib.npyio.NpzFile):
+        logger.info("Loading response from npz file")
+        if 'response' in response:
+            response = response['response']
+        else:
+            raise ValueError("No 'response' key found in the npz file.")
+    elif isinstance(response, np.ndarray):
+        logger.info("Loading response from numpy array")
+    else:
+        raise ValueError("Unsupported response format. Expected npz or numpy array.")
+
     gaus = norm.pdf(jnp.arange(-params.long_diff_extent, params.long_diff_extent + 1, 1), scale=params.long_diff_template[:, None])  # Create Gaussian template TEST
     gaus = gaus / jnp.sum(gaus, axis=1, keepdims=True)  # Normalize the Gaussian
 
