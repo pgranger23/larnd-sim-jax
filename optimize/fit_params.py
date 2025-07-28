@@ -123,13 +123,13 @@ class ParamFitter:
                 param_val = set_target_vals[2*i_val+1]
                 self.target_val_dict[param_name] = float(param_val)
 
+        self.setup_params()
+
         if self.current_mode == 'lut':
             self.lut_file = config.lut_file
             self.load_lut()
         else:
             self.lut_file = ""
-
-        self.setup_params()
 
         if not self.read_target:
             self.make_target_sim()
