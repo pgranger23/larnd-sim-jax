@@ -52,7 +52,7 @@ if [ "$LUT" = TRUE ]; then
         --seed ${TARGET_SEED} \
         --optimizer_fn Adam \
         --random_ntrack \
-        --iterations ${ITERATIONS} \
+        --iterations 20 \
         --max_batch_len ${BATCH_SIZE} \
         --lr_scheduler exponential_decay \
         --lr_kw '{"decay_rate" : 0.97}' \
@@ -60,7 +60,7 @@ if [ "$LUT" = TRUE ]; then
         --lut_file src/larndsim/detector_properties/response_44.npy \
         --max_clip_norm_val ${MAX_CLIP_NORM_VAL} \
         --electron_sampling_resolution 0.01 \
-        --number_pix_neighbors 4 \
+        --number_pix_neighbors 2 \
         --signal_length 150 \
         --mode 'lut' \
         --loss_fn ${LOSS} \
