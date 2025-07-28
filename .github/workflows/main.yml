@@ -266,7 +266,7 @@ jobs:
 
   rtd:
     runs-on: ubuntu-latest
-    needs: [test-scan, test-scan-lut]
+    needs: [test-scan, test-scan-lut, test-fit, test-fit-lut]
 
     steps:
       - name: Trigger RTDs build
