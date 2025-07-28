@@ -130,6 +130,7 @@ class ParamFitter:
             self.load_lut()
         else:
             self.lut_file = ""
+            self.lut_infos = {}
 
         if not self.read_target:
             self.make_target_sim()
@@ -189,7 +190,7 @@ class ParamFitter:
 
     def setup_params(self):
         Params = build_params_class(self.relevant_params_list)
-        ref_params = load_detector_properties(Params, self.detector_props, self.pixel_layouts, self.lut_file)
+        ref_params = load_detector_properties(Params, self.detector_props, self.pixel_layouts, self.lut_infos)
         ref_params = ref_params.replace(
             electron_sampling_resolution=self.electron_sampling_resolution,
             number_pix_neighbors=self.number_pix_neighbors,
@@ -225,7 +226,7 @@ class ParamFitter:
         self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
 
     def load_lut(self):
-        self.response = load_lut(self.lut_file, self.ref_params)
+        self.response, self.lut_infos = load_lut(self.lut_file, self.ref_params)
 
     def update_params(self):
         self.current_params = self.norm_params.replace(**{key: getattr(self.norm_params, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list})

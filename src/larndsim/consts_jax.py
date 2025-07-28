@@ -209,7 +209,7 @@ def get_vdrift(params):
     #return params.eField
 
 
-def load_detector_properties(params_cls, detprop_file, pixel_file, lut_file=""):
+def load_detector_properties(params_cls, detprop_file, pixel_file, lut_infos={}):
     """
     Loads detector properties and pixel geometry from YAML files and initializes a parameter class.
     This function reads detector and pixel layout properties from the provided YAML files,
@@ -221,6 +221,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file, lut_file=""):
             initialization with keyword arguments matching the keys in `params_dict`.
         detprop_file (str): Path to the YAML file containing detector properties.
         pixel_file (str): Path to the YAML file containing pixel layout and geometry.
+        lut_infos (dict): Optional dictionary with LUT information (e.g., drift_length).
 
     Returns:
         params_cls: An instance of `params_cls` initialized with the loaded and computed parameters.
@@ -323,13 +324,11 @@ def load_detector_properties(params_cls, detprop_file, pixel_file, lut_file=""):
     tpcs = np.unique(params_dict['tile_positions'][:,0])
     params_dict['tpc_borders'] = np.zeros((len(tpcs), 3, 2))
 
-    if lut_file != "":
-        response = np.load(lut_file)
-        try:
-            response.keys()
-            params_dict['response_full_drift_t'] = response['drift_length'] / params_dict['vdrift_static']
-        except:
-            print("The response lut does not contain drift length information.")
+    if 'drift_length' in lut_infos:
+        params_dict['response_full_drift_t'] = lut_infos['drift_length'] / params_dict['vdrift_static']
+    else:
+        logger.warning("Drift length not found in LUT infos, using default value.")
+
     tile_indeces = tile_layout['tile_indeces']
     tpc_ids = np.unique(np.array(list(tile_indeces.values()))[:,0], axis=0)
 
@@ -382,7 +381,27 @@ def load_detector_properties(params_cls, detprop_file, pixel_file, lut_file=""):
     return params_cls(**filtered_dict)
 
 def load_lut(lut_file, params):
+    """
+    Loads a lookup table (LUT) from a file and processes it to create a response template for simulation.
+    This function reads a LUT file, which can be in `.npz` or `.npy` format, and extracts the response data.
+    It then applies a Gaussian convolution to the response data to create a response template that can be
+    used in simulations. The Gaussian template is normalized and reshaped to match the expected output format.
+    Args:
+        lut_file (str): Path to the LUT file, which can be in `.npz` or `.npy` format.
+        params (Params): An instance of the `Params` class containing simulation parameters.
+    Returns:
+        jax.Array: A response template created by applying a Gaussian convolution to the LUT response data.
+        dict: A dictionary containing additional information extracted from the LUT file.
+    Raises:
+        ValueError: If the LUT file format is unsupported or if the expected keys are not found in the response.
+    Notes:
+        - The function assumes that the LUT file contains a key named 'response' for the response data.
+        - The Gaussian template is created based on the `long_diff_template` and `long_diff_extent` parameters from the `Params` instance.
+        - The convolution is performed using JAX's `jax.numpy.convolve` function, and the output is reshaped to match the expected dimensions.
+    """
+
     response = np.load(lut_file)
+    lut_infos = {}
 
     if isinstance(response, np.lib.npyio.NpzFile):
         logger.info("Loading response from npz file")
@@ -390,6 +409,7 @@ def load_lut(lut_file, params):
             response = response['response']
         else:
             raise ValueError("No 'response' key found in the npz file.")
+        lut_infos = {key: response[key] for key in response if key != 'response'}
     elif isinstance(response, np.ndarray):
         logger.info("Loading response from numpy array")
     else:
@@ -417,5 +437,5 @@ def load_lut(lut_file, params):
 
     response_template = response_template.at[0].set(response) # Assuming the first element corresponds to no diffusion
 
-    return response_template
+    return response_template, lut_infos
     # return np.cumsum(response, axis=-1)

@@ -96,9 +96,7 @@ def main(config):
     ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts, config.lut_file)
 
     if args.mode == 'lut':
-        response = load_lut(config.lut_file, ref_params)
-    
-
+        response, lut_infos = load_lut(config.lut_file, ref_params)
     
     params_to_apply = [
         'diffusion_in_current_sim',
