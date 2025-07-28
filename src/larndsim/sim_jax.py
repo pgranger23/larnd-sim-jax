@@ -352,8 +352,6 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
 
     Ntemplates, Nx, Ny, Nt = response_template.shape
 
-    debug.print("long_diff: {long_diff}", long_diff=long_diff)
-
     template_values = params.long_diff_template
 
     idx = jnp.searchsorted(template_values, long_diff)
@@ -369,8 +367,6 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     a = (long_diff - x1) * (long_diff - x2) / ((x0 - x1) * (x0 - x2))
     b = (long_diff - x0) * (long_diff - x2) / ((x1 - x0) * (x1 - x2))
     c = (long_diff - x0) * (long_diff - x1) / ((x2 - x0) * (x2 - x1))
-
-    debug.print("a: {a}, b: {b}, c: {c}", a=a, b=b, c=c)
 
     a = (a[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
     b = (b[:, None]*jnp.ones((1, params.signal_length), dtype=jnp.float32)).reshape(-1) #Broadcasting the coefficients to the shape of the signal
