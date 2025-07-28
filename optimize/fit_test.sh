@@ -44,8 +44,6 @@ if [ "$LUT" = TRUE ]; then
         --track_len_sel 2 \
         --max_abs_costheta_sel 0.966 \
         --min_abs_segz_sel 15. \
-        --no-noise-guess \
-        --no-noise-target \
         --data_seed ${DATA_SEED} \
         --out_label fit_test_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target \
         --test_name fit_noise \
@@ -67,6 +65,7 @@ if [ "$LUT" = TRUE ]; then
         --fit_type 'chain' \
         --cpu_only \
         --mc_diff
+        # --debug_nans
 else
     python3 -m optimize.example_run \
         --data_sz -1 \

@@ -26,8 +26,6 @@ from ctypes import cdll
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-#Debug NAns
-# jax.config.update("jax_debug_nans", True)
 
 def normalize_param(param_val, param_name, scheme="divide", undo_norm=False):
     if scheme == "divide":
