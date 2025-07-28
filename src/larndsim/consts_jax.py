@@ -209,7 +209,7 @@ def get_vdrift(params):
     #return params.eField
 
 
-def load_detector_properties(params_cls, detprop_file, pixel_file, lut_infos={}):
+def load_detector_properties(params_cls, detprop_file, pixel_file):
     """
     Loads detector properties and pixel geometry from YAML files and initializes a parameter class.
     This function reads detector and pixel layout properties from the provided YAML files,
@@ -221,7 +221,6 @@ def load_detector_properties(params_cls, detprop_file, pixel_file, lut_infos={})
             initialization with keyword arguments matching the keys in `params_dict`.
         detprop_file (str): Path to the YAML file containing detector properties.
         pixel_file (str): Path to the YAML file containing pixel layout and geometry.
-        lut_infos (dict): Optional dictionary with LUT information (e.g., drift_length).
 
     Returns:
         params_cls: An instance of `params_cls` initialized with the loaded and computed parameters.
@@ -324,11 +323,6 @@ def load_detector_properties(params_cls, detprop_file, pixel_file, lut_infos={})
     tpcs = np.unique(params_dict['tile_positions'][:,0])
     params_dict['tpc_borders'] = np.zeros((len(tpcs), 3, 2))
 
-    if 'drift_length' in lut_infos:
-        params_dict['response_full_drift_t'] = lut_infos['drift_length'] / params_dict['vdrift_static']
-    else:
-        logger.warning("Drift length not found in LUT infos, using default value.")
-
     tile_indeces = tile_layout['tile_indeces']
     tpc_ids = np.unique(np.array(list(tile_indeces.values()))[:,0], axis=0)
 
@@ -391,7 +385,7 @@ def load_lut(lut_file, params):
         params (Params): An instance of the `Params` class containing simulation parameters.
     Returns:
         jax.Array: A response template created by applying a Gaussian convolution to the LUT response data.
-        dict: A dictionary containing additional information extracted from the LUT file.
+        updated_params (Params): The updated parameters including any new values extracted from the LUT.
     Raises:
         ValueError: If the LUT file format is unsupported or if the expected keys are not found in the response.
     Notes:
@@ -400,16 +394,21 @@ def load_lut(lut_file, params):
         - The convolution is performed using JAX's `jax.numpy.convolve` function, and the output is reshaped to match the expected dimensions.
     """
 
-    response = np.load(lut_file)
-    lut_infos = {}
+    updated_params = params.replace()
 
+    response = np.load(lut_file)
     if isinstance(response, np.lib.npyio.NpzFile):
         logger.info("Loading response from npz file")
         if 'response' in response:
             response = response['response']
         else:
             raise ValueError("No 'response' key found in the npz file.")
-        lut_infos = {key: response[key] for key in response if key != 'response'}
+        if 'drift_length' in response:
+            response_full_drift_t = response['drift_length'] / params['vdrift_static']
+        else:
+            logger.warning("Drift length not found in LUT infos, using default value.")
+            response_full_drift_t = params.response_full_drift_t
+        updated_params = updated_params.replace(response_full_drift_t=response_full_drift_t)
     elif isinstance(response, np.ndarray):
         logger.info("Loading response from numpy array")
     else:
@@ -437,5 +436,5 @@ def load_lut(lut_file, params):
 
     response_template = response_template.at[0].set(response) # Assuming the first element corresponds to no diffusion
 
-    return response_template, lut_infos
+    return response_template, updated_params
     # return np.cumsum(response, axis=-1)

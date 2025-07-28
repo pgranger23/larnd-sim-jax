@@ -93,10 +93,11 @@ def main(config):
             return jnp.stack([adcs, ticks], axis=-1)
         pars = ['Ab', 'kb', 'eField', 'long_diff', 'tran_diff', 'lifetime', 'shift_z']
     Params = build_params_class(pars)
-    ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts, config.lut_file)
+    ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts)
 
     if args.mode == 'lut':
-        response, lut_infos = load_lut(config.lut_file, ref_params)
+        response, ref_params = load_lut(config.lut_file, ref_params)
+    
     
     params_to_apply = [
         'diffusion_in_current_sim',
