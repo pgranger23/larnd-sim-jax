@@ -78,10 +78,70 @@ jobs:
         run: |
           ./optimize/fit_test.sh
 
+      - name: Make fit plots
+        run: |
+          ./optimize/analysis_scripts/plot_fit.py --input_file fit_result/**/*.pkl --output_dir output
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: fit-plots-${{ github.sha }}
+          path: output/*.png
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: fit-plots-${{ github.event.pull_request.head.sha }}
+          path: output/*.png
+
       - name: 'Upload Artifact'
         uses: actions/upload-artifact@v4
         with:
           name: fit-result
+          path: fit_result/**/*.pkl
+          if-no-files-found: error
+
+  test-fit-lut:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
+      - name: Check fit
+        run: |
+          ./optimize/fit_test.sh --lut
+
+      - name: Make fit plots
+        run: |
+          ./optimize/analysis_scripts/plot_fit.py --input_file fit_result/**/*.pkl --output_dir output
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: fit-lut-plots-${{ github.sha }}
+          path: output/*.png
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: fit-lut-plots-${{ github.event.pull_request.head.sha }}
+          path: output/*.png
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fit-lut-result
           path: fit_result/**/*.pkl
           if-no-files-found: error
 
@@ -203,39 +263,6 @@ jobs:
           name: minuit-result
           path: fit_result/**/*.pkl
           if-no-files-found: error
-
-  tests:
-    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      max-parallel: 12
-      fail-fast: true
-      matrix:
-        os: [ ubuntu-24.04 ]
-        python-version: [ '3.9', '3.13' ]
-        include:
-          - os: macos-latest
-            python-version: 3.9
-          - os: windows-latest
-            python-version: 3.9
-
-    steps:
-      - uses: actions/checkout@v4.2.2
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: |
-          uv pip install --system .[dev] pytest-xdist  # parallelize tests
-
-      - name: Run tests
-        run: |
-          pytest tests -n auto
 
   rtd:
     runs-on: ubuntu-latest

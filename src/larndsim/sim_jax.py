@@ -418,14 +418,14 @@ def simulate_new(params, response_template, tracks, fields, rngseed = 0):
         fields (List[str]): List of field names corresponding to the tracks.
         rngseed (int): Random seed for the simulation.
     Returns:
-        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
             - adcs: ADC values.
-            - unique_pixels: Unique pixels.
+            - pixel_x: X coordinates of the pixels.
+            - pixel_y: Y coordinates of the pixels.
+            - pixel_z: Z coordinates of the pixels.
             - ticks: Ticks of the signals.
-            - pix_renumbering: Renumbering of the pixels.
-            - electrons: Electrons generated.
-            - start_ticks: Start ticks of the signals.
-            - wfs: Waveforms of the signals.
+            - event: Event IDs.
+            - unique_pixels: Unique pixels.
 
     """
 
@@ -460,8 +460,13 @@ def simulate_new(params, response_template, tracks, fields, rngseed = 0):
     integral, ticks, no_hit_prob = get_adc_values_average_noise(params, wfs[:, 1:])
 
     adcs = digitize(params, integral)
-    return adcs, unique_pixels, ticks, None, None, wfs[:, 1:], currents_idx
-    # return adcs, ticks, cathode_ticks, wfs[:, 1:]
+
+    pixel_x, pixel_y, pixel_plane, event = id2pixel(params, unique_pixels)
+    pixel_coords = get_pixel_coordinates(params, pixel_x, pixel_y, pixel_plane)
+    pixel_x = pixel_coords[:, 0]
+    pixel_y = pixel_coords[:, 1]
+    pixel_z  = get_hit_z(params, ticks.flatten(), jnp.repeat(pixel_plane, 10))
+    return adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels
     
 
 def prepare_tracks(params, tracks_file, invert_xz=True):
