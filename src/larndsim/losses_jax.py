@@ -207,7 +207,16 @@ def chamfer_distance_3d_og(pos_a, pos_b, w_a, w_b):
     )
     return chamfer_dist, argmin_dists_a_to_b, argmin_dists_b_to_a
 
-def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref, pixel_x_ref, pixel_y_ref, pixel_z_ref, ticks_ref, eventID_ref , adc_norm=10., match_z=False):
+def chamfer_3d(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, adc_norm=10., match_z=False):
+    loss, argmin_dists_a_to_b, argmin_dists_b_to_a = chamfer_distance_3d_og(
+        jnp.stack((x + event*1e9, y, z), axis=-1),
+        jnp.stack((ref_x + ref_event*1e9, ref_y, ref_z), axis=-1),
+        Q/adc_norm,
+        ref_Q/adc_norm
+        )
+    return loss, dict()
+
+def chamfer_3d_old(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref, pixel_x_ref, pixel_y_ref, pixel_z_ref, ticks_ref, eventID_ref , adc_norm=10., match_z=False):
     # normalise the time tick with the same drift velocity (in the current iteration)
     plane = pixel_z < 0 #FIXME store this information in the reference, so it can be properly used.
     drift =  get_hit_z(params, ticks.flatten(), plane.astype(int), fixed_v = True)
@@ -307,12 +316,13 @@ def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, r
     adcs, x, y, z, ticks, hit_prob, event, _ = simulate_parametrized(params, tracks, fields, rngkey)
 
     Q = adc2charge(adcs, params)
+    ref_Q = adc2charge(ref_adcs, params)
 
     if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
         raise NotImplementedError("🍝 SDTW losses need to be fixed 🍝")
         # loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
     else:
-        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, hit_prob, event, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event , **loss_kwargs)
+        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event , **loss_kwargs)
 
     return loss_val, aux
 
