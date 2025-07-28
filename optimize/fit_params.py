@@ -6,7 +6,7 @@ import pickle
 import numpy as np
 from .ranges import ranges
 from larndsim.sim_jax import simulate_new, simulate_parametrized, get_size_history
-from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc
+from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
@@ -298,7 +298,7 @@ class ParamFitter:
                 if self.current_mode == 'lut':
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, _ = simulate_new(self.target_params, self.response, target, self.track_fields, i+1) #Setting a different random seed for each target
                 else:
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, _, _, _, _ = simulate_parametrized(self.target_params, target, self.track_fields, i+1) #Setting a different random seed for each target
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, _ = simulate_parametrized(self.target_params, target, self.track_fields, i+1) #Setting a different random seed for each target
 
                 if self.compute_target_hessian:
                     logger.error("Computing target hessian is not implemented yet")
@@ -399,7 +399,7 @@ class ParamFitter:
                 if len(self.training_history[param+'_target']) == 0:
                     self.training_history[param+'_target'].append(getattr(self.target_params, param))
 
-    def fit(self):
+    def fit(self, *args, **kwargs):
         raise NotImplementedError("Fit method not implemented. Use a derived class")
 
         
@@ -542,7 +542,7 @@ class GradientDescentFitter(ParamFitter):
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
                     # loss
-                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, epoch=epoch)
+                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, epoch=epoch, with_loss=True, with_grad=True)
 
                     modified_grads = self.process_grads(grads) #Grads are modified ans applied in this function
 
@@ -552,7 +552,7 @@ class GradientDescentFitter(ParamFitter):
                         self.training_history[param+"_grad"].append(modified_grads[param].item())
                     self.training_history['step_time'].append(stop_time - start_time)
 
-                    self.training_history['losses_iter'].append(loss_val.item())
+                    self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
                     for param in self.relevant_params_list:
                         #TODO: Need to check why this is not consistent
                         if type(getattr(self.current_params, param)) == float:
@@ -564,7 +564,7 @@ class GradientDescentFitter(ParamFitter):
                     if 'cuda' in jax.devices():
                         self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
 
-                    if iterations is not None or total_iter == (iterations-1):
+                    if iterations is not None and total_iter == (iterations-1):
                         if total_iter % print_freq == 0:
                             for param in self.relevant_params_list:
                                 logger.info(f"{param} {getattr(self.current_params,param)} {modified_grads[param]}")
@@ -663,7 +663,7 @@ class LikelihoodProfiler(ParamFitter):
                     start_time = time()
                     new_param_values = {param: lower + iter*param_step}
                     self.current_params = self.ref_params.replace(**new_param_values)
-                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event)
+                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_loss=True, with_grad=True)
 
                     stop_time = time()
 
@@ -671,7 +671,7 @@ class LikelihoodProfiler(ParamFitter):
                         self.training_history[par+"_grad"].append(getattr(grads, par).item())
                     self.training_history['step_time'].append(stop_time - start_time)
 
-                    self.training_history['losses_iter'].append(loss_val.item())
+                    self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
                     for par in self.relevant_params_list:
                         #TODO: Need to check why this is not consistent
                         if type(getattr(self.current_params, par)) == float:
@@ -683,10 +683,10 @@ class LikelihoodProfiler(ParamFitter):
                     if 'cuda' in jax.devices():
                         self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
 
-            with open(f'fit_result/{self.test_name}/history_{param}_batch{i}_{self.out_label}.pkl', "wb") as f_history:
-                pickle.dump(self.training_history, f_history)
-            if os.path.exists(f'fit_result/{self.test_name}/history_{param}_batch{i-1}_{self.out_label}.pkl'):
-                os.remove(f'fit_result/{self.test_name}/history_{param}_batch{i-1}_{self.out_label}.pkl')
+                with open(f'fit_result/{self.test_name}/history_{param}_batch{i}_{self.out_label}.pkl', "wb") as f_history:
+                    pickle.dump(self.training_history, f_history)
+                if os.path.exists(f'fit_result/{self.test_name}/history_{param}_batch{i-1}_{self.out_label}.pkl'):
+                    os.remove(f'fit_result/{self.test_name}/history_{param}_batch{i-1}_{self.out_label}.pkl')
 
         if os.path.exists('target_' + self.out_label):
             shutil.rmtree('target_' + self.out_label, ignore_errors=True)
@@ -712,7 +712,7 @@ class MinuitFitter(ParamFitter):
 
             self.minimizer.limits[param] = (lower, upper)
             self.minimizer.errors[param] = (upper - lower)/10.
-            self.minimizer.fixed = False
+            self.minimizer.fixed[param] = False
         
         self.minimizer.strategy = self.minimizer_strategy  # 0, 1 or 2. Maybe, on 0, it doesn't use the grad func? Try out
         self.minimizer.errordef = 1  # definition of "1 sigma": 0.5 for NLL, 1 for chi2
@@ -772,13 +772,13 @@ class MinuitFitter(ParamFitter):
                     this_target = target
                 ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
-                def loss_wrapper(args):
+                def loss_wrapper(args): # type: ignore
                     # Update the current params with the new values
                     self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
                     loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_grad=False)
                     return loss_val
 
-                def grad_wrapper(args):
+                def grad_wrapper(args): # type: ignore
                     # Update the current params with the new values
                     self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
                     _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_loss=False)
@@ -806,8 +806,8 @@ class MinuitFitter(ParamFitter):
                     # target
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = get_target(self, i, evts_sim, target)
 
-                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_grad=False)
-                    avg_loss += loss_val
+                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_grad=False, with_loss=True)
+                    avg_loss += loss_val # type: ignore
                 return avg_loss/len(dataloader_sim)
             
             def grad_wrapper(args):
