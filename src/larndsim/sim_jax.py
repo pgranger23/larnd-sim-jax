@@ -57,6 +57,7 @@ def set_pixel_plane(params, tracks, fields):
     tracks[:, fields.index('pixel_plane')] = pixel_plane
     return tracks
 
+
 def pad_size(cur_size, tag, pad_threshold=0.05):
     global size_history_dict
 
@@ -82,6 +83,7 @@ def pad_size(cur_size, tag, pad_threshold=0.05):
 
 def get_size_history():
     return size_history_dict
+
 
 @partial(jit, static_argnames=['fields'])
 def shift_tracks(params, tracks, fields):
@@ -134,6 +136,30 @@ def get_renumbering(pIDs, unique_pixels):
 
 @partial(jit, static_argnames=['fields'])
 def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey, fields):
+    """
+    Simulates the signals from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
+    Args:
+        params (Any): Parameters of the simulation.
+        electrons (jnp.ndarray): Drifted electrons as a JAX array.
+        mask_indices (jnp.ndarray): Mask indices for the pixels.
+        pix_renumbering (jnp.ndarray): Renumbering of the pixels.
+        unique_pixels (jnp.ndarray): Unique pixel identifiers.
+        response (jnp.ndarray): Response function for the simulation.
+        rngkey (jax.random.PRNGKey): Random key for the simulation.
+        fields (List[str]): List of field names corresponding to the electrons.
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
+            - adcs: ADC values.
+            - pixel_x: X coordinates of the pixels.
+            - pixel_y: Y coordinates of the pixels.
+            - pixel_z: Z coordinates of the pixels.
+            - ticks: Ticks corresponding to the ADC values.
+            - hit_prob: Hit probabilities.
+            - event: Event numbers.
+            - unique_pixels: Unique pixel identifiers.
+    """
+
+
     pix_renumbering = jnp.take(pix_renumbering, mask_indices, mode='fill', fill_value=0) # should we fill with 0? it's a valid index
     npix = (2*params.number_pix_neighbors + 1)**2
     elec_ids = mask_indices//npix
@@ -161,12 +187,33 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     pixel_z  = get_hit_z(params, ticks.flatten(), jnp.repeat(plane, 10))
 
     adcs = digitize(params, integral)
+    hit_prob = ticks < wfs.shape[1] - 2  # Assuming hit probability is based on whether ticks are within the waveform length
 
-    return adcs, pixel_x, pixel_y, pixel_z, ticks, event, pix_renumbering, wfs[:, 1:]
+    return parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
 
 
 @partial(jit, static_argnames=['fields'])
 def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey, fields):
+    """
+    Simulates the signals from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
+    Args:
+        params (Any): Parameters of the simulation.
+        electrons (jnp.ndarray): Drifted electrons as a JAX array.
+        pIDs (jnp.ndarray): Pixel IDs for the electrons.
+        unique_pixels (jnp.ndarray): Unique pixel identifiers.
+        rngkey (jax.random.PRNGKey): Random key for the simulation.
+        fields (List[str]): List of field names corresponding to the electrons.
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
+            - adcs: ADC values.
+            - pixel_x: X coordinates of the pixels.
+            - pixel_y: Y coordinates of the pixels.
+            - pixel_z: Z coordinates of the pixels.
+            - ticks: Ticks corresponding to the ADC values.
+            - event: Event numbers.
+            - unique_pixels: Unique pixel identifiers.
+    """
+
     xpitch, ypitch, plane, eid = id2pixel(params, pIDs)
     
     pixels_coord = get_pixel_coordinates(params, xpitch, ypitch, plane)
@@ -189,29 +236,30 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey
     pixel_x = pixel_coords[:, 0]
     pixel_y = pixel_coords[:, 1]
     pixel_z  = get_hit_z(params, ticks.flatten(), jnp.repeat(pixel_plane, 10))
+    ref_hit_prob = ticks < wfs.shape[1] - 2  # Assuming hit probability is based on whether ticks are within the waveform length
 
-    return adcs, pixel_x, pixel_y, pixel_z, ticks, event, pix_renumbering, wfs[:, 1:]
+    return adcs, pixel_x, pixel_y, pixel_z, ticks, ref_hit_prob, event
 
 from typing import Any, Tuple, List
 
-def simulate_parametrized(params: Any, tracks: jnp.ndarray, fields: List[str], rngseed: int = 0) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+def simulate_parametrized(params: Any, tracks: jnp.ndarray, fields: List[str], rngseed: int = 0) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    Simulates the signal from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
+    Simulates the signal from the drifted electrons and returns the ADC values, pixel coordinates, ticks, hit probabilities, event numbers, and unique pixel identifiers.
     Args:
         params (Any): Parameters of the simulation.
         tracks (jnp.ndarray): Tracks of the particles as a JAX array.
         fields (List[str]): List of field names corresponding to the tracks.
         rngseed (int): Random seed for the simulation.
     Returns:
-        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
             - adcs: ADC values.
-            - unique_pixels: Unique pixels.
-            - ticks: Ticks of the signals.
-            - pix_renumbering: Renumbering of the pixels.
-            - electrons: Electrons generated.
-            - start_ticks: Start ticks of the signals.
-            - wfs: Waveforms of the signals.
-
+            - pixel_x: X coordinates of the pixels.
+            - pixel_y: Y coordinates of the pixels.
+            - pixel_z: Z coordinates of the pixels.
+            - ticks: Ticks corresponding to the ADC values.
+            - hit_prob: Hit probabilities.
+            - event: Event numbers.
+            - unique_pixels: Unique pixel identifiers.
     """
 
     master_key = jax.random.key(rngseed)
@@ -223,40 +271,11 @@ def simulate_parametrized(params: Any, tracks: jnp.ndarray, fields: List[str], r
 
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
-    adcs, pixel_x, pixel_y, pixel_z, ticks, event, pix_renumbering, wfs = simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, fields)
-    return adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs
-
-def simulate(params, response, tracks, fields, rngseed = 0):
-    master_key = jax.random.key(rngseed)
-    rngkey1, rngkey2 = jax.random.split(master_key)
-    electrons, pIDs = simulate_drift(params, tracks, fields, rngkey1)
-
-    main_pixels = pIDs[:, 2*params.number_pix_neighbors*(params.number_pix_neighbors+1)] #Getting the main pixel
-    #Sorting the pixels and getting the unique ones
-    unique_pixels = jnp.unique(main_pixels.ravel())
-    padded_size = pad_size(unique_pixels.shape[0], "unique_pixels")
-
-    # sort after padding so to use searchsorted
-    unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
-
-    # mask_indices converted between pIDs (n_elec, n_pix) with unique_pixels
-    mask, pix_renumbering = get_renumbering(pIDs, unique_pixels)
-    mask_indices = jnp.nonzero(mask)[0]
-
-    padded_size = pad_size(mask_indices.shape[0], "pix_renumbering")
-    mask_indices = jnp.pad(mask_indices, (0, padded_size - mask_indices.shape[0]), mode='constant', constant_values=-1)
-
-    # errors = checkify.user_checks | checkify.index_checks | checkify.float_checks
-    # checked_f = checkify.checkify(accumulate_signals, errors=errors)
-    # err, wfs = checked_f(wfs, currents_idx, electrons[:, fields.index("n_electrons")], response, pix_renumbering, start_ticks - earliest_tick, params.signal_length)
-    # err.throw()
-
-    adcs, pixel_x, pixel_y, pixel_z, ticks, event, pix_renumbering, wfs =  simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey2, fields)
-    return adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs
-
+    adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event = simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, fields)
+    return parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
 
 @partial(jit, static_argnames=['fields'])
-def simulate_drift_new(params, tracks, fields, rngkey):
+def simulate_drift_new(params, tracks, fields):
     #Shifting tracks
     new_tracks = shift_tracks(params, tracks, fields)
     #Quenching and drifting
@@ -270,7 +289,6 @@ def simulate_drift_new(params, tracks, fields, rngkey):
     # if params.mc_diff:
     #     rnd_pos = random.normal(rngkey, tracks.shape[0])*main_electrons[:, fields.index("long_diff")]
     #     main_electrons = main_electrons.at[:, fields.index('z')].set(main_electrons[:, fields.index('z')] + rnd_pos)
-
 
     bins_pitches = get_bin_shifts(params, main_electrons, fields)
 
@@ -404,7 +422,19 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
 
     return wfs
 
-def simulate_new(params, response_template, tracks, fields, rngseed = 0):
+def parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels):
+    mask = hit_prob > params.hit_prob_threshold
+    adcs = adcs[mask]
+    pixel_x = jnp.repeat(pixel_x, mask.shape[1])[mask.flatten()]
+    pixel_y = jnp.repeat(pixel_y, mask.shape[1])[mask.flatten()]
+    pixel_z = pixel_z[mask.flatten()] #pixel_z is already flattened...
+    ticks = ticks[mask]
+    event = jnp.repeat(event, mask.shape[1])[mask.flatten()]
+    unique_pixels = jnp.repeat(unique_pixels, mask.shape[1])[mask.flatten()]
+    hit_prob = hit_prob[mask]
+    return adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels
+
+def simulate_new(params, response_template, tracks, fields, rngseed=None):
     """
     Simulates the signal from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
     Args:
@@ -414,21 +444,19 @@ def simulate_new(params, response_template, tracks, fields, rngseed = 0):
         fields (List[str]): List of field names corresponding to the tracks.
         rngseed (int): Random seed for the simulation.
     Returns:
-        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
             - adcs: ADC values.
             - pixel_x: X coordinates of the pixels.
             - pixel_y: Y coordinates of the pixels.
             - pixel_z: Z coordinates of the pixels.
             - ticks: Ticks of the signals.
+            - hit_prob: Probability of a hit in the pixel.
             - event: Event IDs.
             - unique_pixels: Unique pixels.
 
     """
 
-    master_key = jax.random.key(rngseed)
-    rngkey1, rngkey2 = jax.random.split(master_key)
-
-    main_pixels, pixels, nelectrons, t0_after_diff, long_diff, currents_idx, pIDs_neigh, currents_idx_neigh, nelectrons_neigh, t0_neigh = simulate_drift_new(params, tracks, fields, rngkey1)
+    main_pixels, pixels, nelectrons, t0_after_diff, long_diff, currents_idx, pIDs_neigh, currents_idx_neigh, nelectrons_neigh, t0_neigh = simulate_drift_new(params, tracks, fields)
 
     ################################################
     ################################################
@@ -453,7 +481,13 @@ def simulate_new(params, response_template, tracks, fields, rngseed = 0):
     ###############################################
 
     # integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey2)
-    integral, ticks, no_hit_prob = get_adc_values_average_noise(params, wfs[:, 1:])
+
+    if rngseed is not None:
+        integral, ticks = get_adc_values(params, wfs[:, 1:], jax.random.key(rngseed))
+        hit_prob = ticks < wfs.shape[1] - 2  # Assuming hit probability is based on whether ticks are within the waveform length
+    else:
+        integral, ticks, no_hit_prob = get_adc_values_average_noise(params, wfs[:, 1:])
+        hit_prob = 1 - no_hit_prob
 
     adcs = digitize(params, integral)
 
@@ -462,8 +496,8 @@ def simulate_new(params, response_template, tracks, fields, rngseed = 0):
     pixel_x = pixel_coords[:, 0]
     pixel_y = pixel_coords[:, 1]
     pixel_z  = get_hit_z(params, ticks.flatten(), jnp.repeat(pixel_plane, 10))
-    return adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels
-    
+    return parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
+
 
 def prepare_tracks(params, tracks_file, invert_xz=True):
     tracks, dtype = load_data(tracks_file, invert_xz)

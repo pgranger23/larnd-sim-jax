@@ -26,6 +26,9 @@ from ctypes import cdll
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+#Debug NAns
+# jax.config.update("jax_debug_nans", True)
+
 def normalize_param(param_val, param_name, scheme="divide", undo_norm=False):
     if scheme == "divide":
         if undo_norm:
@@ -291,14 +294,15 @@ class ParamFitter:
                 ref_pixel_y = loaded['y'][mask]
                 ref_pixel_z = loaded['x'][mask]
                 ref_ticks = loaded['ticks'][mask]
+                ref_hit_prob = jnp.ones(ref_adcs.shape[0]) #Assuming all hits are valid
         else:
             #Simulating the reference during the first epoch
             fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
             if regen or not os.path.exists(fname):
                 if self.current_mode == 'lut':
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, _ = simulate_new(self.target_params, self.response, target, self.track_fields, i+1) #Setting a different random seed for each target
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_new(self.target_params, self.response, target, self.track_fields, i+1) #Setting a different random seed for each target
                 else:
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, _ = simulate_parametrized(self.target_params, target, self.track_fields, i+1) #Setting a different random seed for each target
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_parametrized(self.target_params, target, self.track_fields, i+1) #Setting a different random seed for each target
 
                 if self.compute_target_hessian:
                     logger.error("Computing target hessian is not implemented yet")
@@ -315,14 +319,14 @@ class ParamFitter:
                 #TODO: See if we have to do this for each event
                 
                 with open(fname, 'wb') as f:
-                    jnp.savez(f, adcs=ref_adcs, pixel_x=ref_pixel_x, pixel_y=ref_pixel_y, pixel_z=ref_pixel_z, ticks=ref_ticks, event=ref_event)
+                    jnp.savez(f, adcs=ref_adcs, pixel_x=ref_pixel_x, pixel_y=ref_pixel_y, pixel_z=ref_pixel_z, ticks=ref_ticks, hit_prob=ref_hit_prob, event=ref_event)
                     if self.keep_in_memory:
-                        self.targets[i] = (ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event)
+                        self.targets[i] = (ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event)
 
             else:
                 #Loading the target
                 if self.keep_in_memory:
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.targets[i]
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.targets[i]
                 else:
                     with open(fname, 'rb') as f:
                         loaded = jnp.load(f)
@@ -332,10 +336,11 @@ class ParamFitter:
                         ref_pixel_z = loaded['pixel_z']
                         ref_ticks = loaded['ticks']
                         ref_event = loaded['event']
-        
-        return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event
+                        ref_hit_prob = loaded['hit_prob']
 
-    def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_loss=True, with_grad=True, epoch=0):
+        return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event
+
+    def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=True, with_grad=True, epoch=0):
         if self.sim_seed_strategy == "same":
             rngkey = i + 1
         elif self.sim_seed_strategy == "different":
@@ -355,18 +360,18 @@ class ParamFitter:
         # Simulate and get output
         if self.current_mode == 'lut':
             if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_loss:
-                loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_grad:
-                grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, loss_fn=self.loss_fn, **self.loss_fn_kw)
         else:
             if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_loss:
-                loss_val, aux = params_loss_parametrized(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                loss_val, aux = params_loss_parametrized(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_grad:
-                grads, aux = grad(params_loss_parametrized, (0), has_aux=True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                grads, aux = grad(params_loss_parametrized, (0), has_aux=True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
         return loss_val, grads, aux
     
     def prepare_fit(self):
@@ -401,7 +406,6 @@ class ParamFitter:
 
     def fit(self, *args, **kwargs):
         raise NotImplementedError("Fit method not implemented. Use a derived class")
-
         
 
 class GradientDescentFitter(ParamFitter):
@@ -539,10 +543,10 @@ class GradientDescentFitter(ParamFitter):
                         this_target = jax.device_put(selected_tracks_bt_tgt)
                     else:
                         this_target = target
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
                     # loss
-                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, epoch=epoch, with_loss=True, with_grad=True)
+                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, epoch=epoch, with_loss=True, with_grad=True)
 
                     modified_grads = self.process_grads(grads) #Grads are modified ans applied in this function
 
@@ -652,7 +656,7 @@ class LikelihoodProfiler(ParamFitter):
                 this_target = jax.device_put(selected_tracks_bt_tgt)
             else:
                 this_target = target
-            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
+            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
             for param in self.relevant_params_list:
                 lower = ranges[param]['down']
@@ -663,7 +667,7 @@ class LikelihoodProfiler(ParamFitter):
                     start_time = time()
                     new_param_values = {param: lower + iter*param_step}
                     self.current_params = self.ref_params.replace(**new_param_values)
-                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_loss=True, with_grad=True)
+                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=True, with_grad=True)
 
                     stop_time = time()
 
@@ -751,8 +755,8 @@ class MinuitFitter(ParamFitter):
                 this_target = jax.device_put(selected_tracks_bt_tgt)
             else:
                 this_target = target
-            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
-            return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event
+            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
+            return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event
 
         if self.separate_fits:
             for i in range(len(dataloader_sim)):
@@ -770,18 +774,18 @@ class MinuitFitter(ParamFitter):
                     this_target = jax.device_put(selected_tracks_bt_tgt)
                 else:
                     this_target = target
-                ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
+                ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
                 def loss_wrapper(args): # type: ignore
                     # Update the current params with the new values
                     self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
-                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_grad=False)
+                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_grad=False)
                     return loss_val
 
                 def grad_wrapper(args): # type: ignore
                     # Update the current params with the new values
                     self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
-                    _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_loss=False)
+                    _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=False)
                     return [getattr(grads, key) for key in self.relevant_params_list]
 
                 self.configure_minimizer(loss_wrapper, grad_wrapper)
@@ -804,9 +808,9 @@ class MinuitFitter(ParamFitter):
                     evts_sim = jnp.unique(selected_tracks_sim[:, self.track_fields.index(self.evt_id)])
 
                     # target
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = get_target(self, i, evts_sim, target)
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = get_target(self, i, evts_sim, target)
 
-                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_grad=False, with_loss=True)
+                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_grad=False, with_loss=True)
                     avg_loss += loss_val # type: ignore
                 return avg_loss/len(dataloader_sim)
             
@@ -821,9 +825,9 @@ class MinuitFitter(ParamFitter):
                     evts_sim = jnp.unique(selected_tracks_sim[:, self.track_fields.index(self.evt_id)])
 
                     # target
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event = get_target(self, i, evts_sim, target)
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = get_target(self, i, evts_sim, target)
 
-                    _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_event, with_loss=False)
+                    _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=False)
                     avg_grad = [getattr(grads, key) + avg_grad[i] for i, key in enumerate(self.relevant_params_list)]
                 return [g/len(dataloader_sim) for g in avg_grad]
 

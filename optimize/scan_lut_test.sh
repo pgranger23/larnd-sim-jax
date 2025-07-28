@@ -16,6 +16,8 @@ INPUT_FILE_SIM=prepared_data/input_1.h5
 
 #DECLARATIONS
 
+#ONLY TESTING WITH 2 NEIGHBORS FOR FASTER CALCS
+
 python3 -m optimize.example_run \
     --data_sz -1 \
     --max_nbatch 2 \
@@ -36,9 +38,9 @@ python3 -m optimize.example_run \
     --max_batch_len ${BATCH_SIZE} \
     --track_z_bound 28 \
     --max_clip_norm_val ${MAX_CLIP_NORM_VAL} \
-    --electron_sampling_resolution 0.005 \
+    --electron_sampling_resolution 0.01 \
     --lut_file src/larndsim/detector_properties/response_44.npy \
-    --number_pix_neighbors 4 \
+    --number_pix_neighbors 2 \
     --signal_length 150 \
     --mode 'lut' \
     --loss_fn ${LOSS} \

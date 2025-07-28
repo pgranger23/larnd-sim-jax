@@ -106,7 +106,7 @@ def get_adc_values_average_noise(params, pixels_signals):
     init_loop = (q_sum_multi, previous_prob, pixid)  # Initialize previous_prob
     _, (charge_avg, tick_avg, no_hit_prob) = lax.scan(find_hit, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
 
-    return (charge_avg, tick_avg, no_hit_prob)
+    return (charge_avg.T, tick_avg.T, no_hit_prob.T)
 
 def select_roi(params, wfs):
     roi_threshold = params.roi_threshold

@@ -150,6 +150,7 @@ class Params_template:
     roi_split_length: int = struct.field(pytree_node=False, default=400)  # Length of the region of interest split
     fee_paths_scaling: int = struct.field(pytree_node=False, default=20)  # Scaling factor for fee paths
     nb_tran_diff_bins: int = struct.field(pytree_node=False, default=5)
+    hit_prob_threshold: float = struct.field(pytree_node=False, default=1e-5)  # Threshold for hit probability
 
 def build_params_class(params_with_grad):
     """

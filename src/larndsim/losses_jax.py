@@ -7,6 +7,34 @@ from larndsim.sim_jax import pad_size, simulate_new, simulate_parametrized
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
 
+@jit
+def rbf_kernel(x, y, sigma):
+    # Compute pairwise squared Euclidean distances
+    pairwise_dists = jnp.sum((x[:, jnp.newaxis, :] - y[jnp.newaxis, :, :])**2, axis=-1)
+    # Apply the Gaussian kernel
+    return jnp.exp(-pairwise_dists / (2 * sigma**2))
+   
+
+def mmd(x, y, px, py, sigma):
+    K_xx = rbf_kernel(x, x, sigma)
+    K_xy = rbf_kernel(x, y, sigma)
+    K_yy = rbf_kernel(y, y, sigma)
+
+    # Incorporate probabilities into the kernel sums
+    weighted_K_xx = jnp.sum(K_xx * px[:, jnp.newaxis] * px[jnp.newaxis, :])
+    weighted_K_yy = jnp.sum(K_yy * py[:, jnp.newaxis] * py[jnp.newaxis, :])
+    weighted_K_xy = jnp.sum(K_xy * px[:, jnp.newaxis] * py[jnp.newaxis, :])
+
+    # Normalize by the sum of probabilities
+    sum_px = jnp.sum(px)
+    sum_py = jnp.sum(py)
+
+    mmd_sq = (weighted_K_xx / (sum_px ** 2) +
+              weighted_K_yy / (sum_py ** 2) -
+              2 * weighted_K_xy / (sum_px * sum_py))
+
+    return jnp.sqrt(jnp.abs(mmd_sq))
+
 def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     all_pixels = jnp.concatenate([pIDs, pIDs_ref])
     unique_pixels = jnp.sort(jnp.unique(all_pixels))
@@ -24,8 +52,11 @@ def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     adc_loss = jnp.sum(signals**2)
     return adc_loss, dict()
 
-def mse_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
-    return mse_loss(adcs, pixels, ref, pixels_ref)
+def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event):
+    ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z, ref_Q), axis=-1)
+    stacked = jnp.stack((x + event*1e5, y, z, Q), axis=-1)
+    return mmd(stacked, ref_stacked, hit_prob, ref_hit_prob, 1), dict()
+    # return mse_loss(adcs, pixels, ref, pixels_ref)
 
 def mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
     mask_ref = ref > 0
@@ -258,28 +289,30 @@ def adc2charge(dw, params):
     # return in ke
     return (dw / params.ADC_COUNTS * (params.V_REF - params.V_CM) + params.V_CM - params.V_PEDESTAL) / params.GAIN *1E-3
 
-def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
-    adcs, x, y, z, ticks, event, _ = simulate_new(params, response, tracks, fields, rngkey)
+def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, loss_fn=mse_adc, **loss_kwargs):
+    adcs, x, y, z, ticks, hit_prob, event, _ = simulate_new(params, response, tracks, fields)
 
     Q = adc2charge(adcs, params)
     ref_Q = adc2charge(ref_adcs, params)
 
     if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
-        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
+        raise NotImplementedError("🍝 SDTW losses need to be fixed 🍝")
+        # loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
     else:
-        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_event , **loss_kwargs)
+        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event , **loss_kwargs)
 
     return loss_val, aux
 
-def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
-    adcs, x, y, z, ticks, event, _, _, _, _ = simulate_parametrized(params, tracks, fields, rngkey)
+def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
+    adcs, x, y, z, ticks, hit_prob, event, _ = simulate_parametrized(params, tracks, fields, rngkey)
 
     Q = adc2charge(adcs, params)
 
     if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
-        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
+        raise NotImplementedError("🍝 SDTW losses need to be fixed 🍝")
+        # loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
     else:
-        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, event, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event , **loss_kwargs)
+        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, hit_prob, event, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event , **loss_kwargs)
 
     return loss_val, aux
 
