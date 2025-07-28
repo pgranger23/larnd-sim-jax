@@ -198,7 +198,7 @@ class TracksDataset:
             index = np.array(list(index))
         else:
             all_tracks = [jax_from_structured(tracks)]
-            index = np.array(list(np.unique(tracks[[self.evt_id, self.trj_id]])))
+            index = np.array(list(np.unique(tracks[['eventID', 'trackID']])))
 
 
         # all fit with a sub-set of tracks
@@ -220,7 +220,7 @@ class TracksDataset:
 
             for i_rand in list_rand:
                 fit_index.append(index[i_rand])
-                trk_msk = ((all_tracks[0][:, self.track_fields.index(self.evt_id)] == index[i_rand][0]) & (all_tracks[0][:, self.track_fields.index(self.trj_id)] == index[i_rand][1]))
+                trk_msk = ((all_tracks[0][:, self.track_fields.index('eventID')] == index[i_rand][0]) & (all_tracks[0][:, self.track_fields.index('trackID')] == index[i_rand][1]))
                 fit_tracks.append(all_tracks[0][trk_msk])
 
         if print_input:
