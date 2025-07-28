@@ -27,7 +27,6 @@ python3 -m optimize.example_run \
     --track_len_sel 2 \
     --max_abs_costheta_sel 0.966 \
     --min_abs_segz_sel 15. \
-    --no-noise-guess \
     --no-noise-target \
     --data_seed ${DATA_SEED} \
     --out_label scan_test${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target \
@@ -48,6 +47,7 @@ python3 -m optimize.example_run \
     --sim_seed_strategy 'same' \
     --cpu_only \
     --scan_tgt_nom \
-    --mc_diff
+    --mc_diff \
+    --debug_nans
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
 
