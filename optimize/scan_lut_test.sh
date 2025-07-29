@@ -47,7 +47,6 @@ python3 -m optimize.example_run \
     --sim_seed_strategy 'same' \
     --cpu_only \
     --scan_tgt_nom \
-    --mc_diff \
-    --debug_nans
+    --mc_diff
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
 
