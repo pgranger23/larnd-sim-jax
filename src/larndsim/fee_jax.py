@@ -22,7 +22,7 @@ def digitize(params, integral_list):
         numpy.ndarray: list of ADC values for each pixel
     """
     adcs = jnp.minimum((jnp.maximum((integral_list*params.GAIN+params.V_PEDESTAL - params.V_CM), 0) \
-                        * params.ADC_COUNTS/(params.V_REF-params.V_CM)+0.5), params.ADC_COUNTS)
+                        * params.ADC_COUNTS/(params.V_REF-params.V_CM)), params.ADC_COUNTS)
 
     return adcs
 
@@ -106,7 +106,7 @@ def get_adc_values_average_noise(params, pixels_signals):
     init_loop = (q_sum_multi, previous_prob, pixid)  # Initialize previous_prob
     _, (charge_avg, tick_avg, no_hit_prob) = lax.scan(find_hit, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
 
-    return (charge_avg, tick_avg, no_hit_prob)
+    return (charge_avg.T, tick_avg.T, no_hit_prob.T)
 
 def select_roi(params, wfs):
     roi_threshold = params.roi_threshold

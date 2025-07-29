@@ -12,6 +12,10 @@ import dataclasses
 from types import MappingProxyType
 from collections import defaultdict
 
+import logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 @dataclasses.dataclass
 class Params_template:
     """
@@ -72,6 +76,7 @@ class Params_template:
     kb: float = struct.field(pytree_node=False)
     lifetime: float = struct.field(pytree_node=False)
     vdrift: float = struct.field(pytree_node=False)
+    vdrift_static: float = struct.field(pytree_node=False)
     long_diff: float = struct.field(pytree_node=False)
     tran_diff: float = struct.field(pytree_node=False)
     tpc_borders: jax.Array = struct.field(pytree_node=False)
@@ -101,6 +106,7 @@ class Params_template:
     electron_sampling_resolution: float = struct.field(pytree_node=False)
     signal_length: float = struct.field(pytree_node=False)
 
+    response_full_drift_t: float = struct.field(pytree_node=False)
     #: Maximum number of ADC values stored per pixel
     MAX_ADC_VALUES: int = struct.field(pytree_node=False)
     #: Discrimination threshold
@@ -144,6 +150,7 @@ class Params_template:
     roi_split_length: int = struct.field(pytree_node=False, default=400)  # Length of the region of interest split
     fee_paths_scaling: int = struct.field(pytree_node=False, default=20)  # Scaling factor for fee paths
     nb_tran_diff_bins: int = struct.field(pytree_node=False, default=5)
+    hit_prob_threshold: float = struct.field(pytree_node=False, default=1e-5)  # Threshold for hit probability
 
 def build_params_class(params_with_grad):
     """
@@ -200,6 +207,7 @@ def get_vdrift(params):
     mu = num / denom * temp_corr / 1000 #* V / kV
 
     return mu*params.eField
+    #return params.eField
 
 
 def load_detector_properties(params_cls, detprop_file, pixel_file):
@@ -231,6 +239,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "Ab": 0.8,
         "kb": 0.0486,
         "vdrift": 0.1648,
+        "vdrift_static": 0.159645,
         "lifetime": 2.2e3,
         "long_diff": 4.0e-6,
         "tran_diff": 8.8e-6,
@@ -274,6 +283,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "diffusion_in_current_sim": True,
         "mc_diff": False,
         "tpc_centers": jnp.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
+        "response_full_drift_t": 190.61638,
         "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
         "long_diff_template": jnp.linspace(0.001, 10, 100), # Placeholder for long diffusion template
         "long_diff_extent": 20
@@ -366,7 +376,45 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
     return params_cls(**filtered_dict)
 
 def load_lut(lut_file, params):
+    """
+    Loads a lookup table (LUT) from a file and processes it to create a response template for simulation.
+    This function reads a LUT file, which can be in `.npz` or `.npy` format, and extracts the response data.
+    It then applies a Gaussian convolution to the response data to create a response template that can be
+    used in simulations. The Gaussian template is normalized and reshaped to match the expected output format.
+    Args:
+        lut_file (str): Path to the LUT file, which can be in `.npz` or `.npy` format.
+        params (Params): An instance of the `Params` class containing simulation parameters.
+    Returns:
+        jax.Array: A response template created by applying a Gaussian convolution to the LUT response data.
+        updated_params (Params): The updated parameters including any new values extracted from the LUT.
+    Raises:
+        ValueError: If the LUT file format is unsupported or if the expected keys are not found in the response.
+    Notes:
+        - The function assumes that the LUT file contains a key named 'response' for the response data.
+        - The Gaussian template is created based on the `long_diff_template` and `long_diff_extent` parameters from the `Params` instance.
+        - The convolution is performed using JAX's `jax.numpy.convolve` function, and the output is reshaped to match the expected dimensions.
+    """
+
+    updated_params = params.replace()
+
     response = np.load(lut_file)
+    if isinstance(response, np.lib.npyio.NpzFile):
+        logger.info("Loading response from npz file")
+        if 'response' in response:
+            response = response['response']
+        else:
+            raise ValueError("No 'response' key found in the npz file.")
+        if 'drift_length' in response:
+            response_full_drift_t = response['drift_length'] / params['vdrift_static']
+        else:
+            logger.warning("Drift length not found in LUT infos, using default value.")
+            response_full_drift_t = params.response_full_drift_t
+        updated_params = updated_params.replace(response_full_drift_t=response_full_drift_t)
+    elif isinstance(response, np.ndarray):
+        logger.info("Loading response from numpy array")
+    else:
+        raise ValueError("Unsupported response format. Expected npz or numpy array.")
+
     gaus = norm.pdf(jnp.arange(-params.long_diff_extent, params.long_diff_extent + 1, 1), scale=params.long_diff_template[:, None])  # Create Gaussian template TEST
     gaus = gaus / jnp.sum(gaus, axis=1, keepdims=True)  # Normalize the Gaussian
 
@@ -389,5 +437,5 @@ def load_lut(lut_file, params):
 
     response_template = response_template.at[0].set(response) # Assuming the first element corresponds to no diffusion
 
-    return response_template
+    return response_template, updated_params
     # return np.cumsum(response, axis=-1)

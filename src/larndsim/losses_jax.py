@@ -7,6 +7,34 @@ from larndsim.sim_jax import pad_size, simulate_new, simulate_parametrized
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
 
+@jit
+def rbf_kernel(x, y, sigma):
+    # Compute pairwise squared Euclidean distances
+    pairwise_dists = jnp.sum((x[:, jnp.newaxis, :] - y[jnp.newaxis, :, :])**2, axis=-1)
+    # Apply the Gaussian kernel
+    return jnp.exp(-pairwise_dists / (2 * sigma**2))
+   
+
+def mmd(x, y, px, py, sigma):
+    K_xx = rbf_kernel(x, x, sigma)
+    K_xy = rbf_kernel(x, y, sigma)
+    K_yy = rbf_kernel(y, y, sigma)
+
+    # Incorporate probabilities into the kernel sums
+    weighted_K_xx = jnp.sum(K_xx * px[:, jnp.newaxis] * px[jnp.newaxis, :])
+    weighted_K_yy = jnp.sum(K_yy * py[:, jnp.newaxis] * py[jnp.newaxis, :])
+    weighted_K_xy = jnp.sum(K_xy * px[:, jnp.newaxis] * py[jnp.newaxis, :])
+
+    # Normalize by the sum of probabilities
+    sum_px = jnp.sum(px)
+    sum_py = jnp.sum(py)
+
+    mmd_sq = (weighted_K_xx / (sum_px ** 2) +
+              weighted_K_yy / (sum_py ** 2) -
+              2 * weighted_K_xy / (sum_px * sum_py))
+
+    return jnp.sqrt(jnp.abs(mmd_sq))
+
 def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     all_pixels = jnp.concatenate([pIDs, pIDs_ref])
     unique_pixels = jnp.sort(jnp.unique(all_pixels))
@@ -24,8 +52,11 @@ def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     adc_loss = jnp.sum(signals**2)
     return adc_loss, dict()
 
-def mse_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
-    return mse_loss(adcs, pixels, ref, pixels_ref)
+def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event):
+    ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z, ref_Q), axis=-1)
+    stacked = jnp.stack((x + event*1e5, y, z, Q), axis=-1)
+    return mmd(stacked, ref_stacked, hit_prob, ref_hit_prob, 1), dict()
+    # return mse_loss(adcs, pixels, ref, pixels_ref)
 
 def mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
     mask_ref = ref > 0
@@ -94,7 +125,7 @@ def softmin_charge_aware_chamfer(true_positions, sim_positions, true_charges, si
     return loss_true_to_sim #+ loss_sim_to_true
 
 @jax.jit
-def chamfer_distance_3d(pos_a, pos_b, w_a, w_b):
+def chamfer_distance_3d(pos_a, pos_b, w_a, w_b, nhit_ref):
     """
     Compute the Chamfer Distance between two sets of 3D points (x, y, t).
     
@@ -103,6 +134,7 @@ def chamfer_distance_3d(pos_a, pos_b, w_a, w_b):
         pos_b: jnp.ndarray of shape (M, 3), positions and times of hits in distribution B.
         w_a: jnp.ndarray of shape (N,), weights of hits in distribution A.
         w_b: jnp.ndarray of shape (M,), weights of hits in distribution B.
+        nhit_ref: number of reference hits to normalize the chamfer distance
     
     Returns:
         A scalar representing the Chamfer Distance between the two point sets.
@@ -112,29 +144,91 @@ def chamfer_distance_3d(pos_a, pos_b, w_a, w_b):
     dists_a_to_b = jnp.sum((pos_a[:, None, :] - pos_b[None, :, :])**2, axis=2)
     
     # Find indices of minimum distances
-    argmin_dists_a_to_b = jnp.argmin(dists_a_to_b, axis=1)
-    argmin_dists_b_to_a = jnp.argmin(dists_a_to_b, axis=0)
+    argmin_dists_a_to_b = jnp.argmin(dists_a_to_b, axis=1) # (N,)
+    argmin_dists_b_to_a = jnp.argmin(dists_a_to_b, axis=0) # (M,)
     
     # Extract minimum distances
     min_dists_a_to_b = jnp.take_along_axis(dists_a_to_b, argmin_dists_a_to_b[:, None], axis=1).squeeze()
     min_dists_b_to_a = jnp.take_along_axis(dists_a_to_b, argmin_dists_b_to_a[None, :], axis=0).squeeze()
+
+    # Matched weights
+    w_b_nn_for_a = jnp.take(w_b, argmin_dists_a_to_b)  # (N,)
+    w_a_nn_for_b = jnp.take(w_a, argmin_dists_b_to_a)  # (M,)
+
+    # Squared weight differences
+    weight_diff_sq_a_to_b = (w_a - w_b_nn_for_a) ** 2
+    weight_diff_sq_b_to_a = (w_b - w_a_nn_for_b) ** 2
     
+    #chamfer_a_to_b = jnp.sum(weight_diff_sq_a_to_b, where=min_dists_a_to_b < 1e4)
+    #chamfer_b_to_a = jnp.sum(weight_diff_sq_b_to_a, where=min_dists_b_to_a < 1e4)
+
+    chamfer_a_to_b = jnp.sum(weight_diff_sq_a_to_b + min_dists_a_to_b, where=min_dists_a_to_b < 1e4)
+    chamfer_b_to_a = jnp.sum(weight_diff_sq_b_to_a + min_dists_b_to_a, where=min_dists_b_to_a < 1e4)
+
+    # normalise by the target hit number
+    chamfer_dist = (chamfer_a_to_b + chamfer_b_to_a) / nhit_ref
+
+    return chamfer_dist, argmin_dists_a_to_b, argmin_dists_b_to_a
+
+@jax.jit
+def chamfer_distance_3d_og(pos_a, pos_b, w_a, w_b):
+    """
+    Compute the Chamfer Distance between two sets of 3D points (x, y, t).
+
+    Parameters:
+        pos_a: jnp.ndarray of shape (N, 3), positions and times of hits in distribution A.
+        pos_b: jnp.ndarray of shape (M, 3), positions and times of hits in distribution B.
+        w_a: jnp.ndarray of shape (N,), weights of hits in distribution A.
+        w_b: jnp.ndarray of shape (M,), weights of hits in distribution B.
+
+    Returns:
+        A scalar representing the Chamfer Distance between the two point sets.
+    """
+
+    # Calculate pairwise squared distances
+    dists_a_to_b = jnp.sum((pos_a[:, None, :] - pos_b[None, :, :])**2, axis=2)
+
+    # Find indices of minimum distances
+    argmin_dists_a_to_b = jnp.argmin(dists_a_to_b, axis=1)
+    argmin_dists_b_to_a = jnp.argmin(dists_a_to_b, axis=0)
+
+    # Extract minimum distances
+    min_dists_a_to_b = jnp.take_along_axis(dists_a_to_b, argmin_dists_a_to_b[:, None], axis=1).squeeze()
+    min_dists_b_to_a = jnp.take_along_axis(dists_a_to_b, argmin_dists_b_to_a[None, :], axis=0).squeeze()
+
     # Extract weights of the closest points
     closest_weights_a_to_b = jnp.take(w_b, argmin_dists_a_to_b)
     closest_weights_b_to_a = jnp.take(w_a, argmin_dists_b_to_a)
-    
+
     # Calculate the weighted Chamfer distance
     chamfer_dist = (
         jnp.sum(min_dists_a_to_b * w_a * closest_weights_a_to_b, where=min_dists_a_to_b < 1e4) +
         jnp.sum(min_dists_b_to_a * w_b * closest_weights_b_to_a, where=min_dists_b_to_a < 1e4)
     )
-    return chamfer_dist
+    return chamfer_dist, argmin_dists_a_to_b, argmin_dists_b_to_a
 
-def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref, adc_norm=10., match_z=False):
-    pixel_x, pixel_y, drift, adcs, eventID = prepare_hits(params, adcs, pixels, ticks, match_z)
-    pixel_x_ref, pixel_y_ref, drift_ref, adcs_ref, eventID_ref = prepare_hits(params, adcs_ref, pixels_ref, ticks_ref, match_z)
-    mask = (adcs.flatten() > 0) & (jnp.repeat(eventID, 10) != -1)
-    mask_ref = adcs_ref.flatten() > 0
+def chamfer_3d(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, adc_norm=10., match_z=False):
+    loss, argmin_dists_a_to_b, argmin_dists_b_to_a = chamfer_distance_3d_og(
+        jnp.stack((x + event*1e9, y, z), axis=-1),
+        jnp.stack((ref_x + ref_event*1e9, ref_y, ref_z), axis=-1),
+        Q/adc_norm,
+        ref_Q/adc_norm
+        )
+    return loss, dict()
+
+def chamfer_3d_old(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref, pixel_x_ref, pixel_y_ref, pixel_z_ref, ticks_ref, eventID_ref , adc_norm=10., match_z=False):
+    # normalise the time tick with the same drift velocity (in the current iteration)
+    plane = pixel_z < 0 #FIXME store this information in the reference, so it can be properly used.
+    drift =  get_hit_z(params, ticks.flatten(), plane.astype(int), fixed_v = True)
+    plane_ref = pixel_z_ref < 0 #FIXME store this information in the reference, so it can be properly used.
+    drift_ref =  get_hit_z(params, ticks_ref.flatten(), plane_ref.astype(int), fixed_v = True)
+
+    mask = (adcs.flatten() > params.DISCRIMINATION_THRESHOLD/1e3) & (jnp.repeat(eventID, 10) >=0)
+    if len(adcs_ref.flatten()) == len(eventID_ref) * 10:
+        eventID_ref = jnp.repeat(eventID_ref,10)
+        pixel_x_ref = jnp.repeat(pixel_x_ref,10)
+        pixel_y_ref = jnp.repeat(pixel_y_ref,10)
+    mask_ref = (adcs_ref.flatten() > params.DISCRIMINATION_THRESHOLD/1e3) & (eventID_ref >= 0)
 
     nb_selected = jnp.count_nonzero(mask)
     nb_selected_ref = jnp.count_nonzero(mask_ref)
@@ -147,14 +241,15 @@ def chamfer_3d(params, adcs, pixels, ticks, adcs_ref, pixels_ref, ticks_ref, adc
     drift_masked = jnp.pad(drift.flatten()[mask], (0, padded_size - nb_selected), mode='constant', constant_values=-1e9)
     adcs_masked = jnp.pad(adcs.flatten()[mask], (0, padded_size - nb_selected), mode='constant', constant_values=0)/adc_norm
 
-    eventID_masked_ref = jnp.pad(jnp.repeat(eventID_ref, 10)[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
-    pixel_x_masked_ref = jnp.pad(jnp.repeat(pixel_x_ref, 10)[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
-    pixel_y_masked_ref = jnp.pad(jnp.repeat(pixel_y_ref, 10)[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
+    eventID_masked_ref = jnp.pad(eventID_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
+    pixel_x_masked_ref = jnp.pad(pixel_x_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
+    pixel_y_masked_ref = jnp.pad(pixel_y_ref[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
     drift_masked_ref = jnp.pad(drift_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=-1e9)
     adcs_masked_ref = jnp.pad(adcs_ref.flatten()[mask_ref], (0, padded_size - nb_selected_ref), mode='constant', constant_values=0)/adc_norm
 
-    loss = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked, adcs_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref, adcs_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
-    # loss = softmin_charge_aware_chamfer(jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, pixel_z_masked_ref, adcs_masked_ref/jnp.sum(adcs_masked_ref)), axis=-1), jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, pixel_z_masked, adcs_masked/jnp.sum(adcs_masked)), axis=-1), adcs_masked_ref, adcs_masked)
+    nhit_ref = len(adcs_ref.flatten()[mask_ref])
+    loss, argmin_dists_a_to_b, argmin_dists_b_to_a = chamfer_distance_3d_og(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
+    #loss, argmin_dists_a_to_b, argmin_dists_b_to_a = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref), axis=-1), adcs_masked, adcs_masked_ref, nhit_ref)
 
 
     return loss, dict()
@@ -203,41 +298,34 @@ def adc2charge(dw, params):
     # return in ke
     return (dw / params.ADC_COUNTS * (params.V_REF - params.V_CM) + params.V_CM - params.V_PEDESTAL) / params.GAIN *1E-3
 
-def params_loss(params, response, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
-    adcs, pixels, ticks, _, _, _, _ = simulate_new(params, response, tracks, fields, rngkey)
+def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, loss_fn=mse_adc, **loss_kwargs):
+    adcs, x, y, z, ticks, hit_prob, event, _ = simulate_new(params, response, tracks, fields)
 
-    ref, adcs = cleaning_outputs(params, ref, adcs)
-    
-    loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
-    return loss_val, aux
+    Q = adc2charge(adcs, params)
+    ref_Q = adc2charge(ref_adcs, params)
 
-def params_loss_parametrized(params, ref, pixels_ref, ticks_ref, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
-    """
-    Loss function for parametrized simulation.
-    Args:
-        params: Parameters of the simulation.
-        ref: Reference ADC values.
-        pixels_ref: Reference pixel IDs.
-        ticks_ref: Reference time ticks.
-        tracks: Particle tracks.
-        fields: Fields for the simulation.
-        rngkey: Random key for simulation.
-        loss_fn: Loss function to use.
-        **loss_kwargs: Additional arguments for the loss function.
-    Returns:
-        loss_val: Loss value.
-        aux: Auxiliary values.
-    """
-    
-    adcs, pixels, ticks, _, _, _, _ = simulate_parametrized(params, tracks, fields, rngkey)
-
-    ref, adcs = cleaning_outputs(params, ref, adcs)
-    
     if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
-        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
+        raise NotImplementedError("🍝 SDTW losses need to be fixed 🍝")
+        # loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
     else:
-        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, **loss_kwargs)
+        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event , **loss_kwargs)
+
     return loss_val, aux
+
+def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
+    adcs, x, y, z, ticks, hit_prob, event, _ = simulate_parametrized(params, tracks, fields, rngkey)
+
+    Q = adc2charge(adcs, params)
+    ref_Q = adc2charge(ref_adcs, params)
+
+    if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
+        raise NotImplementedError("🍝 SDTW losses need to be fixed 🍝")
+        # loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
+    else:
+        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event , **loss_kwargs)
+
+    return loss_val, aux
+
 
 #Code commented below is unused but I still want to keep it for future reference
 

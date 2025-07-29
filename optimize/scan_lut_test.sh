@@ -5,7 +5,7 @@
 TARGET_SEED=1
 PARAMS=optimize/scripts/params_test.yaml
 BATCH_SIZE=100
-ITERATIONS=100
+ITERATIONS=20
 MAX_CLIP_NORM_VAL=1
 DATA_SEED=1
 LOSS=chamfer_3d
@@ -16,6 +16,8 @@ INPUT_FILE_SIM=prepared_data/input_1.h5
 
 #DECLARATIONS
 
+#ONLY TESTING WITH 2 NEIGHBORS FOR FASTER CALCS
+
 python3 -m optimize.example_run \
     --data_sz -1 \
     --max_nbatch 2 \
@@ -25,7 +27,6 @@ python3 -m optimize.example_run \
     --track_len_sel 2 \
     --max_abs_costheta_sel 0.966 \
     --min_abs_segz_sel 15. \
-    --no-noise-guess \
     --no-noise-target \
     --data_seed ${DATA_SEED} \
     --out_label scan_test${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target \
@@ -36,9 +37,9 @@ python3 -m optimize.example_run \
     --max_batch_len ${BATCH_SIZE} \
     --track_z_bound 28 \
     --max_clip_norm_val ${MAX_CLIP_NORM_VAL} \
-    --electron_sampling_resolution 0.005 \
+    --electron_sampling_resolution 0.01 \
     --lut_file src/larndsim/detector_properties/response_44.npy \
-    --number_pix_neighbors 4 \
+    --number_pix_neighbors 2 \
     --signal_length 150 \
     --mode 'lut' \
     --loss_fn ${LOSS} \
@@ -46,6 +47,7 @@ python3 -m optimize.example_run \
     --sim_seed_strategy 'same' \
     --cpu_only \
     --scan_tgt_nom \
-    --mc_diff
+    --mc_diff \
+    --debug_nans
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
 
