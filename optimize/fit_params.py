@@ -1,4 +1,6 @@
 import os, sys
+
+from requests import options
 larndsim_dir=os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..'))
 sys.path.insert(0, larndsim_dir)
 import shutil
@@ -21,7 +23,7 @@ import iminuit
 from tqdm import tqdm
 
 from ctypes import cdll
-# libcudart = cdll.LoadLibrary('libcudart.so')
+libcudart = cdll.LoadLibrary('libcudart.so')
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -663,6 +665,14 @@ class LikelihoodProfiler(ParamFitter):
 
                 for iter in tqdm(range(nb_steps)):
                     start_time = time()
+                    if iter == 5:
+                        options = jax.profiler.ProfileOptions()
+                        options.host_tracer_level = 2
+                        jax.profiler.start_trace("/sdf/home/p/pgranger/profile-data", profiler_options=options)
+                         #libcudart.cudaProfilerStart()
+                    if iter == 15:
+                        jax.profiler.stop_trace()
+                        #libcudart.cudaProfilerStop()
                     new_param_values = {param: lower + iter*param_step}
                     self.current_params = self.ref_params.replace(**new_param_values)
                     loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=True, with_grad=True)

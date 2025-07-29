@@ -208,11 +208,22 @@ def chamfer_distance_3d_og(pos_a, pos_b, w_a, w_b):
     return chamfer_dist, argmin_dists_a_to_b, argmin_dists_b_to_a
 
 def chamfer_3d(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, adc_norm=10., match_z=False):
+    ref_all = jnp.stack((ref_x + ref_event*1e9, ref_y, ref_z), axis=-1)
+    current_all = jnp.stack((x + event*1e9, y, z), axis=-1)
+
+    new_ref_size, new_cur_size = pad_size((ref_all.shape[0], current_all.shape[0]), "chamfer_3d")
+
+    ref_all = jnp.pad(ref_all, ((0, new_ref_size - ref_all.shape[0]), (0, 0)), mode='constant', constant_values=0)
+    current_all = jnp.pad(current_all, ((0, new_cur_size - current_all.shape[0]), (0, 0)), mode='constant', constant_values=0)
+
+    Q = jnp.pad(Q, (0, new_cur_size - Q.shape[0]), mode='constant', constant_values=0) / adc_norm
+    ref_Q = jnp.pad(ref_Q, (0, new_ref_size - ref_Q.shape[0]), mode='constant', constant_values=0) / adc_norm
+
     loss, argmin_dists_a_to_b, argmin_dists_b_to_a = chamfer_distance_3d_og(
-        jnp.stack((x + event*1e9, y, z), axis=-1),
-        jnp.stack((ref_x + ref_event*1e9, ref_y, ref_z), axis=-1),
-        Q/adc_norm,
-        ref_Q/adc_norm
+        current_all,
+        ref_all,
+        Q,
+        ref_Q
         )
     return loss, dict()
 

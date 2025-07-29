@@ -209,7 +209,9 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     adcs = digitize(params, integral)
     hit_prob = ticks < wfs.shape[1] - 2  # Assuming hit probability is based on whether ticks are within the waveform length
 
-    return parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
+    adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, nb_valid = parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
+
+    return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid]
 
 
 @partial(jit, static_argnames=['fields'])
@@ -292,7 +294,10 @@ def simulate_parametrized(params: Any, tracks: jnp.ndarray, fields: List[str], r
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_size - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
     adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event = simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey2, fields)
-    return parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
+
+    adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, nb_valid = parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
+
+    return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid]
 
 @partial(jit, static_argnames=['fields'])
 def simulate_drift_new(params, tracks, fields):
@@ -442,17 +447,57 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
 
     return wfs
 
+@jit
 def parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels):
     mask = hit_prob > params.hit_prob_threshold
-    adcs = adcs[mask]
-    pixel_x = jnp.repeat(pixel_x, mask.shape[1])[mask.flatten()]
-    pixel_y = jnp.repeat(pixel_y, mask.shape[1])[mask.flatten()]
-    pixel_z = pixel_z[mask.flatten()] #pixel_z is already flattened...
-    ticks = ticks[mask]
-    event = jnp.repeat(event, mask.shape[1])[mask.flatten()]
-    unique_pixels = jnp.repeat(unique_pixels, mask.shape[1])[mask.flatten()]
-    hit_prob = hit_prob[mask]
-    return adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels
+
+    max_length = mask.shape[0] * mask.shape[1]
+
+    adcs_output = jnp.zeros((max_length,), dtype=adcs.dtype)
+    pixel_x_output = jnp.zeros((max_length,), dtype=pixel_x.dtype)
+    pixel_y_output = jnp.zeros((max_length,), dtype=pixel_y.dtype)
+    pixel_z_output = jnp.zeros((max_length,), dtype=pixel_z.dtype)
+    ticks_output = jnp.zeros((max_length,), dtype=ticks.dtype)
+    hit_prob_output = jnp.zeros((max_length,), dtype=hit_prob.dtype)
+    event_output = jnp.zeros((max_length,), dtype=event.dtype)
+    unique_pixels_output = jnp.zeros((max_length,), dtype=unique_pixels.dtype)
+
+    flat_mask = mask.flatten()
+
+    new_index = jnp.where(flat_mask, jnp.cumsum(flat_mask), max_length - 1)
+    adcs_output = adcs_output.at[new_index].set(adcs.flatten())
+    pixel_x_output = pixel_x_output.at[new_index].set(jnp.repeat(pixel_x, mask.shape[1]))
+    pixel_y_output = pixel_y_output.at[new_index].set(jnp.repeat(pixel_y, mask.shape[1]))
+    pixel_z_output = pixel_z_output.at[new_index].set(pixel_z.flatten())
+    ticks_output = ticks_output.at[new_index].set(ticks.flatten())
+    hit_prob_output = hit_prob_output.at[new_index].set(hit_prob.flatten())
+    event_output = event_output.at[new_index].set(jnp.repeat(event, mask.shape[1]))
+    unique_pixels_output = unique_pixels_output.at[new_index].set(jnp.repeat(unique_pixels, mask.shape[1]))
+    nb_valid = jnp.sum(flat_mask)
+
+    return adcs_output, pixel_x_output, pixel_y_output, pixel_z_output, ticks_output, hit_prob_output, event_output, unique_pixels_output, nb_valid
+
+@jit
+def fee_sim_from_split(params, small_rois, large_rois, small_roi_idx, large_roi_idx, small_roi_start, large_roi_start, unique_pixels, max_tick_nb):
+    integral_small, ticks_small, no_hit_prob_small = get_adc_values_average_noise(params, small_rois)
+    integral_large, ticks_large, no_hit_prob_large = get_adc_values_average_noise(params, large_rois)
+
+    integral = jnp.zeros((unique_pixels.shape[0], integral_small.shape[1]))
+
+    integral = integral.at[small_roi_idx, :].set(integral_small[:small_roi_idx.shape[0], :])
+    integral = integral.at[large_roi_idx, :].set(integral_large[:large_roi_idx.shape[0], :])
+
+    ticks = jnp.zeros((unique_pixels.shape[0], ticks_small.shape[1]))
+    ticks = ticks.at[small_roi_idx, :].set(ticks_small[:small_roi_idx.shape[0], :] + small_roi_start[:, None])
+    ticks = ticks.at[large_roi_idx, :].set(ticks_large[:large_roi_idx.shape[0], :] + large_roi_start[:, None])
+    ticks = jnp.minimum(ticks, max_tick_nb)  # Ensure ticks do not exceed waveform length
+
+    no_prob = jnp.zeros((unique_pixels.shape[0], no_hit_prob_small.shape[1]))
+    no_prob = no_prob.at[small_roi_idx, :].set(no_hit_prob_small[:small_roi_idx.shape[0], :])
+    no_prob = no_prob.at[large_roi_idx, :].set(no_hit_prob_large[:large_roi_idx.shape[0], :])
+    hit_prob = 1 - no_prob
+
+    return integral, ticks, hit_prob
 
 def simulate_new(params, response_template, tracks, fields, rngseed=None):
     """
@@ -464,7 +509,7 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None):
         fields (List[str]): List of field names corresponding to the tracks.
         rngseed (int): Random seed for the simulation.
     Returns:
-        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, int]: 
             - adcs: ADC values.
             - pixel_x: X coordinates of the pixels.
             - pixel_y: Y coordinates of the pixels.
@@ -512,25 +557,10 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None):
         small_rois = jnp.pad(small_rois, ((0, padded_small_nb - small_rois.shape[0]), (0, 0)), mode='constant', constant_values=0)
         large_rois = jnp.pad(large_rois, ((0, padded_large_nb - large_rois.shape[0]), (0, padded_large_length - large_rois.shape[1])), mode='constant', constant_values=0)
 
-        integral_small, ticks_small, no_hit_prob_small = get_adc_values_average_noise(params, small_rois)
-        integral_large, ticks_large, no_hit_prob_large = get_adc_values_average_noise(params, large_rois)
-
-        integral = jnp.zeros((unique_pixels.shape[0], integral_small.shape[1]))
-
-        integral = integral.at[small_roi_idx, :].set(integral_small[:small_roi_idx.shape[0], :])
-        integral = integral.at[large_roi_idx, :].set(integral_large[:large_roi_idx.shape[0], :])
-
-        ticks = jnp.zeros((unique_pixels.shape[0], ticks_small.shape[1]))
-        ticks = ticks.at[small_roi_idx, :].set(ticks_small[:small_roi_idx.shape[0], :] + small_roi_start[:, None])
-        ticks = ticks.at[large_roi_idx, :].set(ticks_large[:large_roi_idx.shape[0], :] + large_roi_start[:, None])
-        ticks = jnp.minimum(ticks, wfs.shape[1] - 2)  # Ensure ticks do not exceed waveform length
-
-        no_prob = jnp.zeros((unique_pixels.shape[0], no_hit_prob_small.shape[1]))
-        no_prob = no_prob.at[small_roi_idx, :].set(no_hit_prob_small[:small_roi_idx.shape[0], :])
-        no_prob = no_prob.at[large_roi_idx, :].set(no_hit_prob_large[:large_roi_idx.shape[0], :])
+        integral, ticks, hit_prob = fee_sim_from_split(params, small_rois, large_rois, small_roi_idx, large_roi_idx, small_roi_start, large_roi_start, unique_pixels, wfs.shape[1] - 2)
         
         # integral, ticks, no_hit_prob = get_adc_values_average_noise(params, wfs[:, 1:])
-        hit_prob = 1 - no_prob
+        # hit_prob = 1 - no_hit_prob
 
     adcs = digitize(params, integral)
 
@@ -539,7 +569,10 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None):
     pixel_x = pixel_coords[:, 0]
     pixel_y = pixel_coords[:, 1]
     pixel_z  = get_hit_z(params, ticks.flatten(), jnp.repeat(pixel_plane, 10))
-    return parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
+
+    adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, nb_valid = parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
+
+    return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid]
 
 
 def prepare_tracks(params, tracks_file, invert_xz=True):
