@@ -500,37 +500,37 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None):
     ###############################################
     ###############################################
 
-    small_rois, small_roi_start, small_roi_idx, large_rois, large_roi_start, large_roi_idx = select_split_roi(params, wfs[:, 1:])
-    padded_small_nb = pad_size(small_rois.shape[0], "wfs_roi", 0.2) #We already enforced the length of the samllest ones, no need for padding
-    padded_large_nb, padded_large_length = pad_size((large_rois.shape[0], large_rois.shape[1]), "wfs_roi", 0.2)
-    small_rois = jnp.pad(small_rois, ((0, padded_small_nb - small_rois.shape[0]), (0, 0)), mode='constant', constant_values=0)
-    large_rois = jnp.pad(large_rois, ((0, padded_large_nb - large_rois.shape[0]), (0, padded_large_length - large_rois.shape[1])), mode='constant', constant_values=0)
-
-    integral_small, ticks_small, no_hit_prob_small = get_adc_values_average_noise(params, small_rois)
-    integral_large, ticks_large, no_hit_prob_large = get_adc_values_average_noise(params, large_rois)
-
-    integral = jnp.zeros((integral_small.shape[0], unique_pixels.shape[0]))
-
-    integral = integral.at[:, small_roi_idx].set(integral_small[:, :small_roi_idx.shape[0]])
-    integral = integral.at[:, large_roi_idx].set(integral_large[:, :large_roi_idx.shape[0]])
-
-    ticks = jnp.zeros((ticks_small.shape[0], unique_pixels.shape[0]))
-    ticks = ticks.at[:, small_roi_idx].set(ticks_small[:, :small_roi_idx.shape[0]] + small_roi_start)
-    ticks = ticks.at[:, large_roi_idx].set(ticks_large[:, :large_roi_idx.shape[0]] + large_roi_start)
-
-    no_prob = jnp.zeros((no_hit_prob_small.shape[0], unique_pixels.shape[0]))
-    no_prob = no_prob.at[:, small_roi_idx].set(no_hit_prob_small[:, :small_roi_idx.shape[0]])
-    no_prob = no_prob.at[:, large_roi_idx].set(no_hit_prob_large[:, :large_roi_idx.shape[0]])
-
-
     # integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey2)
 
     if rngseed is not None:
         integral, ticks = get_adc_values(params, wfs[:, 1:], jax.random.key(rngseed))
         hit_prob = ticks < wfs.shape[1] - 2  # Assuming hit probability is based on whether ticks are within the waveform length
     else:
-        integral, ticks, no_hit_prob = get_adc_values_average_noise(params, wfs[:, 1:])
-        hit_prob = 1 - no_hit_prob
+        small_rois, small_roi_start, small_roi_idx, large_rois, large_roi_start, large_roi_idx = select_split_roi(params, wfs[:, 1:])
+        padded_small_nb = pad_size(small_rois.shape[0], "wfs_roi", 0.2) #We already enforced the length of the samllest ones, no need for padding
+        padded_large_nb, padded_large_length = pad_size((large_rois.shape[0], large_rois.shape[1]), "wfs_roi", 0.2)
+        small_rois = jnp.pad(small_rois, ((0, padded_small_nb - small_rois.shape[0]), (0, 0)), mode='constant', constant_values=0)
+        large_rois = jnp.pad(large_rois, ((0, padded_large_nb - large_rois.shape[0]), (0, padded_large_length - large_rois.shape[1])), mode='constant', constant_values=0)
+
+        integral_small, ticks_small, no_hit_prob_small = get_adc_values_average_noise(params, small_rois)
+        integral_large, ticks_large, no_hit_prob_large = get_adc_values_average_noise(params, large_rois)
+
+        integral = jnp.zeros((unique_pixels.shape[0], integral_small.shape[1]))
+
+        integral = integral.at[small_roi_idx, :].set(integral_small[:small_roi_idx.shape[0], :])
+        integral = integral.at[large_roi_idx, :].set(integral_large[:large_roi_idx.shape[0], :])
+
+        ticks = jnp.zeros((unique_pixels.shape[0], ticks_small.shape[1]))
+        ticks = ticks.at[small_roi_idx, :].set(ticks_small[:small_roi_idx.shape[0], :] + small_roi_start[:, None])
+        ticks = ticks.at[large_roi_idx, :].set(ticks_large[:large_roi_idx.shape[0], :] + large_roi_start[:, None])
+        ticks = jnp.minimum(ticks, wfs.shape[1] - 2)  # Ensure ticks do not exceed waveform length
+
+        no_prob = jnp.zeros((unique_pixels.shape[0], no_hit_prob_small.shape[1]))
+        no_prob = no_prob.at[small_roi_idx, :].set(no_hit_prob_small[:small_roi_idx.shape[0], :])
+        no_prob = no_prob.at[large_roi_idx, :].set(no_hit_prob_large[:large_roi_idx.shape[0], :])
+        
+        # integral, ticks, no_hit_prob = get_adc_values_average_noise(params, wfs[:, 1:])
+        hit_prob = 1 - no_prob
 
     adcs = digitize(params, integral)
 
