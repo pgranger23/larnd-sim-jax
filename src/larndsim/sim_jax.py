@@ -556,6 +556,10 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None):
         padded_large_nb, padded_large_length = pad_size((large_rois.shape[0], large_rois.shape[1]), "wfs_roi", 0.2)
         small_rois = jnp.pad(small_rois, ((0, padded_small_nb - small_rois.shape[0]), (0, 0)), mode='constant', constant_values=0)
         large_rois = jnp.pad(large_rois, ((0, padded_large_nb - large_rois.shape[0]), (0, padded_large_length - large_rois.shape[1])), mode='constant', constant_values=0)
+        small_roi_idx = jnp.pad(small_roi_idx, (0, padded_small_nb - small_roi_idx.shape[0]), mode='constant', constant_values=wfs.shape[0] - 1)  # Fill with the last index
+        large_roi_idx = jnp.pad(large_roi_idx, (0, padded_large_nb - large_roi_idx.shape[0]), mode='constant', constant_values=wfs.shape[0] - 1)
+        small_roi_start = jnp.pad(small_roi_start, (0, padded_small_nb - small_roi_start.shape[0]), mode='constant', constant_values=wfs.shape[1] - 2)
+        large_roi_start = jnp.pad(large_roi_start, (0, padded_large_nb - large_roi_start.shape[0]), mode='constant', constant_values=wfs.shape[1] - 2)
 
         integral, ticks, hit_prob = fee_sim_from_split(params, small_rois, large_rois, small_roi_idx, large_roi_idx, small_roi_start, large_roi_start, unique_pixels, wfs.shape[1] - 2)
         

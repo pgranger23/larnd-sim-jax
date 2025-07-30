@@ -74,6 +74,7 @@ class ParamFitter:
                  diffusion_in_current_sim=False,
                  mc_diff = False,
                  read_target=False,
+                 probabilistic_target=False,
                  config = {}):
 
         self.read_target = read_target
@@ -97,6 +98,7 @@ class ParamFitter:
         self.electron_sampling_resolution = config.electron_sampling_resolution
         self.number_pix_neighbors = config.number_pix_neighbors
         self.signal_length = config.signal_length
+        self.probabilistic_target = probabilistic_target
 
         self.track_fields = track_fields
         if 'eventID' in self.track_fields:
@@ -300,7 +302,11 @@ class ParamFitter:
             fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
             if regen or not os.path.exists(fname):
                 if self.current_mode == 'lut':
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_new(self.target_params, self.response, target, self.track_fields, i+1) #Setting a different random seed for each target
+                    if self.probabilistic_target:
+                        rngseed = None
+                    else:
+                        rngseed = i+1
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_new(self.target_params, self.response, target, self.track_fields, rngseed) #Setting a different random seed for each target
                 else:
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_parametrized(self.target_params, target, self.track_fields, i+1) #Setting a different random seed for each target
 
@@ -665,14 +671,14 @@ class LikelihoodProfiler(ParamFitter):
 
                 for iter in tqdm(range(nb_steps)):
                     start_time = time()
-                    # if iter == 5:
-                        # options = jax.profiler.ProfileOptions()
-                        # options.host_tracer_level = 2
-                        # jax.profiler.start_trace("/sdf/home/p/pgranger/profile-data", profiler_options=options)
-                         #libcudart.cudaProfilerStart()
-                    # if iter == 15:
-                        # jax.profiler.stop_trace()
-                        #libcudart.cudaProfilerStop()
+                    # if iter == 3:
+                    #     options = jax.profiler.ProfileOptions()
+                    #     options.host_tracer_level = 2
+                    #     jax.profiler.start_trace("/sdf/home/p/pgranger/profile-data", profiler_options=options)
+                    #     # libcudart.cudaProfilerStart()
+                    # if iter == 9:
+                    #     jax.profiler.stop_trace()
+                    #     # libcudart.cudaProfilerStop()
                     new_param_values = {param: lower + iter*param_step}
                     self.current_params = self.ref_params.replace(**new_param_values)
                     loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=True, with_grad=True)
