@@ -118,28 +118,6 @@ def select_roi(params, wfs):
     wfs_with_roi = wfs.at[jnp.arange(Npix)[:, None], (jnp.arange(largest_roi) + roi_start[:, None])].get(unique_indices=True)
     return wfs_with_roi, roi_start
 
-def select_split_roi(params, wfs):
-    roi_threshold = params.roi_threshold
-    Npix, Nticks = wfs.shape
-    roi_start = jnp.argmax(wfs > roi_threshold, axis=1)
-    roi_end = Nticks - jnp.argmax(wfs[:, ::-1] > roi_threshold, axis=1) - 1
-    with_roi = roi_start > 0
-    largest_roi = jnp.max((roi_end - roi_start)[with_roi])
-    # wfs_with_roi = wfs.at[jnp.arange(Npix)[:, None], (jnp.arange(largest_roi) + roi_start[:, None])].get(unique_indices=True)
-
-    mask_small_rois = (roi_end - roi_start) < params.roi_split_length
-    small_roi_start = roi_start[mask_small_rois]
-    large_roi_start = roi_start[~mask_small_rois]
-    
-    small_rois = wfs.at[jnp.arange(Npix)[mask_small_rois][:, None],
-                        (jnp.arange(params.roi_split_length) + small_roi_start[:, None])].get(unique_indices=True)
-    large_rois = wfs.at[jnp.arange(Npix)[~mask_small_rois][:, None],
-                        (jnp.arange(largest_roi) + large_roi_start[:, None])].get(unique_indices=True)
-
-    small_roi_idx = jnp.argwhere(mask_small_rois)[:, 0]
-    large_roi_idx = jnp.argwhere(~mask_small_rois)[:, 0]
-
-    return small_rois, small_roi_start, small_roi_idx, large_rois, large_roi_start, large_roi_idx
 
 @annotate_function
 @jit

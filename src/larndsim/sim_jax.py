@@ -11,7 +11,7 @@ import logging
 from larndsim.detsim_jax import generate_electrons, get_pixels, id2pixel, accumulate_signals, accumulate_signals_parametrized, current_lut, get_pixel_coordinates, current_mc, apply_tran_diff, get_hit_z, pixel2id, get_bin_shifts, density_2d
 from larndsim.quenching_jax import quench
 from larndsim.drifting_jax import drift
-from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise, select_split_roi
+from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise
 from optimize.dataio import chop_tracks
 from larndsim.consts_jax import get_vdrift
 
@@ -459,21 +459,43 @@ def parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event
     return adcs_output, pixel_x_output, pixel_y_output, pixel_z_output, ticks_output, hit_prob_output, event_output, unique_pixels_output, nb_valid
 
 @jit
-def fee_sim_from_split(params, small_rois, large_rois, small_roi_idx, large_roi_idx, small_roi_start, large_roi_start, unique_pixels, max_tick_nb):
+def select_split_roi(params, wfs):
+    roi_threshold = params.roi_threshold
+    Npix, Nticks = wfs.shape
+    roi_start = jnp.argmax(wfs > roi_threshold, axis=1)
+    roi_end = Nticks - jnp.argmax(wfs[:, ::-1] > roi_threshold, axis=1) - 1
+
+    mask_small_rois = ((roi_end - roi_start) < params.roi_split_length) & (roi_start > 0)
+    nb_small_rois = jnp.sum(mask_small_rois)
+    return nb_small_rois, mask_small_rois, roi_start
+
+@partial(jit, static_argnames=["padded_small_nb", "padded_large_nb"])
+def fee_sim_from_split(params, padded_small_nb, padded_large_nb, wfs, mask_small_rois, roi_start, max_tick_nb):
+    Npix = wfs.shape[0]
+
+
+    small_roi_idx = jnp.argwhere(mask_small_rois, size=padded_small_nb, fill_value=0)[:, 0]
+    large_roi_idx = jnp.argwhere(~mask_small_rois, size=padded_large_nb, fill_value=0)[:, 0]
+
+    small_roi_start = roi_start[small_roi_idx]
+
+    large_rois = wfs.at[large_roi_idx, :].get()
+    small_rois = wfs.at[small_roi_idx[:, None], (jnp.arange(params.roi_split_length) + small_roi_start[:, None])].get()
+
     integral_small, ticks_small, no_hit_prob_small = get_adc_values_average_noise(params, small_rois)
     integral_large, ticks_large, no_hit_prob_large = get_adc_values_average_noise(params, large_rois)
 
-    integral = jnp.zeros((unique_pixels.shape[0], integral_small.shape[1]))
+    integral = jnp.zeros((Npix, integral_small.shape[1]))
 
     integral = integral.at[small_roi_idx, :].set(integral_small[:small_roi_idx.shape[0], :])
     integral = integral.at[large_roi_idx, :].set(integral_large[:large_roi_idx.shape[0], :])
 
-    ticks = jnp.zeros((unique_pixels.shape[0], ticks_small.shape[1]))
+    ticks = jnp.zeros((Npix, ticks_small.shape[1]))
     ticks = ticks.at[small_roi_idx, :].set(ticks_small[:small_roi_idx.shape[0], :] + small_roi_start[:, None])
-    ticks = ticks.at[large_roi_idx, :].set(ticks_large[:large_roi_idx.shape[0], :] + large_roi_start[:, None])
+    ticks = ticks.at[large_roi_idx, :].set(ticks_large[:large_roi_idx.shape[0], :])
     ticks = jnp.minimum(ticks, max_tick_nb)  # Ensure ticks do not exceed waveform length
 
-    no_prob = jnp.zeros((unique_pixels.shape[0], no_hit_prob_small.shape[1]))
+    no_prob = jnp.zeros((Npix, no_hit_prob_small.shape[1]))
     no_prob = no_prob.at[small_roi_idx, :].set(no_hit_prob_small[:small_roi_idx.shape[0], :])
     no_prob = no_prob.at[large_roi_idx, :].set(no_hit_prob_large[:large_roi_idx.shape[0], :])
     hit_prob = 1 - no_prob
@@ -527,22 +549,19 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None):
     ###############################################
 
     # integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey2)
+   
 
     if rngseed is not None:
         integral, ticks = get_adc_values(params, wfs[:, 1:], jax.random.key(rngseed))
         hit_prob = jnp.where(ticks < wfs.shape[1] - 3, 1., 0.)  # Assuming hit probability is based on whether ticks are within the waveform length
     else:
-        small_rois, small_roi_start, small_roi_idx, large_rois, large_roi_start, large_roi_idx = select_split_roi(params, wfs[:, 1:])
-        padded_small_nb = pad_size(small_rois.shape[0], "wfs_roi", 0.2) #We already enforced the length of the samllest ones, no need for padding
-        padded_large_nb, padded_large_length = pad_size((large_rois.shape[0], large_rois.shape[1]), "wfs_roi", 0.2)
-        small_rois = jnp.pad(small_rois, ((0, padded_small_nb - small_rois.shape[0]), (0, 0)), mode='constant', constant_values=0)
-        large_rois = jnp.pad(large_rois, ((0, padded_large_nb - large_rois.shape[0]), (0, padded_large_length - large_rois.shape[1])), mode='constant', constant_values=0)
-        small_roi_idx = jnp.pad(small_roi_idx, (0, padded_small_nb - small_roi_idx.shape[0]), mode='constant', constant_values=wfs.shape[0] - 1)  # Fill with the last index
-        large_roi_idx = jnp.pad(large_roi_idx, (0, padded_large_nb - large_roi_idx.shape[0]), mode='constant', constant_values=wfs.shape[0] - 1)
-        small_roi_start = jnp.pad(small_roi_start, (0, padded_small_nb - small_roi_start.shape[0]), mode='constant', constant_values=wfs.shape[1] - 2)
-        large_roi_start = jnp.pad(large_roi_start, (0, padded_large_nb - large_roi_start.shape[0]), mode='constant', constant_values=wfs.shape[1] - 2)
+        Npix = wfs.shape[0]
+        nb_small_rois, mask_small_rois, roi_start = select_split_roi(params, wfs[:, 1:])
+        nb_small_rois = int(nb_small_rois)
+        padded_small_nb = pad_size(nb_small_rois, "wfs_roi", 0.1)
+        padded_large_nb = pad_size(Npix - nb_small_rois, "wfs_roi", 0.1)
 
-        integral, ticks, hit_prob = fee_sim_from_split(params, small_rois, large_rois, small_roi_idx, large_roi_idx, small_roi_start, large_roi_start, unique_pixels, wfs.shape[1] - 2)
+        integral, ticks, hit_prob = fee_sim_from_split(params, padded_small_nb, padded_large_nb, wfs[:, 1:], mask_small_rois, roi_start, wfs.shape[1] - 2)
         
         # integral, ticks, no_hit_prob = get_adc_values_average_noise(params, wfs[:, 1:])
         # hit_prob = 1 - no_hit_prob
