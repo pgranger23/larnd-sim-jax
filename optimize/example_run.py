@@ -117,7 +117,8 @@ def main(config):
                                 diffusion_in_current_sim=config.diffusion_in_current_sim,
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
-                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target)
+                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
+                                probabilistic_target=config.probabilistic_target)
     elif config.fit_type == "scan":
         param_fit = LikelihoodProfiler(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
@@ -131,7 +132,7 @@ def main(config):
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
-                                scan_tgt_nom=config.scan_tgt_nom)
+                                scan_tgt_nom=config.scan_tgt_nom, probabilistic_target=config.probabilistic_target)
     elif config.fit_type == "minuit":
         param_fit = MinuitFitter(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
@@ -145,7 +146,7 @@ def main(config):
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
-                                minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits)
+                                minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits, probabilistic_target=config.probabilistic_target)
 
     else:
         raise Exception(f"Unknown fit type: {config.fit_type}. Supported types are 'chain' and 'scan'.")
@@ -268,6 +269,7 @@ if __name__ == '__main__':
     parser.add_argument('--mc_diff', default=False, action="store_true", help='Use MC diffusion')
     parser.add_argument('--live_selection', default=False, action="store_true", help='Whether to run live selection or not')
     parser.add_argument('--read_target', default=False, action="store_true", help='read data(-like) target')
+    parser.add_argument('--probabilistic-target', default=False, action="store_true", help='Use probabilistic target (for scan)')
 
     try:
         args = parser.parse_args()

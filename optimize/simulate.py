@@ -8,7 +8,7 @@ import argparse
 import sys
 import traceback
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
-from larndsim.sim_jax import prepare_tracks, simulate, simulate_parametrized, id2pixel, get_pixel_coordinates
+from larndsim.sim_jax import prepare_tracks, simulate_new, simulate_parametrized, id2pixel, get_pixel_coordinates
 from larndsim.losses_jax import get_hits_space_coords
 from pprint import pprint
 import numpy as np
@@ -35,14 +35,16 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-
 
     track_fields = tracks.dtype.names
 
-    if 'eventID' in tracks.dtype.names:
-        evt_id = 'eventID'
-    else:
-        evt_id = 'event_id'
+    replace_map = {
+            'event_id': 'eventID',
+            'traj_id': 'trackID',
+        }
+    track_fields = tuple([replace_map.get(field, field) if field in replace_map else field for field in track_fields])
+    tracks.dtype.names = track_fields
 
     if n_events > 0:
-        evID = np.unique(tracks[evt_id])[:n_events]
-        ev_msk = np.isin(tracks[evt_id], evID)
+        evID = np.unique(tracks['eventID'])[:n_events]
+        ev_msk = np.isin(tracks['eventID'], evID)
         tracks = tracks[ev_msk]
 
     if swap_xz:
@@ -58,7 +60,7 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-
         tracks['z_end'] = x_end
         tracks['z'] = x
 
-    unique_events, first_indices = np.unique(tracks[evt_id], return_index=True)
+    unique_events, first_indices = np.unique(tracks['eventID'], return_index=True)
 
     first_indices = np.sort(first_indices)
     last_indices = np.r_[first_indices[1:] - 1, len(tracks) - 1]
@@ -91,12 +93,11 @@ def main(config):
             return jnp.stack([adcs, ticks], axis=-1)
         pars = ['Ab', 'kb', 'eField', 'long_diff', 'tran_diff', 'lifetime', 'shift_z']
     Params = build_params_class(pars)
-    ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts, config.lut_file)
+    ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts)
 
     if args.mode == 'lut':
-        response = load_lut(config.lut_file)
+        response, ref_params = load_lut(config.lut_file, ref_params)
     
-
     
     params_to_apply = [
         'diffusion_in_current_sim',
@@ -126,7 +127,7 @@ def main(config):
         tracks = jax.device_put(batch)
 
         if args.mode == 'lut':
-            adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
+            adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed)
         else:
             adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
         if config.jac:
