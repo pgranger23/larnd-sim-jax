@@ -222,6 +222,7 @@ def get_adc_values(params, pixels_signals, noise_rng_key):
 
         # Only include if passes threshold     
         adc = jnp.where(cond_adc, 0, adc)
+        ic = jnp.where(cond_adc, q_sum.shape[1]-2, ic)
 
         # Setup for next loop: baseline noise set to based on adc passing disc. threshold
         key, = random.split(key, 1)

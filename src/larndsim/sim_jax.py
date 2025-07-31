@@ -138,22 +138,6 @@ def simulate_drift(params, tracks, fields, rngkey):
 
     return electrons, pIDs
 
-@jit
-def get_renumbering(pIDs, unique_pixels):
-    #Getting the renumbering of the pixels
-    #pIDs have the shape of (n_seg/n_electrons, n_pixels)
-    pIDs = pIDs.ravel()
-
-    # The "jit" padding for unique_pixels is set to -1
-    # With the sort, the padding will be at the beginning
-    # Therefore pix_renumbering 0 is the padding
-    pix_renumbering = jnp.searchsorted(unique_pixels, pIDs, method='sort')
-
-    #Only getting the electrons for which the pixels are in the active region
-    mask = (pix_renumbering > 0) & (pix_renumbering < (unique_pixels.size+1)) & (unique_pixels[pix_renumbering] == pIDs)
-
-    return mask, pix_renumbering
-
 @partial(jit, static_argnames=['fields'])
 def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey, fields):
     """
@@ -207,7 +191,7 @@ def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pi
     pixel_z  = get_hit_z(params, ticks.flatten(), jnp.repeat(plane, 10))
 
     adcs = digitize(params, integral)
-    hit_prob = ticks < wfs.shape[1] - 2  # Assuming hit probability is based on whether ticks are within the waveform length
+    hit_prob = jnp.where(ticks < wfs.shape[1] - 3, 1., 0.)  # Assuming hit probability is based on whether ticks are within the waveform length
 
     adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, nb_valid = parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
 
@@ -258,7 +242,7 @@ def simulate_signals_parametrized(params, electrons, pIDs, unique_pixels, rngkey
     pixel_x = pixel_coords[:, 0]
     pixel_y = pixel_coords[:, 1]
     pixel_z  = get_hit_z(params, ticks.flatten(), jnp.repeat(pixel_plane, 10))
-    ref_hit_prob = ticks < wfs.shape[1] - 2  # Assuming hit probability is based on whether ticks are within the waveform length
+    ref_hit_prob = jnp.where(ticks < wfs.shape[1] - 3, 1., 0.)  # Assuming hit probability is based on whether ticks are within the waveform length
 
     return adcs, pixel_x, pixel_y, pixel_z, ticks, ref_hit_prob, event
 
@@ -366,7 +350,7 @@ def simulate_drift_new(params, tracks, fields):
     return main_pixels, pixels, nelectrons, t0_after_diff, long_diff, currents_idx, pIDs_neigh ,currents_idx_neigh, nelectrons_neigh, t0_neigh
 
 @jit
-def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, mask_indices, pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
+def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
     pix_renumbering = jnp.searchsorted(unique_pixels, pixels.ravel(), method='sort')
     #Getting the right indices for the currents
    
@@ -432,12 +416,9 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
 
     wfs = wfs.reshape((Npixels, Nticks))
 
-
-    pix_renumbering_neigh = jnp.take(pix_renumbering_neigh, mask_indices, mode='fill', fill_value=0)
     npix = (2*params.number_pix_neighbors + 1)**2
-    elec_ids = mask_indices//npix
+    elec_ids = jnp.arange(pix_renumbering_neigh.shape[0])//npix
     nelectrons_neigh = jnp.take(nelectrons_neigh, elec_ids, mode='fill', fill_value=0)
-    currents_idx_neigh = jnp.take(currents_idx_neigh, mask_indices, mode='fill', fill_value=0, axis=0)
 
     t0_neighbors = jnp.take(t0_neigh, elec_ids, mode='fill', fill_value=0)
 
@@ -449,7 +430,7 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
 
 @jit
 def parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels):
-    mask = hit_prob > params.hit_prob_threshold
+    mask = (hit_prob > params.hit_prob_threshold) & (event[:, None] >= 0) & (unique_pixels[:, None] >= 0) #Getting rid of hits that are below the hit probability threshold and events that are not valid
 
     max_length = mask.shape[0] * mask.shape[1]
 
@@ -464,7 +445,7 @@ def parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event
 
     flat_mask = mask.flatten()
 
-    new_index = jnp.where(flat_mask, jnp.cumsum(flat_mask), max_length - 1)
+    new_index = jnp.where(flat_mask, jnp.cumsum(flat_mask) - 1, max_length - 1)
     adcs_output = adcs_output.at[new_index].set(adcs.flatten())
     pixel_x_output = pixel_x_output.at[new_index].set(jnp.repeat(pixel_x, mask.shape[1]))
     pixel_y_output = pixel_y_output.at[new_index].set(jnp.repeat(pixel_y, mask.shape[1]))
@@ -528,19 +509,19 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None):
 
     #Sorting the pixels and getting the unique ones
     unique_pixels = jnp.unique(main_pixels.ravel())
-    padded_unique, padded_mask = pad_size((unique_pixels.shape[0], pIDs_neigh.size), "unique_pixels", 0.2)
+    padded_unique = pad_size(unique_pixels.shape[0], "unique_pixels", 0.2)
 
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_unique - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
-    mask, pix_renumbering_neigh = get_renumbering(pIDs_neigh, unique_pixels)
-    mask_indices = jnp.nonzero(mask)[0]
+    pix_renumbering_neigh= jnp.searchsorted(unique_pixels, pIDs_neigh.ravel(), method='sort')
+    # mask_indices = jnp.nonzero(mask)[0]
     # padded_size = pad_size(mask_indices.shape[0], "pix_renumbering", 0.2)
-    mask_indices = jnp.pad(mask_indices, (0, padded_mask - mask_indices.shape[0]), mode='constant', constant_values=-1)
+    # mask_indices = jnp.pad(mask_indices, (0, padded_mask - mask_indices.shape[0]), mode='constant', constant_values=-1)
 
     ###############################################
     ###############################################
 
-    wfs = simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, mask_indices, pix_renumbering_neigh, t0_neigh, currents_idx_neigh)
+    wfs = simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh)
 
     ###############################################
     ###############################################
@@ -549,7 +530,7 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None):
 
     if rngseed is not None:
         integral, ticks = get_adc_values(params, wfs[:, 1:], jax.random.key(rngseed))
-        hit_prob = ticks < wfs.shape[1] - 2  # Assuming hit probability is based on whether ticks are within the waveform length
+        hit_prob = jnp.where(ticks < wfs.shape[1] - 3, 1., 0.)  # Assuming hit probability is based on whether ticks are within the waveform length
     else:
         small_rois, small_roi_start, small_roi_idx, large_rois, large_roi_start, large_roi_idx = select_split_roi(params, wfs[:, 1:])
         padded_small_nb = pad_size(small_rois.shape[0], "wfs_roi", 0.2) #We already enforced the length of the samllest ones, no need for padding
