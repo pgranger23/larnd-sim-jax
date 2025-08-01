@@ -106,14 +106,19 @@ def simulate_drift(params, tracks, fields, rngkey):
 
     #Simulating the electron generation according to the diffusion coefficients
 
-    if params.mc_diff:
-        electrons = generate_electrons(new_tracks, fields, rngkey, not params.diffusion_in_current_sim)
-    else:
-        electrons = apply_tran_diff(params, new_tracks, fields)
-    #Getting the pixels where the electrons are
-    pIDs = get_pixels(params, electrons, fields)
+    ##if params.mc_diff:
+    ##    electrons = generate_electrons(new_tracks, fields, rngkey, not params.diffusion_in_current_sim)
+    ##else:
+    ##    electrons = apply_tran_diff(params, new_tracks, fields)
+    ###Getting the pixels where the electrons are
+    ##pIDs = get_pixels(params, electrons, fields)
 
-    return electrons, pIDs
+    ##return electrons, pIDs
+
+    #Getting the pixels where the electrons are
+    pIDs = get_pixels(params, new_tracks, fields)
+
+    return new_tracks, pIDs
 
 @jit
 def get_renumbering(pIDs, unique_pixels):
