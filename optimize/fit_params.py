@@ -67,7 +67,7 @@ class ParamFitter:
                  shift_no_fit=[], set_target_vals=[], vary_init=False, keep_in_memory=False,
                  compute_target_hessian=False, sim_seed_strategy="different",
                  target_seed=0, target_fixed_range=None,
-                 adc_norm=10, match_z=True,
+                 adc_norm=1, match_z=True,
                  diffusion_in_current_sim=False,
                  mc_diff = False,
                  read_target=False,
@@ -214,15 +214,18 @@ class ParamFitter:
 
         self.current_params = ref_params.replace(**initial_params)
 
-        #Only do it now to not inpact current_params
-        if not self.readout_noise_guess:
-            logger.info("Not simulating electronics noise for guesses")
-            self.current_params = remove_noise_from_params(self.current_params)
-
         self.ref_params = ref_params
 
         self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
         self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
+
+        #Only do it now to not inpact current_params (ref_params?)
+        #FIXME It's a problem if the noise parameters are to be fitted
+        if not self.readout_noise_guess:
+            logger.info("Not simulating electronics noise for guesses")
+            self.current_params = remove_noise_from_params(self.current_params)
+            self.params_normalization = remove_noise_from_params(self.params_normalization)
+            self.norm_params = remove_noise_from_params(self.norm_params)
 
     def load_lut(self):
         self.response = load_lut(self.lut_file)

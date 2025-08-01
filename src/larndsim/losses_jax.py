@@ -176,7 +176,7 @@ def chamfer_distance_3d_og(pos_a, pos_b, w_a, w_b):
     )
     return chamfer_dist, argmin_dists_a_to_b, argmin_dists_b_to_a
 
-def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref, pixel_x_ref, pixel_y_ref, pixel_z_ref, ticks_ref, eventID_ref , adc_norm=10., match_z=False):
+def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref, pixel_x_ref, pixel_y_ref, pixel_z_ref, ticks_ref, eventID_ref , adc_norm=1., match_z=False):
     # normalise the time tick with the same drift velocity (in the current iteration)
     plane = pixel_z < 0 #FIXME store this information in the reference, so it can be properly used.
     drift =  get_hit_z(params, ticks.flatten(), plane.astype(int), fixed_v = True)
