@@ -127,7 +127,7 @@ def main(config):
         tracks = jax.device_put(batch)
 
         if args.mode == 'lut':
-            adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed)
+            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, wfs = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
         else:
             adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
         if config.jac:
@@ -166,9 +166,10 @@ def main(config):
             l_pix_x.append(jnp.repeat(pixel_x, 10)[mask])
             l_pix_y.append(jnp.repeat(pixel_y, 10)[mask])
             l_pix_z.append(pixel_z.flatten()[mask])
+            l_hit_prob.append(hit_prob.flatten()[mask])
 
     if config.out_np:
-        jnp.savez(config.output_file, adcs=np.concatenate(l_adc), Q=np.concatenate(l_Q), x=np.concatenate(l_pix_x), y=np.concatenate(l_pix_y), z=np.concatenate(l_pix_z), ticks=np.concatenate(l_ticks), event_id=np.concatenate(l_eventID))
+        jnp.savez(config.output_file, adcs=np.concatenate(l_adc), Q=np.concatenate(l_Q), x=np.concatenate(l_pix_x), y=np.concatenate(l_pix_y), z=np.concatenate(l_pix_z), ticks=np.concatenate(l_ticks), hit_prob=np.concatenate(l_hit_prob), event_id=np.concatenate(l_eventID))
 
     # libcudart.cudaProfilerStop()
     return 0, 'Success'
@@ -193,7 +194,7 @@ if __name__ == '__main__':
     parser.add_argument('--signal_length', type=int, required=True, help='Signal length')
     parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
     parser.add_argument('--noise', action='store_true', help='Add noise to the simulation')
-    parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
     parser.add_argument('--diffusion_in_current_sim', action='store_true', help='Use diffusion in current simulation')
     parser.add_argument('--batch_size', type=float, default=500, help='Batch size for simulation')
     parser.add_argument('--gpu', action='store_true', help='Use GPU for simulation')

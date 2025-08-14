@@ -270,6 +270,7 @@ if __name__ == '__main__':
     parser.add_argument('--live_selection', default=False, action="store_true", help='Whether to run live selection or not')
     parser.add_argument('--read_target', default=False, action="store_true", help='read data(-like) target')
     parser.add_argument('--probabilistic-target', default=False, action="store_true", help='Use probabilistic target (for scan)')
+    parser.add_argument('--probabilistic-sim', default=False, action="store_true", help='Use probabilistic sim')
 
     try:
         args = parser.parse_args()

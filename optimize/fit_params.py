@@ -8,7 +8,7 @@ import pickle
 import numpy as np
 from .ranges import ranges
 from larndsim.sim_jax import simulate_new, simulate_parametrized, get_size_history
-from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge
+from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge, sinkhorn_loss
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
@@ -75,6 +75,7 @@ class ParamFitter:
                  mc_diff = False,
                  read_target=False,
                  probabilistic_target=False,
+                 probabilistic_sim=False,
                  config = {}):
 
         self.read_target = read_target
@@ -99,6 +100,7 @@ class ParamFitter:
         self.number_pix_neighbors = config.number_pix_neighbors
         self.signal_length = config.signal_length
         self.probabilistic_target = probabilistic_target
+        self.probabilistic_sim = probabilistic_sim
 
         self.track_fields = track_fields
         if 'eventID' in self.track_fields:
@@ -145,7 +147,8 @@ class ParamFitter:
             "chamfer_3d": (chamfer_3d, {'adc_norm': adc_norm, 'match_z': match_z}),
             "sdtw_adc": (sdtw_adc, {'gamma': 1.}),
             "sdtw_time": (sdtw_time, {'gamma': 1.}),
-            "sdtw_time_adc": (sdtw_time_adc, {'gamma': 1., 'alpha': 0.5})
+            "sdtw_time_adc": (sdtw_time_adc, {'gamma': 1., 'alpha': 0.5}),
+            "sinkhorn_loss": (sinkhorn_loss, {})
         }
 
         # Set up loss function -- can pass in directly, or choose a named one
@@ -347,18 +350,21 @@ class ParamFitter:
         return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event
 
     def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=True, with_grad=True, epoch=0):
-        if self.sim_seed_strategy == "same":
-            rngkey = i + 1
-        elif self.sim_seed_strategy == "different":
-            rngkey = -i - 1 #Need some offset otherwise batch 0 has same seed
-        elif self.sim_seed_strategy == "different_epoch":
-            rngkey = -i - 1 - epoch * 10000
-        elif self.sim_seed_strategy == "random":
-            rngkey = np.random.randint(0, 1000000)
-        elif self.sim_seed_strategy == "constant":
-            rngkey = 0
+        if self.probabilistic_sim:
+            rngkey = None
         else:
-            raise ValueError("Unknown sim_seed_strategy. Must be same, different or random")
+            if self.sim_seed_strategy == "same":
+                rngkey = i + 1
+            elif self.sim_seed_strategy == "different":
+                rngkey = -i - 1 #Need some offset otherwise batch 0 has same seed
+            elif self.sim_seed_strategy == "different_epoch":
+                rngkey = -i - 1 - epoch * 10000
+            elif self.sim_seed_strategy == "random":
+                rngkey = np.random.randint(0, 1000000)
+            elif self.sim_seed_strategy == "constant":
+                rngkey = 0
+            else:
+                raise ValueError("Unknown sim_seed_strategy. Must be same, different or random")
 
         assert(with_loss or with_grad)
         loss_val, grads, aux = None, None, None
@@ -366,11 +372,11 @@ class ParamFitter:
         # Simulate and get output
         if self.current_mode == 'lut':
             if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_loss:
-                loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_grad:
-                grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
         else:
             if with_loss and with_grad:
                 (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
@@ -574,7 +580,7 @@ class GradientDescentFitter(ParamFitter):
                     if 'cuda' in jax.devices():
                         self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
 
-                    if iterations is not None and total_iter == (iterations-1):
+                    if iterations is not None:
                         if total_iter % print_freq == 0:
                             for param in self.relevant_params_list:
                                 logger.info(f"{param} {getattr(self.current_params,param)} {modified_grads[param]}")
