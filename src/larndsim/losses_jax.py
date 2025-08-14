@@ -6,9 +6,9 @@ from functools import partial
 from larndsim.sim_jax import pad_size, simulate_new, simulate_parametrized
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
-from ott.geometry import pointcloud
-from ott.problems.linear import linear_problem
-from ott.solvers.linear import sinkhorn
+#from ott.geometry import pointcloud
+#from ott.problems.linear import linear_problem
+#from ott.solvers.linear import sinkhorn
 
 @jit
 def rbf_kernel(x, y, sigma):
@@ -268,25 +268,25 @@ def chamfer_3d_old(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs
 
     return loss, dict()
 
-def sinkhorn_loss(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event):
-
-    ref_all = jnp.stack((ref_x + ref_event*1e9, ref_y, ref_z), axis=-1)
-    current_all = jnp.stack((x + event*1e9, y, z), axis=-1)
-
-    new_ref_size, new_cur_size = pad_size((ref_all.shape[0], current_all.shape[0]), "chamfer_3d")
-
-    ref_all = jnp.pad(ref_all, ((0, new_ref_size - ref_all.shape[0]), (0, 0)), mode='constant', constant_values=0)
-    current_all = jnp.pad(current_all, ((0, new_cur_size - current_all.shape[0]), (0, 0)), mode='constant', constant_values=0)
-
-    Q = jnp.pad(Q, (0, new_cur_size - Q.shape[0]), mode='constant', constant_values=0)
-    ref_Q = jnp.pad(ref_Q, (0, new_ref_size - ref_Q.shape[0]), mode='constant', constant_values=0)
-
-    geom = pointcloud.PointCloud(current_all, ref_all, epsilon=0.01)  # epsilon = entropic regularization
-    solver = sinkhorn.Sinkhorn()
-    out = solver(linear_problem.LinearProblem(geom, a=Q, b=ref_Q))
-    loss = out.reg_ot_cost # transport cost
-
-    return loss, dict()
+#def sinkhorn_loss(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event):
+#
+#    ref_all = jnp.stack((ref_x + ref_event*1e9, ref_y, ref_z), axis=-1)
+#    current_all = jnp.stack((x + event*1e9, y, z), axis=-1)
+#
+#    new_ref_size, new_cur_size = pad_size((ref_all.shape[0], current_all.shape[0]), "chamfer_3d")
+#
+#    ref_all = jnp.pad(ref_all, ((0, new_ref_size - ref_all.shape[0]), (0, 0)), mode='constant', constant_values=0)
+#    current_all = jnp.pad(current_all, ((0, new_cur_size - current_all.shape[0]), (0, 0)), mode='constant', constant_values=0)
+#
+#    Q = jnp.pad(Q, (0, new_cur_size - Q.shape[0]), mode='constant', constant_values=0)
+#    ref_Q = jnp.pad(ref_Q, (0, new_ref_size - ref_Q.shape[0]), mode='constant', constant_values=0)
+#
+#    geom = pointcloud.PointCloud(current_all, ref_all, epsilon=0.01)  # epsilon = entropic regularization
+#    solver = sinkhorn.Sinkhorn()
+#    out = solver(linear_problem.LinearProblem(geom, a=Q, b=ref_Q))
+#    loss = out.reg_ot_cost # transport cost
+#
+#    return loss, dict()
 
 def sdtw_loss(adcs, ref, dstw):
     # Assumes pixels are already sorted

@@ -8,7 +8,7 @@ import pickle
 import numpy as np
 from .ranges import ranges
 from larndsim.sim_jax import simulate_new, simulate_parametrized, get_size_history
-from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge, sinkhorn_loss
+from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge #, sinkhorn_loss
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
@@ -148,7 +148,7 @@ class ParamFitter:
             "sdtw_adc": (sdtw_adc, {'gamma': 1.}),
             "sdtw_time": (sdtw_time, {'gamma': 1.}),
             "sdtw_time_adc": (sdtw_time_adc, {'gamma': 1., 'alpha': 0.5}),
-            "sinkhorn_loss": (sinkhorn_loss, {})
+            #"sinkhorn_loss": (sinkhorn_loss, {})
         }
 
         # Set up loss function -- can pass in directly, or choose a named one
