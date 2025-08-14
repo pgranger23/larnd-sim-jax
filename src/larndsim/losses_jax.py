@@ -3,9 +3,40 @@ from jax import jit, vmap
 import jax
 from jax.nn import softmax
 from functools import partial
-from larndsim.sim_jax import pad_size, simulate, simulate_parametrized
+from larndsim.sim_jax import pad_size, simulate_new, simulate_parametrized
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
+from ott.geometry import pointcloud
+from ott.problems.linear import linear_problem
+from ott.solvers.linear import sinkhorn
+
+@jit
+def rbf_kernel(x, y, sigma):
+    # Compute pairwise squared Euclidean distances
+    pairwise_dists = jnp.sum((x[:, jnp.newaxis, :] - y[jnp.newaxis, :, :])**2, axis=-1)
+    # Apply the Gaussian kernel
+    return jnp.exp(-pairwise_dists / (2 * sigma**2))
+   
+
+def mmd(x, y, px, py, sigma):
+    K_xx = rbf_kernel(x, x, sigma)
+    K_xy = rbf_kernel(x, y, sigma)
+    K_yy = rbf_kernel(y, y, sigma)
+
+    # Incorporate probabilities into the kernel sums
+    weighted_K_xx = jnp.sum(K_xx * px[:, jnp.newaxis] * px[jnp.newaxis, :])
+    weighted_K_yy = jnp.sum(K_yy * py[:, jnp.newaxis] * py[jnp.newaxis, :])
+    weighted_K_xy = jnp.sum(K_xy * px[:, jnp.newaxis] * py[jnp.newaxis, :])
+
+    # Normalize by the sum of probabilities
+    sum_px = jnp.sum(px)
+    sum_py = jnp.sum(py)
+
+    mmd_sq = (weighted_K_xx / (sum_px ** 2) +
+              weighted_K_yy / (sum_py ** 2) -
+              2 * weighted_K_xy / (sum_px * sum_py))
+
+    return jnp.sqrt(jnp.abs(mmd_sq))
 
 def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     all_pixels = jnp.concatenate([pIDs, pIDs_ref])
@@ -24,8 +55,11 @@ def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     adc_loss = jnp.sum(signals**2)
     return adc_loss, dict()
 
-def mse_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
-    return mse_loss(adcs, pixels, ref, pixels_ref)
+def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event):
+    ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z, ref_Q), axis=-1)
+    stacked = jnp.stack((x + event*1e5, y, z, Q), axis=-1)
+    return mmd(stacked, ref_stacked, hit_prob, ref_hit_prob, 1), dict()
+    # return mse_loss(adcs, pixels, ref, pixels_ref)
 
 def mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
     mask_ref = ref > 0
@@ -176,7 +210,27 @@ def chamfer_distance_3d_og(pos_a, pos_b, w_a, w_b):
     )
     return chamfer_dist, argmin_dists_a_to_b, argmin_dists_b_to_a
 
-def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref, pixel_x_ref, pixel_y_ref, pixel_z_ref, ticks_ref, eventID_ref , adc_norm=1., match_z=False):
+def chamfer_3d(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, adc_norm=10., match_z=False):
+    ref_all = jnp.stack((ref_x + ref_event*1e9, ref_y, ref_z), axis=-1)
+    current_all = jnp.stack((x + event*1e9, y, z), axis=-1)
+
+    new_ref_size, new_cur_size = pad_size((ref_all.shape[0], current_all.shape[0]), "chamfer_3d")
+
+    ref_all = jnp.pad(ref_all, ((0, new_ref_size - ref_all.shape[0]), (0, 0)), mode='constant', constant_values=0)
+    current_all = jnp.pad(current_all, ((0, new_cur_size - current_all.shape[0]), (0, 0)), mode='constant', constant_values=0)
+
+    Q = jnp.pad(Q, (0, new_cur_size - Q.shape[0]), mode='constant', constant_values=0) / adc_norm
+    ref_Q = jnp.pad(ref_Q, (0, new_ref_size - ref_Q.shape[0]), mode='constant', constant_values=0) / adc_norm
+
+    loss, argmin_dists_a_to_b, argmin_dists_b_to_a = chamfer_distance_3d_og(
+        current_all,
+        ref_all,
+        Q,
+        ref_Q
+        )
+    return loss, dict()
+
+def chamfer_3d_old(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref, pixel_x_ref, pixel_y_ref, pixel_z_ref, ticks_ref, eventID_ref , adc_norm=10., match_z=False):
     # normalise the time tick with the same drift velocity (in the current iteration)
     plane = pixel_z < 0 #FIXME store this information in the reference, so it can be properly used.
     drift =  get_hit_z(params, ticks.flatten(), plane.astype(int), fixed_v = True)
@@ -192,8 +246,8 @@ def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref
 
     nb_selected = jnp.count_nonzero(mask)
     nb_selected_ref = jnp.count_nonzero(mask_ref)
-
-    padded_size = pad_size(max(nb_selected, nb_selected_ref), "batch_hits")
+    
+    padded_size = pad_size(max(int(nb_selected), int(nb_selected_ref)), "batch_hits")
 
     eventID_masked = jnp.pad(jnp.repeat(eventID, 10)[mask], (0, padded_size - nb_selected), mode='constant', constant_values=-1e9)
     pixel_x_masked = jnp.pad(jnp.repeat(pixel_x, 10)[mask], (0, padded_size - nb_selected), mode='constant', constant_values=-1e9)
@@ -211,6 +265,26 @@ def chamfer_3d(params, adcs, pixel_x, pixel_y, pixel_z, ticks, eventID, adcs_ref
     loss, argmin_dists_a_to_b, argmin_dists_b_to_a = chamfer_distance_3d_og(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref), axis=-1), adcs_masked, adcs_masked_ref)
     #loss, argmin_dists_a_to_b, argmin_dists_b_to_a = chamfer_distance_3d(jnp.stack((pixel_x_masked + eventID_masked*1e9, pixel_y_masked, drift_masked), axis=-1), jnp.stack((pixel_x_masked_ref + eventID_masked_ref*1e9, pixel_y_masked_ref, drift_masked_ref), axis=-1), adcs_masked, adcs_masked_ref, nhit_ref)
 
+
+    return loss, dict()
+
+def sinkhorn_loss(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event):
+
+    ref_all = jnp.stack((ref_x + ref_event*1e9, ref_y, ref_z), axis=-1)
+    current_all = jnp.stack((x + event*1e9, y, z), axis=-1)
+
+    new_ref_size, new_cur_size = pad_size((ref_all.shape[0], current_all.shape[0]), "chamfer_3d")
+
+    ref_all = jnp.pad(ref_all, ((0, new_ref_size - ref_all.shape[0]), (0, 0)), mode='constant', constant_values=0)
+    current_all = jnp.pad(current_all, ((0, new_cur_size - current_all.shape[0]), (0, 0)), mode='constant', constant_values=0)
+
+    Q = jnp.pad(Q, (0, new_cur_size - Q.shape[0]), mode='constant', constant_values=0)
+    ref_Q = jnp.pad(ref_Q, (0, new_ref_size - ref_Q.shape[0]), mode='constant', constant_values=0)
+
+    geom = pointcloud.PointCloud(current_all, ref_all, epsilon=0.01)  # epsilon = entropic regularization
+    solver = sinkhorn.Sinkhorn()
+    out = solver(linear_problem.LinearProblem(geom, a=Q, b=ref_Q))
+    loss = out.reg_ot_cost # transport cost
 
     return loss, dict()
 
@@ -258,28 +332,31 @@ def adc2charge(dw, params):
     # return in ke
     return (dw / params.ADC_COUNTS * (params.V_REF - params.V_CM) + params.V_CM - params.V_PEDESTAL) / params.GAIN *1E-3
 
-def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
-    adcs, x, y, z, ticks, event, _, _, _, _ = simulate(params, response, tracks, fields, rngkey)
+def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, rngkey=None, loss_fn=mse_adc, **loss_kwargs):
+    adcs, x, y, z, ticks, hit_prob, event, _ = simulate_new(params, response, tracks, fields, rngseed=rngkey)
 
     Q = adc2charge(adcs, params)
     ref_Q = adc2charge(ref_adcs, params)
 
     if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
-        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
+        raise NotImplementedError("🍝 SDTW losses need to be fixed 🍝")
+        # loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
     else:
-        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_event , **loss_kwargs)
+        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event , **loss_kwargs)
 
     return loss_val, aux
 
-def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
-    adcs, x, y, z, ticks, event, _, _, _, _ = simulate_parametrized(params, tracks, fields, rngkey)
+def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
+    adcs, x, y, z, ticks, hit_prob, event, _ = simulate_parametrized(params, tracks, fields, rngkey)
 
     Q = adc2charge(adcs, params)
+    ref_Q = adc2charge(ref_adcs, params)
 
     if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
-        loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
+        raise NotImplementedError("🍝 SDTW losses need to be fixed 🍝")
+        # loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
     else:
-        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, event, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_event , **loss_kwargs)
+        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event , **loss_kwargs)
 
     return loss_val, aux
 

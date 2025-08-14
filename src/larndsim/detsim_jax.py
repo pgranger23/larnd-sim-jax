@@ -101,6 +101,23 @@ def pixel2id(params, pixel_x, pixel_y, pixel_plane, eventID):
     outside = (pixel_x >= params.n_pixels_x) | (pixel_y >= params.n_pixels_y) | (pixel_x < 0) | (pixel_y < 0)
     return jnp.where(outside, -1, pixel_x + params.n_pixels_x * (pixel_y + params.n_pixels_y * (pixel_plane + params.tpc_borders.shape[0]*eventID)))
 
+@jit
+def bin2id(params, bin_x, bin_y, pixel_plane, eventID):
+    """
+    Convert the bin coordinates to a unique identifier
+
+    Args:
+        bin_x (int): bin coordinate in x-dimension
+        bin_y (int): bin coordinate in y-dimension
+        pixel_plane (int): pixel plane number
+        eventID (int): event identifier
+
+    Returns:
+        unique integer id
+    """
+    outside = (bin_x >= params.n_pixels_x*params.nb_sampling_bins_per_pixel) | (bin_y >= params.n_pixels_y*params.nb_sampling_bins_per_pixel) | (bin_x < 0) | (bin_y < 0)
+    return jnp.where(outside, -1, bin_x + params.n_pixels_x*params.nb_sampling_bins_per_pixel * (bin_y + params.n_pixels_y*params.nb_sampling_bins_per_pixel * (pixel_plane + params.tpc_borders.shape[0]*eventID)))
+
 # @annotate_function
 @jit
 def id2pixel(params, pid):
@@ -117,6 +134,22 @@ def id2pixel(params, pid):
     return (pid % params.n_pixels_x, (pid // params.n_pixels_x) % params.n_pixels_y,
             (pid // (params.n_pixels_x * params.n_pixels_y)) % params.tpc_borders.shape[0],
             pid // (params.n_pixels_x * params.n_pixels_y*params.tpc_borders.shape[0]))
+
+@jit
+def id2bin(params, bin_id):
+    """
+    Convert the unique bin identifier to an x,y,plane tuple
+
+    Args:
+        bin_id (int): unique bin identifier
+    Returns:
+        tuple: number of pixel pitches in x-dimension,
+            number of pixel pitches in y-dimension,
+            pixel plane number
+    """
+    return (bin_id % (params.n_pixels_x*params.nb_sampling_bins_per_pixel), (bin_id // (params.n_pixels_x*params.nb_sampling_bins_per_pixel)) % (params.n_pixels_y*params.nb_sampling_bins_per_pixel),
+            (bin_id // ((params.n_pixels_x*params.nb_sampling_bins_per_pixel) * (params.n_pixels_y*params.nb_sampling_bins_per_pixel))) % params.tpc_borders.shape[0],
+            bin_id // ((params.n_pixels_x*params.nb_sampling_bins_per_pixel) * (params.n_pixels_y*params.nb_sampling_bins_per_pixel)*params.tpc_borders.shape[0]))
 
 @jit
 def get_pixel_coordinates(params, xpitch, ypitch, plane):
@@ -154,6 +187,30 @@ def gaussian_1d_integral(bin_edges, std):
     erf_at_borders = erf_at_borders.at[:, 1:-1].set(erf(bin_edges[1:-1] / (jnp.sqrt(2) * std[:, None])))
 
     return 0.5*(erf_at_borders[:, 1:] - erf_at_borders[:, :-1])
+
+def gaussian_1d_integral_new(bin_edges, x0, std):
+    # Use the error function to compute the integral
+
+    calculated_edges = bin_edges - x0
+
+    erf_at_borders = jnp.ones_like(calculated_edges)
+    erf_at_borders = erf_at_borders.at[:, 0].set(-1)
+    erf_at_borders = erf_at_borders.at[:, 1:-1].set(erf(calculated_edges[:, 1:-1] / (jnp.sqrt(2) * std)))
+
+    return 0.5*(erf_at_borders[:, 1:] - erf_at_borders[:, :-1])
+
+@jit
+def density_2d(bins, x0, y0, sigma):
+    """
+    Calculate the 2D density using the Gaussian integral.
+    bins: 1D array of bin edges
+    x0: 1D array of x0 values
+    y0: 1D array of y0 values
+    sigma: 1D array of standard deviations
+    """
+    estimated_x = gaussian_1d_integral_new(bins[None, :], x0[:, None], sigma[:, None])
+    estimated_y = gaussian_1d_integral_new(bins[None, :], y0[:, None], sigma[:, None])
+    return jnp.einsum('ij,ik->ijk', estimated_x, estimated_y)
 
 @partial(jit, static_argnames=['fields'])
 def apply_tran_diff(params, electrons, fields):
@@ -289,12 +346,37 @@ def get_pixels(params, electrons, fields):
     shifts = jnp.vstack([X.ravel(), Y.ravel()]).T
     pixels = pixels_int[:, jnp.newaxis, :] + shifts[jnp.newaxis, :, :]
 
-    if "eventID" in fields:
-        evt_id = "eventID"
-    else:
-        evt_id = "event_id"
+    return pixel2id(params, pixels[:, :, 0], pixels[:, :, 1], electrons[:, fields.index("pixel_plane")].astype(int)[:, jnp.newaxis], electrons[:, fields.index("eventID")].astype(int)[:, jnp.newaxis])
 
-    return pixel2id(params, pixels[:, :, 0], pixels[:, :, 1], electrons[:, fields.index("pixel_plane")].astype(int)[:, jnp.newaxis], electrons[:, fields.index(evt_id)].astype(int)[:, jnp.newaxis])
+@partial(jit, static_argnames=['fields'])
+def get_bin_shifts(params, electrons, fields):
+    """
+    Compute the bin shifts for the electrons based on their positions.
+    Args:
+        params: Detector parameters.
+        electrons (jnp.ndarray): Array of electrons with fields including 'x', 'y', 'pixel_plane'.
+        fields: List of field names in the electrons array.
+    Returns:
+        bin_shifts (jnp.ndarray): Array of bin shifts for each electron.
+    """
+
+    borders = params.tpc_borders[electrons[:, fields.index("pixel_plane")].astype(int)]
+    pos = jnp.stack([(electrons[:, fields.index("x")] - borders[:, 0, 0]),
+            (electrons[:, fields.index("y")] - borders[:, 1, 0])], axis=1) // (params.pixel_pitch / params.nb_sampling_bins_per_pixel)
+
+    # Compute the bin IDs
+    bin_shifts = pos.astype(int)
+
+    return bin_shifts
+
+
+@partial(jit, static_argnames=['fields'])
+def get_bin_id(params, electrons, fields):
+
+    bin_shifts = get_bin_shifts(params, electrons, fields)
+
+    return bin2id(params, bin_shifts[..., 0], bin_shifts[..., 1], electrons[:, fields.index("pixel_plane")].astype(int), electrons[:, fields.index("eventID")].astype(int))
+
 
 # @annotate_function
 @jit

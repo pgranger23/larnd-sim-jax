@@ -258,7 +258,7 @@ class SoftDTW(CostFn):
       n, m = m, n
 
     model_matrix = jnp.full((n + m - 1, n), fill_value=1e10)
-    mask = np.tri(n + m - 1, n, k=0, dtype=bool)
+    mask = jnp.tri(n + m - 1, n, k=0, dtype=bool)
     mask = mask & mask[::-1, ::-1]
     model_matrix = model_matrix.T.at[mask.T].set(dist.ravel()).T
 

@@ -17,6 +17,41 @@ Gradient and loss scan (no-noise, long diff in current calc) avg
    :align: center
 
 
+LUT Scan results
+----------------
+
+.. image:: scan-lut-plots/gradient_scan.png
+   :alt: LUT scan result
+   :align: center
+
+.. image:: scan-lut-plots/gradient_scan_avg.png
+   :alt: LUT scan result avg
+   :align: center
+
+
+Fit Plots
+----------------
+
+.. image:: fit-plots/eField_fit.png
+   :alt: eField fit plot
+   :align: center
+
+.. image:: fit-plots/loss_fit.png
+   :alt: Loss fit plot
+   :align: center
+
+
+LUT Fit Plots
+----------------
+
+.. image:: fit-lut-plots/eField_fit.png
+   :alt: LUT eField fit plot
+   :align: center
+
+.. image:: fit-lut-plots/loss_fit.png
+   :alt: LUT Loss fit plot
+   :align: center
+
 .. Some debug plots
 .. ----------------
 
