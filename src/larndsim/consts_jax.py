@@ -7,9 +7,14 @@ import yaml
 from flax import struct
 import jax
 import jax.numpy as jnp
+from jax.scipy.stats import norm
 import dataclasses
 from types import MappingProxyType
 from collections import defaultdict
+
+import logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 @dataclasses.dataclass
 class Params_template:
@@ -100,7 +105,7 @@ class Params_template:
     number_pix_neighbors: int = struct.field(pytree_node=False)
     electron_sampling_resolution: float = struct.field(pytree_node=False)
     signal_length: float = struct.field(pytree_node=False)
-    tran_diff_bin_edges: jax.Array = struct.field(pytree_node=False)
+
     response_full_drift_t: float = struct.field(pytree_node=False)
     #: Maximum number of ADC values stored per pixel
     MAX_ADC_VALUES: int = struct.field(pytree_node=False)
@@ -138,6 +143,14 @@ class Params_template:
     size_margin: float = struct.field(pytree_node=False)
     diffusion_in_current_sim: bool = struct.field(pytree_node=False, default=True)
     mc_diff: bool = struct.field(pytree_node=False, default=False)
+    nb_sampling_bins_per_pixel: int = struct.field(pytree_node=False, default=10)
+    long_diff_template: jax.Array = struct.field(pytree_node=False, default=None)
+    long_diff_extent: int = struct.field(pytree_node=False, default=20)
+    roi_threshold: float = struct.field(pytree_node=False, default=0.01)  # Threshold for region of interest selection
+    roi_split_length: int = struct.field(pytree_node=False, default=400)  # Length of the region of interest split
+    fee_paths_scaling: int = struct.field(pytree_node=False, default=20)  # Scaling factor for fee paths
+    nb_tran_diff_bins: int = struct.field(pytree_node=False, default=5)
+    hit_prob_threshold: float = struct.field(pytree_node=False, default=1e-5)  # Threshold for hit probability
 
 def build_params_class(params_with_grad):
     """
@@ -197,7 +210,7 @@ def get_vdrift(params):
     #return params.eField
 
 
-def load_detector_properties(params_cls, detprop_file, pixel_file, lut_file=""):
+def load_detector_properties(params_cls, detprop_file, pixel_file):
     """
     Loads detector properties and pixel geometry from YAML files and initializes a parameter class.
     This function reads detector and pixel layout properties from the provided YAML files,
@@ -267,15 +280,16 @@ def load_detector_properties(params_cls, detprop_file, pixel_file, lut_file=""):
         "UNCORRELATED_NOISE_CHARGE": 500,
         "ELECTRON_MOBILITY_PARAMS": (551.6, 7158.3, 4440.43, 4.29, 43.63, 0.2053),
         "size_margin": 2e-2,
-        "tran_diff_bin_edges": jnp.linspace(-0.22, 0.22, 6),
         "diffusion_in_current_sim": True,
         "mc_diff": False,
-        "tpc_centers": np.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
-        "response_full_drift_t": 190.61638
+        "tpc_centers": jnp.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
+        "response_full_drift_t": 190.61638,
+        "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
+        "long_diff_template": jnp.linspace(0.001, 10, 100), # Placeholder for long diffusion template
+        "long_diff_extent": 20
     }
 
     mm2cm = 0.1
-    params_dict['tpc_borders'] = np.zeros((0, 3, 2))
     params_dict['tile_borders'] = np.zeros((2,2))
 
     with open(detprop_file) as df:
@@ -310,13 +324,6 @@ def load_detector_properties(params_cls, detprop_file, pixel_file, lut_file=""):
     tpcs = np.unique(params_dict['tile_positions'][:,0])
     params_dict['tpc_borders'] = np.zeros((len(tpcs), 3, 2))
 
-    if lut_file != "":
-        response = np.load(lut_file)
-        try:
-            response.keys()
-            params_dict['response_full_drift_t'] = response['drift_length'] / params_dict['vdrift_static']
-        except:
-            print("The response lut does not contain drift length information.")
     tile_indeces = tile_layout['tile_indeces']
     tpc_ids = np.unique(np.array(list(tile_indeces.values()))[:,0], axis=0)
 
@@ -368,12 +375,67 @@ def load_detector_properties(params_cls, detprop_file, pixel_file, lut_file=""):
     filtered_dict = {key: value for key, value in params_dict.items() if key in params_cls.__match_args__}
     return params_cls(**filtered_dict)
 
-def load_lut(lut_file):
-    response = np.load(lut_file)
-    try:
-        response.keys()
-        return response['response']
-    except:
-        return response
+def load_lut(lut_file, params):
+    """
+    Loads a lookup table (LUT) from a file and processes it to create a response template for simulation.
+    This function reads a LUT file, which can be in `.npz` or `.npy` format, and extracts the response data.
+    It then applies a Gaussian convolution to the response data to create a response template that can be
+    used in simulations. The Gaussian template is normalized and reshaped to match the expected output format.
+    Args:
+        lut_file (str): Path to the LUT file, which can be in `.npz` or `.npy` format.
+        params (Params): An instance of the `Params` class containing simulation parameters.
+    Returns:
+        jax.Array: A response template created by applying a Gaussian convolution to the LUT response data.
+        updated_params (Params): The updated parameters including any new values extracted from the LUT.
+    Raises:
+        ValueError: If the LUT file format is unsupported or if the expected keys are not found in the response.
+    Notes:
+        - The function assumes that the LUT file contains a key named 'response' for the response data.
+        - The Gaussian template is created based on the `long_diff_template` and `long_diff_extent` parameters from the `Params` instance.
+        - The convolution is performed using JAX's `jax.numpy.convolve` function, and the output is reshaped to match the expected dimensions.
+    """
 
+    updated_params = params.replace()
+
+    response = np.load(lut_file)
+    if isinstance(response, np.lib.npyio.NpzFile):
+        logger.info("Loading response from npz file")
+        if 'response' in response:
+            response = response['response']
+        else:
+            raise ValueError("No 'response' key found in the npz file.")
+        if 'drift_length' in response:
+            response_full_drift_t = response['drift_length'] / params['vdrift_static']
+        else:
+            logger.warning("Drift length not found in LUT infos, using default value.")
+            response_full_drift_t = params.response_full_drift_t
+        updated_params = updated_params.replace(response_full_drift_t=response_full_drift_t)
+    elif isinstance(response, np.ndarray):
+        logger.info("Loading response from numpy array")
+    else:
+        raise ValueError("Unsupported response format. Expected npz or numpy array.")
+
+    gaus = norm.pdf(jnp.arange(-params.long_diff_extent, params.long_diff_extent + 1, 1), scale=params.long_diff_template[:, None])  # Create Gaussian template TEST
+    gaus = gaus / jnp.sum(gaus, axis=1, keepdims=True)  # Normalize the Gaussian
+
+
+    conv = lambda x, y: jnp.convolve(x, y, mode='same')
+
+    batched_conv_last_axis = jax.vmap(conv, in_axes=(0, None))
+
+    # Vectorize again to apply the convolution to each kernel in the batch
+    batched_conv_kernels = jax.vmap(batched_conv_last_axis, in_axes=(None, 0))
+
+    # Reshape the input array to combine the first two dimensions for easier processing
+    input_reshaped = jnp.reshape(response, (-1, response.shape[-1]))
+
+    # Apply the batched convolution
+    output_reshaped = batched_conv_kernels(input_reshaped, gaus)
+
+    # Reshape the output back to the desired shape (41, 45, 45, 1950)
+    response_template = jnp.reshape(output_reshaped, (gaus.shape[0], *response.shape))
+
+    response_template = response_template.at[0].set(response) # Assuming the first element corresponds to no diffusion
+
+    return response_template, updated_params
     # return np.cumsum(response, axis=-1)
