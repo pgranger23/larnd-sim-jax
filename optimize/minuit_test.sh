@@ -45,6 +45,7 @@ python3 -m optimize.example_run \
     --loss_fn ${LOSS} \
     --fit_type 'minuit' \
     --cpu_only \
+    --clip_from_range \
     --mc_diff
 #    --read_target
 
