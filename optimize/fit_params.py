@@ -853,6 +853,7 @@ class MinuitFitter(ParamFitter):
 
                     _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=False)
                     avg_grad = [getattr(grads, key) + avg_grad[i] for i, key in enumerate(self.relevant_params_list)]
+                print([g/len(dataloader_sim) for g in avg_grad])
                 return [g/len(dataloader_sim) for g in avg_grad]
 
             self.configure_minimizer(loss_wrapper, grad_wrapper)
