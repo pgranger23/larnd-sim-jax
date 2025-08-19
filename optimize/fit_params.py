@@ -353,7 +353,6 @@ class ParamFitter:
         return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event
 
     def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=True, with_grad=True, epoch=0):
-        print(self.current_params.eField)
         if self.probabilistic_sim:
             rngkey = None
         else:
@@ -802,14 +801,18 @@ class MinuitFitter(ParamFitter):
 
                 def loss_wrapper(args): # type: ignore
                     # Update the current params with the new values
+                    logger.debug(f"Loss wrapper called with args: {args}")
                     self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
                     loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_grad=False)
+                    logger.debug(f"Loss value: {loss_val}")
                     return loss_val
 
                 def grad_wrapper(args): # type: ignore
                     # Update the current params with the new values
+                    logger.debug(f"Grad wrapper called with args: {args}")
                     self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
                     _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=False)
+                    logger.debug(f"Gradients: {[getattr(grads, key) for key in self.relevant_params_list]}")
                     return [getattr(grads, key) for key in self.relevant_params_list]
 
                 self.configure_minimizer(loss_wrapper, grad_wrapper)
@@ -853,7 +856,6 @@ class MinuitFitter(ParamFitter):
 
                     _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=False)
                     avg_grad = [getattr(grads, key) + avg_grad[i] for i, key in enumerate(self.relevant_params_list)]
-                print([g/len(dataloader_sim) for g in avg_grad])
                 return [g/len(dataloader_sim) for g in avg_grad]
 
             self.configure_minimizer(loss_wrapper, grad_wrapper)
