@@ -16,7 +16,7 @@ from optimize.dataio import chop_tracks
 from larndsim.consts_jax import get_vdrift
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 size_history_dict = {}
 
