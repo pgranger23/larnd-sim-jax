@@ -746,7 +746,7 @@ class MinuitFitter(ParamFitter):
         self.minimizer.tol = (  # stopping value, EDM < tol
             self.minimizer_tol / 0.002 / 1  # iminuit multiplies by default with 0.002
         )
-        self.minimizer.print_level = 2  # 0, 1 or 2. Verbosity level
+        self.minimizer.print_level = 3  # 0, 1 or 2. Verbosity level
 
     def prepare_fit(self):
         self.training_history["minuit_result"] = []
