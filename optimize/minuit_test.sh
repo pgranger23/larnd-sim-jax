@@ -8,7 +8,7 @@ BATCH_SIZE=100
 ITERATIONS=10
 MAX_CLIP_NORM_VAL=1
 DATA_SEED=1
-LOSS=chamfer_3d
+LOSS=mse_adc
 
 ### proton 5000 events
 INPUT_FILE_TGT=prepared_data/input_1.h5
