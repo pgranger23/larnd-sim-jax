@@ -36,7 +36,8 @@ def mmd(x, y, px, py, sigma):
               weighted_K_yy / (sum_py ** 2) -
               2 * weighted_K_xy / (sum_px * sum_py))
 
-    return jnp.sqrt(jnp.abs(mmd_sq))
+    return mmd_sq
+    #return jnp.sqrt(jnp.abs(mmd_sq))
 
 def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     all_pixels = jnp.concatenate([pIDs, pIDs_ref])
