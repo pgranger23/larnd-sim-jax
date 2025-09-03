@@ -87,8 +87,11 @@ def main(config):
     tracks_dataloader_sim = DataLoader(dataset_sim,
                                   shuffle=config.data_shuffle, 
                                   batch_size=batch_sz)
+    sim_track_fields = dataset_sim.get_track_fields()
+    tgt_track_fields = dataset_sim.get_track_fields()
 
     if not config.read_target:
+        tgt_track_fields = dataset_target.get_track_fields()
         tracks_dataloader_target = DataLoader(dataset_target,
                                       shuffle=config.data_shuffle,
                                       batch_size=batch_sz)
@@ -103,7 +106,8 @@ def main(config):
     logger.info(f"Param list: {param_list}")
 
     if config.fit_type == "chain":
-        param_fit = GradientDescentFitter(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
+        param_fit = GradientDescentFitter(relevant_params=param_list,
+                                sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 lr=config.lr, readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
                                 readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
@@ -120,7 +124,8 @@ def main(config):
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 probabilistic_target=config.probabilistic_target)
     elif config.fit_type == "scan":
-        param_fit = LikelihoodProfiler(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
+        param_fit = LikelihoodProfiler(relevant_params=param_list,
+                                sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
                                 readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
@@ -134,7 +139,8 @@ def main(config):
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 scan_tgt_nom=config.scan_tgt_nom, probabilistic_target=config.probabilistic_target)
     elif config.fit_type == "minuit":
-        param_fit = MinuitFitter(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
+        param_fit = MinuitFitter(relevant_params=param_list,
+                                sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
                                 readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
