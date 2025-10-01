@@ -305,8 +305,8 @@ def simulate_drift_new(params, tracks, fields):
 
     nb_tran_diff_bins = params.nb_tran_diff_bins
     nb_tran_diff_bins_sym = (nb_tran_diff_bins - 1) // 2
-    bins = jnp.linspace(-nb_tran_diff_bins*params.pixel_pitch/params.nb_sampling_bins_per_pixel,
-                        nb_tran_diff_bins*params.pixel_pitch/params.nb_sampling_bins_per_pixel,
+    bins = jnp.linspace(-(nb_tran_diff_bins/2)*params.pixel_pitch/params.nb_sampling_bins_per_pixel,
+                        (nb_tran_diff_bins/2)*params.pixel_pitch/params.nb_sampling_bins_per_pixel,
                         nb_tran_diff_bins + 1)
     x0 = main_electrons[:, fields.index("x")] % (params.pixel_pitch/params.nb_sampling_bins_per_pixel)
     y0 = main_electrons[:, fields.index("y")] % (params.pixel_pitch/params.nb_sampling_bins_per_pixel)

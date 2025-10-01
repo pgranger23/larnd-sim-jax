@@ -63,7 +63,7 @@ def remove_noise_from_params(params):
     return params.replace(**{key: 0. for key in noise_params})
 
 class ParamFitter:
-    def __init__(self, relevant_params, track_fields,
+    def __init__(self, relevant_params, sim_track_fields, tgt_track_fields,
                  detector_props, pixel_layouts,
                  loss_fn=None, loss_fn_kw=None, readout_noise_target=True, readout_noise_guess=False, 
                  out_label="", test_name="this_test",
@@ -102,8 +102,9 @@ class ParamFitter:
         self.probabilistic_target = probabilistic_target
         self.probabilistic_sim = probabilistic_sim
 
-        self.track_fields = track_fields
-        if 'eventID' in self.track_fields:
+        self.sim_track_fields = sim_track_fields
+        self.tgt_track_fields = tgt_track_fields
+        if 'eventID' in self.sim_track_fields:
             self.evt_id = 'eventID'
             self.trj_id = 'trackID'
         else:
@@ -312,9 +313,9 @@ class ParamFitter:
                         rngseed = None
                     else:
                         rngseed = i+1
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_new(self.target_params, self.response, target, self.track_fields, rngseed) #Setting a different random seed for each target
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_new(self.target_params, self.response, target, self.tgt_track_fields, rngseed) #Setting a different random seed for each target
                 else:
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_parametrized(self.target_params, target, self.track_fields, i+1) #Setting a different random seed for each target
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_parametrized(self.target_params, target, self.tgt_track_fields, i+1) #Setting a different random seed for each target
 
                 if self.compute_target_hessian:
                     logger.error("Computing target hessian is not implemented yet")
@@ -375,18 +376,18 @@ class ParamFitter:
         # Simulate and get output
         if self.current_mode == 'lut':
             if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_loss:
-                loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_grad:
-                grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
         else:
             if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_loss:
-                loss_val, aux = params_loss_parametrized(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                loss_val, aux = params_loss_parametrized(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_grad:
-                grads, aux = grad(params_loss_parametrized, (0), has_aux=True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                grads, aux = grad(params_loss_parametrized, (0), has_aux=True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
         return loss_val, grads, aux
     
     def prepare_fit(self):
@@ -456,13 +457,21 @@ class GradientDescentFitter(ParamFitter):
             else:
                 if lr_scheduler_fn == optax.constant_schedule:
                     self.learning_rates = {par: lr_scheduler_fn(lr) for par in self.relevant_params_list}
-                else:
+                elif lr_scheduler_fn == optax.exponential_decay:
                     self.learning_rates = {par: lr_scheduler_fn(lr, transition_steps=epoch_size, staircase=True, **lr_kw) for par in self.relevant_params_list}
+                elif lr_scheduler_fn == optax.warmup_exponential_decay_schedule:
+                    self.learning_rates = {par: lr_scheduler_fn(peak_value=lr, transition_steps=epoch_size, staircase=True, **lr_kw) for par in self.relevant_params_list}
+                else:
+                    raise ValueError("The specified optimizer schedules are not yet supported")
         else:
             if lr_scheduler_fn == optax.constant_schedule:
                 self.learning_rates = {key: lr_scheduler_fn(float(value)) for key, value in self.relevant_params_dict.items()}
-            else:
+            elif lr_scheduler_fn == optax.exponential_decay:
                 self.learning_rates = {key: lr_scheduler_fn(float(value), transition_steps=epoch_size, staircase=True, **lr_kw) for key, value in self.relevant_params_dict.items()}
+            elif lr_scheduler_fn == optax.warmup_exponential_decay_schedule:
+                self.learning_rates = {key: lr_scheduler_fn(peak_value=float(value), transition_steps=epoch_size, staircase=True, **lr_kw) for key, value in self.relevant_params_dict.items()}
+            else:
+                raise ValueError("The specified optimizer schedules are not yet supported")
 
         
         # Set up optimizer -- can pass in directly, or construct as SGD from relevant params and/or lr
@@ -548,13 +557,13 @@ class GradientDescentFitter(ParamFitter):
                     start_time = time()
 
                     # sim
-                    selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.track_fields))
+                    selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                    evts_sim = jnp.unique(selected_tracks_sim[:, self.track_fields.index(self.evt_id)])
+                    evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
 
                     # target
                     if not self.read_target:
-                        selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
+                        selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
                         this_target = jax.device_put(selected_tracks_bt_tgt)
                     else:
                         this_target = target
@@ -661,13 +670,13 @@ class LikelihoodProfiler(ParamFitter):
             logger.info(f"Batch {i}/{len(target)}")
 
             # sim
-            selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.track_fields))
+            selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
             selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-            evts_sim = jnp.unique(selected_tracks_sim[:, self.track_fields.index(self.evt_id)])
+            evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
 
             # target
             if not self.read_target:
-                selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
+                selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
                 this_target = jax.device_put(selected_tracks_bt_tgt)
             else:
                 this_target = target
@@ -774,7 +783,7 @@ class MinuitFitter(ParamFitter):
 
         def get_target(self, i, evts_sim, target):
             if not self.read_target:
-                selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
+                selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
                 this_target = jax.device_put(selected_tracks_bt_tgt)
             else:
                 this_target = target
@@ -787,13 +796,13 @@ class MinuitFitter(ParamFitter):
                 start_time = time()
 
                 # sim
-                selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.track_fields))
+                selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
                 selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                evts_sim = jnp.unique(selected_tracks_sim[:, self.track_fields.index(self.evt_id)])
+                evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
 
                 # target
                 if not self.read_target:
-                    selected_tracks_bt_tgt = target[i].reshape(-1, len(self.track_fields))
+                    selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
                     this_target = jax.device_put(selected_tracks_bt_tgt)
                 else:
                     this_target = target
@@ -828,9 +837,9 @@ class MinuitFitter(ParamFitter):
                 avg_loss = 0
                 for i in range(len(dataloader_sim)):
                     # sim
-                    selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.track_fields))
+                    selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                    evts_sim = jnp.unique(selected_tracks_sim[:, self.track_fields.index(self.evt_id)])
+                    evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
 
                     # target
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = get_target(self, i, evts_sim, target)
@@ -847,9 +856,9 @@ class MinuitFitter(ParamFitter):
                 avg_grad = [0 for _ in range(len(self.relevant_params_list))]
                 for i in range(len(dataloader_sim)):
                     # sim
-                    selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.track_fields))
+                    selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                    evts_sim = jnp.unique(selected_tracks_sim[:, self.track_fields.index(self.evt_id)])
+                    evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
 
                     # target
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = get_target(self, i, evts_sim, target)
