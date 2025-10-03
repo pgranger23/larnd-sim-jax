@@ -8,7 +8,7 @@ BATCH_SIZE=200
 ITERATIONS=200
 MAX_CLIP_NORM_VAL=1
 DATA_SEED=1
-LOSS=chamfer_3d
+LOSS=mse_adc
 
 ### proton 5000 events
 INPUT_FILE_TGT=prepared_data/input_1.h5
@@ -55,8 +55,9 @@ if [ "$LUT" = TRUE ]; then
         --lr_scheduler exponential_decay \
         --lr_kw '{"decay_rate" : 0.97}' \
         --track_z_bound 28 \
-        --lut_file src/larndsim/detector_properties/response_44.npy \
+        --lut_file src/larndsim/detector_properties/response_44_v2a_full_tick.npz \
         --max_clip_norm_val ${MAX_CLIP_NORM_VAL} \
+	--clip_from_range \
         --electron_sampling_resolution 0.01 \
         --number_pix_neighbors 2 \
         --signal_length 150 \
@@ -90,6 +91,7 @@ else
         --lr_kw '{"decay_rate" : 0.97}' \
         --track_z_bound 28 \
         --max_clip_norm_val ${MAX_CLIP_NORM_VAL} \
+	--clip_from_range \
         --electron_sampling_resolution 0.01 \
         --number_pix_neighbors 0 \
         --signal_length 150 \

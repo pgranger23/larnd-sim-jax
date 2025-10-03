@@ -264,12 +264,13 @@ if __name__ == '__main__':
     parser.add_argument('--diffusion_in_current_sim', action='store_true', help='Use diffusion in current simulation')
     parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'different_epoch', 'random', 'constant'],
                         help='Strategy to choose the seed for the simulation (the seed for target is the batch id). It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs), "different_epoch" (different for target and sim, and in the simulation the key is different per epoch)"random" (different between target and sim and random across epochs), "constant" (the seed is constant across batches).')
-    parser.add_argument('--chamfer_adc_norm', default=10., type=float, help='ADC normalisation wrt to position (cm)')
+    parser.add_argument('--chamfer_adc_norm', default=1., type=float, help='ADC normalisation wrt to position (cm)')
     parser.add_argument('--chamfer_match_z', default=False, action="store_true", help='match z (converted using the iterated simulation v_drift value for both the target and simulation) instead of t')
     parser.add_argument('--mc_diff', default=False, action="store_true", help='Use MC diffusion')
     parser.add_argument('--live_selection', default=False, action="store_true", help='Whether to run live selection or not')
     parser.add_argument('--read_target', default=False, action="store_true", help='read data(-like) target')
     parser.add_argument('--probabilistic-target', default=False, action="store_true", help='Use probabilistic target (for scan)')
+    parser.add_argument('--probabilistic-sim', default=False, action="store_true", help='Use probabilistic sim')
 
     try:
         args = parser.parse_args()

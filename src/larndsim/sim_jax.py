@@ -16,7 +16,7 @@ from optimize.dataio import chop_tracks
 from larndsim.consts_jax import get_vdrift
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 size_history_dict = {}
 
@@ -502,7 +502,7 @@ def fee_sim_from_split(params, padded_small_nb, padded_large_nb, wfs, mask_small
 
     return integral, ticks, hit_prob
 
-def simulate_new(params, response_template, tracks, fields, rngseed=None):
+def simulate_new(params, response_template, tracks, fields, rngseed=None, save_wfs=False):
     """
     Simulates the signal from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
     Args:
@@ -579,7 +579,10 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None):
 
     adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, nb_valid = parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
 
-    return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid]
+    if save_wfs:
+        return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid], wfs
+    else:
+        return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid]
 
 
 def prepare_tracks(params, tracks_file, invert_xz=True):

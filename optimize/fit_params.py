@@ -8,7 +8,7 @@ import pickle
 import numpy as np
 from .ranges import ranges
 from larndsim.sim_jax import simulate_new, simulate_parametrized, get_size_history
-from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge
+from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge #, sinkhorn_loss
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
@@ -70,11 +70,12 @@ class ParamFitter:
                  shift_no_fit=[], set_target_vals=[], vary_init=False, keep_in_memory=False,
                  compute_target_hessian=False, sim_seed_strategy="different",
                  target_seed=0, target_fixed_range=None,
-                 adc_norm=10, match_z=True,
+                 adc_norm=1, match_z=True,
                  diffusion_in_current_sim=False,
                  mc_diff = False,
                  read_target=False,
                  probabilistic_target=False,
+                 probabilistic_sim=False,
                  config = {}):
 
         self.read_target = read_target
@@ -99,6 +100,7 @@ class ParamFitter:
         self.number_pix_neighbors = config.number_pix_neighbors
         self.signal_length = config.signal_length
         self.probabilistic_target = probabilistic_target
+        self.probabilistic_sim = probabilistic_sim
 
         self.track_fields = track_fields
         if 'eventID' in self.track_fields:
@@ -145,7 +147,8 @@ class ParamFitter:
             "chamfer_3d": (chamfer_3d, {'adc_norm': adc_norm, 'match_z': match_z}),
             "sdtw_adc": (sdtw_adc, {'gamma': 1.}),
             "sdtw_time": (sdtw_time, {'gamma': 1.}),
-            "sdtw_time_adc": (sdtw_time_adc, {'gamma': 1., 'alpha': 0.5})
+            "sdtw_time_adc": (sdtw_time_adc, {'gamma': 1., 'alpha': 0.5}),
+            #"sinkhorn_loss": (sinkhorn_loss, {})
         }
 
         # Set up loss function -- can pass in directly, or choose a named one
@@ -221,15 +224,18 @@ class ParamFitter:
 
         self.current_params = ref_params.replace(**initial_params)
 
-        #Only do it now to not inpact current_params
-        if not self.readout_noise_guess:
-            logger.info("Not simulating electronics noise for guesses")
-            self.current_params = remove_noise_from_params(self.current_params)
-
         self.ref_params = ref_params
 
         self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
         self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
+
+        #Only do it now to not inpact current_params (ref_params?)
+        #FIXME It's a problem if the noise parameters are to be fitted
+        if not self.readout_noise_guess:
+            logger.info("Not simulating electronics noise for guesses")
+            self.current_params = remove_noise_from_params(self.current_params)
+            self.params_normalization = remove_noise_from_params(self.params_normalization)
+            self.norm_params = remove_noise_from_params(self.norm_params)
 
     def update_params(self):
         self.current_params = self.norm_params.replace(**{key: getattr(self.norm_params, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list})
@@ -347,18 +353,21 @@ class ParamFitter:
         return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event
 
     def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=True, with_grad=True, epoch=0):
-        if self.sim_seed_strategy == "same":
-            rngkey = i + 1
-        elif self.sim_seed_strategy == "different":
-            rngkey = -i - 1 #Need some offset otherwise batch 0 has same seed
-        elif self.sim_seed_strategy == "different_epoch":
-            rngkey = -i - 1 - epoch * 10000
-        elif self.sim_seed_strategy == "random":
-            rngkey = np.random.randint(0, 1000000)
-        elif self.sim_seed_strategy == "constant":
-            rngkey = 0
+        if self.probabilistic_sim:
+            rngkey = None
         else:
-            raise ValueError("Unknown sim_seed_strategy. Must be same, different or random")
+            if self.sim_seed_strategy == "same":
+                rngkey = i + 1
+            elif self.sim_seed_strategy == "different":
+                rngkey = -i - 1 #Need some offset otherwise batch 0 has same seed
+            elif self.sim_seed_strategy == "different_epoch":
+                rngkey = -i - 1 - epoch * 10000
+            elif self.sim_seed_strategy == "random":
+                rngkey = np.random.randint(0, 1000000)
+            elif self.sim_seed_strategy == "constant":
+                rngkey = 0
+            else:
+                raise ValueError("Unknown sim_seed_strategy. Must be same, different or random")
 
         assert(with_loss or with_grad)
         loss_val, grads, aux = None, None, None
@@ -366,11 +375,11 @@ class ParamFitter:
         # Simulate and get output
         if self.current_mode == 'lut':
             if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_loss:
-                loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_grad:
-                grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
         else:
             if with_loss and with_grad:
                 (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
@@ -585,7 +594,7 @@ class GradientDescentFitter(ParamFitter):
                     if 'cuda' in jax.devices():
                         self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
 
-                    if iterations is not None and total_iter == (iterations-1):
+                    if iterations is not None:
                         if total_iter % print_freq == 0:
                             for param in self.relevant_params_list:
                                 logger.info(f"{param} {getattr(self.current_params,param)} {modified_grads[param]}")
@@ -748,7 +757,7 @@ class MinuitFitter(ParamFitter):
         self.minimizer.tol = (  # stopping value, EDM < tol
             self.minimizer_tol / 0.002 / 1  # iminuit multiplies by default with 0.002
         )
-        self.minimizer.print_level = 2  # 0, 1 or 2. Verbosity level
+        self.minimizer.print_level = 3  # 0, 1 or 2. Verbosity level
 
     def prepare_fit(self):
         self.training_history["minuit_result"] = []
@@ -823,7 +832,9 @@ class MinuitFitter(ParamFitter):
         else:
             # Joint fit
             def loss_wrapper(args):
+                logger.debug(f"Loss wrapper called with args: {args}")
                 # Update the current params with the new values
+
                 self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
                 avg_loss = 0
                 for i in range(len(dataloader_sim)):
@@ -837,9 +848,11 @@ class MinuitFitter(ParamFitter):
 
                     loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_grad=False, with_loss=True)
                     avg_loss += loss_val # type: ignore
+                logger.debug(f"Average loss: {avg_loss/len(dataloader_sim)}")
                 return avg_loss/len(dataloader_sim)
             
             def grad_wrapper(args):
+                logger.debug(f"Grad wrapper called with args: {args}")
                 # Update the current params with the new values
                 self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
                 avg_grad = [0 for _ in range(len(self.relevant_params_list))]
@@ -854,6 +867,7 @@ class MinuitFitter(ParamFitter):
 
                     _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=False)
                     avg_grad = [getattr(grads, key) + avg_grad[i] for i, key in enumerate(self.relevant_params_list)]
+                logger.debug(f"Average gradient: {[g/len(dataloader_sim) for g in avg_grad]}")
                 return [g/len(dataloader_sim) for g in avg_grad]
 
             self.configure_minimizer(loss_wrapper, grad_wrapper)
