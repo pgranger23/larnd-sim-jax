@@ -61,14 +61,23 @@ def main(config):
             max_nbatch = iterations
 
     dataset_sim = TracksDataset(filename=config.input_file_sim, ntrack=config.data_sz, max_nbatch=max_nbatch, seed=config.data_seed, random_ntrack=config.random_ntrack, 
-                            track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, electron_sampling_resolution=config.electron_sampling_resolution)
+                            track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, electron_sampling_resolution=config.electron_sampling_resolution, live_selection=config.live_selection)
 
-    dataset_target = TracksDataset(filename=config.input_file_tgt, ntrack=config.data_sz, max_nbatch=max_nbatch, seed=config.data_seed, random_ntrack=config.random_ntrack,
-                            track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, electron_sampling_resolution=config.electron_sampling_resolution)
+    if ".np" in config.input_file_tgt:
+        if not config.read_target:
+            logger.warning("read_target is not activated but a ready target are provided. Changing read_target to TRUE")
+            config.read_target = True
+    elif ".h5" in config.input_file_tgt or ".hdf5" in config.input_file_tgt:
+        if config.read_target:
+            logger.warning("read_target is activated but target is provided as a simulation input. Changing read_target to FALSE")
+            config.read_target = False
+    if not config.read_target:
+        dataset_target = TracksDataset(filename=config.input_file_tgt, ntrack=config.data_sz, max_nbatch=max_nbatch, seed=config.data_seed, random_ntrack=config.random_ntrack,
+                                track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, electron_sampling_resolution=config.electron_sampling_resolution, live_selection=config.live_selection)
 
-    # check if the track in sim and target are consistent
-    if len(dataset_sim) != len(dataset_target):
-        raise Exception("target and sim inpputs are different in size.")
+        # check if the track in sim and target are consistent
+        if len(dataset_sim) != len(dataset_target):
+            raise Exception("target and sim inpputs are different in size.")
 
     batch_sz = config.batch_sz
     if config.max_batch_len is not None and batch_sz != 1:
@@ -78,14 +87,18 @@ def main(config):
     tracks_dataloader_sim = DataLoader(dataset_sim,
                                   shuffle=config.data_shuffle, 
                                   batch_size=batch_sz)
+    sim_track_fields = dataset_sim.get_track_fields()
+    tgt_track_fields = dataset_sim.get_track_fields()
 
-    tracks_dataloader_target = DataLoader(dataset_target,
-                                  shuffle=config.data_shuffle,
-                                  batch_size=batch_sz)
+    if not config.read_target:
+        tgt_track_fields = dataset_target.get_track_fields()
+        tracks_dataloader_target = DataLoader(dataset_target,
+                                      shuffle=config.data_shuffle,
+                                      batch_size=batch_sz)
 
-    # check if tracks_dataloader_sim and tracks_dataloader_target have the same size
-    if len(tracks_dataloader_sim) != len(tracks_dataloader_target):
-        raise Exception("target and sim inpputs are different in size.")
+        # check if tracks_dataloader_sim and tracks_dataloader_target have the same size
+        if len(tracks_dataloader_sim) != len(tracks_dataloader_target):
+            raise Exception("target and sim inpputs are different in size.")
 
     # For readout noise: no_noise overrides if explicitly set to True. Otherwise, turn on noise
     # individually for target and guess
@@ -93,7 +106,8 @@ def main(config):
     logger.info(f"Param list: {param_list}")
 
     if config.fit_type == "chain":
-        param_fit = GradientDescentFitter(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
+        param_fit = GradientDescentFitter(relevant_params=param_list,
+                                sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 lr=config.lr, readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
                                 readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
@@ -107,9 +121,11 @@ def main(config):
                                 diffusion_in_current_sim=config.diffusion_in_current_sim,
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
-                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,)
+                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
+                                probabilistic_target=config.probabilistic_target)
     elif config.fit_type == "scan":
-        param_fit = LikelihoodProfiler(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
+        param_fit = LikelihoodProfiler(relevant_params=param_list,
+                                sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
                                 readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
@@ -120,10 +136,11 @@ def main(config):
                                 diffusion_in_current_sim=config.diffusion_in_current_sim,
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
-                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,
-                                scan_tgt_nom=config.scan_tgt_nom)
+                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
+                                scan_tgt_nom=config.scan_tgt_nom, probabilistic_target=config.probabilistic_target)
     elif config.fit_type == "minuit":
-        param_fit = MinuitFitter(relevant_params=param_list, track_fields=dataset_sim.get_track_fields(),
+        param_fit = MinuitFitter(relevant_params=param_list,
+                                sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
                                 readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
@@ -134,8 +151,8 @@ def main(config):
                                 diffusion_in_current_sim=config.diffusion_in_current_sim,
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
-                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range,
-                                minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits)
+                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
+                                minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits, probabilistic_target=config.probabilistic_target)
 
     else:
         raise Exception(f"Unknown fit type: {config.fit_type}. Supported types are 'chain' and 'scan'.")
@@ -143,7 +160,11 @@ def main(config):
     # jax.profiler.start_trace("/tmp/tensorboard")
 
     # with cProfile.Profile() as pr:
-    param_fit.fit(tracks_dataloader_sim, tracks_dataloader_target, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
+    if config.read_target:
+        param_fit.fit(tracks_dataloader_sim, config.input_file_tgt, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
+    else:
+        param_fit.fit(tracks_dataloader_sim, tracks_dataloader_target, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
+
     # pr.dump_stats('prof.prof')
     # jax.profiler.stop_trace()
     return 0, 'Fitting successful'
@@ -236,7 +257,7 @@ if __name__ == '__main__':
     parser.add_argument('--electron_sampling_resolution', type=float, required=True, help='Electron sampling resolution')
     parser.add_argument('--number_pix_neighbors', type=int, required=True, help='Number of pixel neighbors')
     parser.add_argument('--signal_length', type=int, required=True, help='Signal length')
-    parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
+    parser.add_argument('--lut_file', type=str, required=False, default="src/larndsim/detector_properties/response_44_v2a_full_tick.npz", help='Path to the LUT file')
     parser.add_argument('--keep_in_memory', default=False, action="store_true", help='Keep the expected output of each batch in memory')
     parser.add_argument('--compute_target_hessian', default=False, action="store_true", help='Computes the Hessian at the target for every batch')
     parser.add_argument('--non_deterministic', default=False, action="store_true", help='Make the computation slightly non-deterministic for faster computation')
@@ -249,9 +270,13 @@ if __name__ == '__main__':
     parser.add_argument('--diffusion_in_current_sim', action='store_true', help='Use diffusion in current simulation')
     parser.add_argument('--sim_seed_strategy', default="different", type=str, choices=['same', 'different', 'different_epoch', 'random', 'constant'],
                         help='Strategy to choose the seed for the simulation (the seed for target is the batch id). It can be "same" (same for target and sim), "different" (different for target and sim but constant across epochs), "different_epoch" (different for target and sim, and in the simulation the key is different per epoch)"random" (different between target and sim and random across epochs), "constant" (the seed is constant across batches).')
-    parser.add_argument('--chamfer_adc_norm', default=10., type=float, help='ADC normalisation wrt to position (cm)')
+    parser.add_argument('--chamfer_adc_norm', default=1., type=float, help='ADC normalisation wrt to position (cm)')
     parser.add_argument('--chamfer_match_z', default=False, action="store_true", help='match z (converted using the iterated simulation v_drift value for both the target and simulation) instead of t')
     parser.add_argument('--mc_diff', default=False, action="store_true", help='Use MC diffusion')
+    parser.add_argument('--live_selection', default=False, action="store_true", help='Whether to run live selection or not')
+    parser.add_argument('--read_target', default=False, action="store_true", help='read data(-like) target')
+    parser.add_argument('--probabilistic-target', default=False, action="store_true", help='Use probabilistic target (for scan)')
+    parser.add_argument('--probabilistic-sim', default=False, action="store_true", help='Use probabilistic sim')
 
     try:
         args = parser.parse_args()

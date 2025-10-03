@@ -8,10 +8,11 @@ BATCH_SIZE=100
 ITERATIONS=10
 MAX_CLIP_NORM_VAL=1
 DATA_SEED=1
-LOSS=chamfer_3d
+LOSS=mse_adc
 
 ### proton 5000 events
 INPUT_FILE_TGT=prepared_data/input_1.h5
+#INPUT_FILE_TGT=output/jax_ref/output_parametrized_1.npz
 INPUT_FILE_SIM=prepared_data/input_1.h5
 
 #DECLARATIONS
@@ -39,11 +40,14 @@ python3 -m optimize.example_run \
     --max_clip_norm_val ${MAX_CLIP_NORM_VAL} \
     --electron_sampling_resolution 0.005 \
     --number_pix_neighbors 0 \
-    --signal_length 191 \
+    --signal_length 150 \
     --mode 'parametrized' \
     --loss_fn ${LOSS} \
     --fit_type 'minuit' \
-    --cpu_only
+    --cpu_only \
+    --clip_from_range \
+    --mc_diff
+#    --read_target
 
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
 

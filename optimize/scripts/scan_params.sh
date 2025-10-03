@@ -26,18 +26,67 @@ fi
 TARGET_SEED=$SLURM_ARRAY_TASK_ID
 # PARAMS=optimize/scripts/param_list.yaml
 BATCH_SIZE=400
-ITERATIONS=100
+ITERATIONS=50
 DATA_SEED=1
-LOSS=chamfer_3d
+N_NEIGH=4
+ELEC_RESOLUTION=0.01
+SEED_STRATEGY=random #different #random #different
+LOSS=mse_adc
 
-# muon
-#INPUT_FILE=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim-output.h5
-# proton 5000 events
-#INPUT_FILE_TGT=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim_p_only_active_vol_5000.h5
-#INPUT_FILE_SIM=/sdf/group/neutrino/cyifan/muon-sim/fake_data_S1/edepsim_p_only_active_vol_5000.h5
-# proton 1E5 events
-INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_2826844_p_1E5/job_64452404_0001/output_64452404_0001-edepsim.h5
-INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_2826844_p_1E5/job_64452404_0001/output_64452404_0001-edepsim.h5
+### true proton
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_proton_edep_2cm_range_0.1-cm.h5
+##INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_proton_edep_2cm.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_proton_edep_2cm_range_0.1-cm_dEdx.h5
+
+## true stopping muon
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_CSDA.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_dEdx_CSDA.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_mod0.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_dEdx_mod0.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_mod0_dEdx_scale5times.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_dEdx_mod0_dEdx_scale5times.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_mod0_dEdx+10.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_dEdx_mod0_dEdx+10.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_mod0_dEdx+20.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_dEdx_mod0_dEdx+20.h5
+
+INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_CSDA_dEdx+20.h5
+INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_dEdx_CSDA_dEdx+20.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_mod0.h5
+##INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_mod0_dEdx_gaus1smear.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_mod0_dEdx_gaus3smear.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_mod0.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_mod0.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_mod0_dEdx_scale5times.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_ending_muon_edep_5cm_vol2cm_range_0.2-cm_mod0_dEdx_scale5times.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_stopping_muon_edep_5cm_vol2cm_range0.5cm_new.h5
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_stopping_muon_edep_5cm_vol2cm_range0.5-5cm_new.h5
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_stopping_muon_edep_5cm_vol2cm_range0.5cm_force_agree_1MeVcm_new.h5
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_stopping_muon_edep_5cm_vol2cm_range0.5-5cm_force_agree_1MeVcm_new.h5
+# full truth
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_stopping_muon_edep_5cm_vol2cm_range0.5cm_new.h5
+# 'reco' dE/dx
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_stopping_muon_edep_5cm_vol2cm_range0.5cm_dEdx_new.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_stopping_muon_edep_5cm_vol2cm_range0.5-5cm_dEdx_new.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_stopping_muon_edep_5cm_vol2cm_range0.5cm_dEdx_force_agree_1MeVcm_new.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_stopping_muon_edep_5cm_vol2cm_range0.5-5cm_dEdx_force_agree_1MeVcm_new.h5
+
+## true through going muon
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/diffsim_input/true_through_muon_edep_10cm_vol1cm.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/diffsim_input/true_through_muon_edep_10cm_vol1cm.h5
+
+# data
+#INPUT_FILE_SIM=/sdf/group/neutrino/cyifan/diff_sim_playground/Data_selection/M1_data_mockup_seg_2022_02_07_23_09_05_CET_2000ev.h5
+#INPUT_FILE_TGT=/sdf/group/neutrino/cyifan/diff_sim_playground/Data_selection/M1_hits_target_2022_02_07_23_09_05_CET_2000ev.npz
+#INPUT_FILE_TGT=/sdf/group/neutrino/cyifan/diff_sim_playground/Data_selection/M1_data_mockup_seg_2022_02_07_23_09_05_CET_2000ev.h5
 
 
 SIF_FILE=/sdf/group/neutrino/pgranger/larnd-sim-jax.sif
@@ -48,6 +97,15 @@ nvidia-smi
 
 PARAMS=("Ab" "kb" "eField" "tran_diff" "long_diff" "lifetime" "shift_z" "shift_x" "shift_y")
 PARAM=${PARAMS[$SLURM_ARRAY_TASK_ID]}
+#LABEL=${PARAM}_true_proton_edep_range_0.1-cm_dEdx_noise_tgt_sim_nominal_tgt_non_prob_hits_sampled_seed_strategy_${SEED_STRATEGY}_n_neigh_${N_NEIGH}_bt${BATCH_SIZE}_dtsd${DATA_SEED}_${LOSS}_${UUID}
+#LABEL=${PARAM}_true_stopping_muon_edep_range_0.2-cm_dEdx_CSDA_noise_tgt_nominal_tgt_non_prob_hits_sampled_seed_strategy_${SEED_STRATEGY}_n_neigh_${N_NEIGH}_bt${BATCH_SIZE}_dtsd${DATA_SEED}_${LOSS}_${UUID}
+#LABEL=${PARAM}_true_stopping_muon_edep_range_0.2-cm_dEdx_edep_mod0_gaus10smear_no_noise_nominal_tgt_non_prob_hits_sampled_seed_strategy_${SEED_STRATEGY}_n_neigh_${N_NEIGH}_bt${BATCH_SIZE}_dtsd${DATA_SEED}_${LOSS}_${UUID}
+#LABEL=${PARAM}_true_stopping_muon_closure_range_0.2-cm_dEdx*5_noise_tgtsim_nominal_tgt_non_prob_hits_sampled_seed_strategy_${SEED_STRATEGY}_n_neigh_${N_NEIGH}_bt${BATCH_SIZE}_dtsd${DATA_SEED}_${LOSS}_${UUID}
+#LABEL=${PARAM}_true_stopping_muon_closure_range_0.2-cm_dEdx+10_no_noise_nominal_tgt_non_prob_hits_sampled_seed_strategy_${SEED_STRATEGY}_n_neigh_${N_NEIGH}_bt${BATCH_SIZE}_dtsd${DATA_SEED}_${LOSS}_${UUID}
+#LABEL=${PARAM}_true_stopping_muon_closure_range_0.2-cm_dEdx+20_no_noise_nominal_tgt_non_prob_hits_sampled_seed_strategy_${SEED_STRATEGY}_n_neigh_${N_NEIGH}_bt${BATCH_SIZE}_dtsd${DATA_SEED}_${LOSS}_${UUID}
+LABEL=${PARAM}_true_stopping_muon_closure_range_0.2-cm_dEdx+20_CSDA_noise_tgtsim_nominal_tgt_non_prob_hits_sampled_seed_strategy_${SEED_STRATEGY}_n_neigh_${N_NEIGH}_bt${BATCH_SIZE}_dtsd${DATA_SEED}_${LOSS}_${UUID}
+#LABEL=${PARAM}_true_stopping_muon_range_0.2-cm_dEdx_gaus3smear_no_noise_nominal_tgt_non_prob_hits_sampled_seed_strategy_${SEED_STRATEGY}_n_neigh_${N_NEIGH}_bt${BATCH_SIZE}_dtsd${DATA_SEED}_${LOSS}_${UUID}
+
 
 # singularity exec --bind /sdf,$SCRATCH python-jax.sif python3 -m optimize.example_run \
 # apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop python3 -m optimize.example_run \
@@ -63,25 +121,33 @@ python3 -m optimize.example_run \
     --max_abs_costheta_sel 0.966 \
     --min_abs_segz_sel 15. \
     --data_seed ${DATA_SEED} \
-    --out_label ${PARAM}_wlongdiff_p_1E5_loss_scan_nonoise_diffseed_nom_bt${BATCH_SIZE}_dtsd${DATA_SEED}_adam_${LOSS}_nticks_chamfer_sum_diff_no_drift_${UUID} \
+    --out_label ${LABEL} \
     --test_name scan\
     --seed ${TARGET_SEED} \
-    --random_ntrack \
     --iterations ${ITERATIONS} \
     --max_batch_len ${BATCH_SIZE} \
     --track_z_bound 28 \
-    --max_clip_norm_val 1 \
-    --electron_sampling_resolution 0.005 \
-    --number_pix_neighbors 0 \
-    --signal_length 191 \
-    --mode 'parametrized' \
+    --electron_sampling_resolution ${ELEC_RESOLUTION} \
+    --number_pix_neighbors ${N_NEIGH} \
+    --signal_length 150 \
+    --mode 'lut' \
+    --lut_file src/larndsim/detector_properties/response_44_v2a_full_tick.npz \
     --loss_fn ${LOSS} \
     --fit_type 'scan' \
-    --diffusion_in_current_sim \
     --non_deterministic \
-    --sim_seed_strategy 'different' \
+    --sim_seed_strategy ${SEED_STRATEGY} \
+    --mc_diff \
     --scan_tgt_nom \
-    --no-noise
+    --detector_props src/larndsim/detector_properties/module0.yaml \
+    #--no-noise-guess \
+    #--no-noise \
+    #--live_selection \
+    #--chamfer_match_z
+    #--random_ntrack \
+    #--read_target \
+    #--max_clip_norm_val 1 \
+    #--mc_diff \
+    #--scan_tgt_nom \
     #--print_input
     # --loss_fn SDTW \
     # --lut_file /home/pgranger/larnd-sim/jit_version/original/build/lib/larndsim/bin/response_44.npy

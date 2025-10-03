@@ -3,11 +3,12 @@
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
+import os
 import argparse
 import sys
 import traceback
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
-from larndsim.sim_jax import prepare_tracks, simulate, simulate_parametrized, id2pixel, get_pixel_coordinates
+from larndsim.sim_jax import prepare_tracks, simulate_new, simulate_parametrized, id2pixel, get_pixel_coordinates
 from larndsim.losses_jax import get_hits_space_coords
 from pprint import pprint
 import numpy as np
@@ -34,14 +35,16 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-
 
     track_fields = tracks.dtype.names
 
-    if 'eventID' in tracks.dtype.names:
-        evt_id = 'eventID'
-    else:
-        evt_id = 'event_id'
+    replace_map = {
+            'event_id': 'eventID',
+            'traj_id': 'trackID',
+        }
+    track_fields = tuple([replace_map.get(field, field) if field in replace_map else field for field in track_fields])
+    tracks.dtype.names = track_fields
 
     if n_events > 0:
-        evID = np.unique(tracks[evt_id])[n_events-1]
-        ev_msk = np.isin(tracks[evt_id], evID)
+        evID = np.unique(tracks['eventID'])[:n_events]
+        ev_msk = np.isin(tracks['eventID'], evID)
         tracks = tracks[ev_msk]
 
     if swap_xz:
@@ -57,7 +60,7 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-
         tracks['z_end'] = x_end
         tracks['z'] = x
 
-    unique_events, first_indices = np.unique(tracks[evt_id], return_index=True)
+    unique_events, first_indices = np.unique(tracks['eventID'], return_index=True)
 
     first_indices = np.sort(first_indices)
     last_indices = np.r_[first_indices[1:] - 1, len(tracks) - 1]
@@ -75,6 +78,8 @@ logger.setLevel(logging.INFO)
 
 
 def main(config):
+    if os.path.isfile(config.output_file):
+        os.remove(config.output_file)
     if config.lut_file == "" and config.mode == 'lut':
         return 1, 'Error: LUT file is required for mode "lut"'
     
@@ -84,16 +89,15 @@ def main(config):
     pars = []
     if config.jac:
         def sim_wrapper(params, tracks):
-            adcs, unique_pixels, ticks, pix_renumbering, electrons, start_ticks, _ = simulate_parametrized(params, tracks, fields, rngseed=config.seed)
+            adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, _ = simulate_parametrized(params, tracks, fields, rngseed=config.seed)
             return jnp.stack([adcs, ticks], axis=-1)
         pars = ['Ab', 'kb', 'eField', 'long_diff', 'tran_diff', 'lifetime', 'shift_z']
     Params = build_params_class(pars)
     ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts)
 
     if args.mode == 'lut':
-        response = load_lut(config.lut_file)
+        response, ref_params = load_lut(config.lut_file, ref_params)
     
-
     
     params_to_apply = [
         'diffusion_in_current_sim',
@@ -112,52 +116,62 @@ def main(config):
 
     dataset, fields = load_events_as_batch(config.input_file, config.electron_sampling_resolution, swap_xz=True, n_events=config.n_events)
 
-    
-        
+    if config.out_np:
+        l_adc, l_Q, l_ticks, l_eventID, l_pix_x, l_pix_y, l_pix_z = [], [], [], [], [], [], []
 
-    with h5py.File(config.output_file, 'w') as f:
-        # libcudart.cudaProfilerStart()
+    # libcudart.cudaProfilerStart()
+    for ibatch, batch in tqdm(enumerate(dataset), desc="Loading tracks", total=len(dataset)):
+        size = batch.shape[0]
+        size = pad_size(size, "batch_size", 0.5)
+        batch = np.pad(batch, ((0, size - batch.shape[0]), (0, 0)), mode='constant', constant_values=0)
+        tracks = jax.device_put(batch)
 
-        for ibatch, batch in tqdm(enumerate(dataset), desc="Loading tracks", total=len(dataset)):
-            size = batch.shape[0]
-            size = pad_size(size, "batch_size", 0.5)
-            batch = np.pad(batch, ((0, size - batch.shape[0]), (0, 0)), mode='constant', constant_values=0)
-            tracks = jax.device_put(batch)
+        if args.mode == 'lut':
+            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, wfs = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
+        else:
+            adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
+        if config.jac:
+            jac_res = jax.jacfwd(sim_wrapper)(ref_params, tracks)
 
-            if args.mode == 'lut':
-                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons, wfs = simulate(ref_params, response, tracks, fields, rngseed=config.seed)
-            else:
-                ref, pixels_ref, ticks_ref, pix_matching, electrons, ticks_electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
-            if config.jac:
-                jac_res = jax.jacfwd(sim_wrapper)(ref_params, tracks)
+        adc_lowest = digitize(ref_params, ref_params.DISCRIMINATION_THRESHOLD)
+        adcs_clean = adcs - adc_lowest
+        mask = (adcs_clean.flatten() != 0) & (jnp.repeat(event, 10) != -1)
+        Q = adc2charge(adcs.flatten()[mask], ref_params)
 
-            pix_x, pix_y, pix_z, eventID = get_hits_space_coords(ref_params, pixels_ref, ticks_ref)
-            adc_lowest = digitize(ref_params, ref_params.DISCRIMINATION_THRESHOLD)
-            ref_clean = jnp.where(ref < adc_lowest, 0, ref - adc_lowest)
-            mask = (ref_clean.flatten() > 0) & (jnp.repeat(eventID, 10) != -1)
-            Q = adc2charge(ref.flatten()[mask], ref_params)
+        if not config.out_np:
+            with h5py.File(config.output_file, 'a') as f:
+                group = f.create_group(f"batch_{ibatch}")
+                group.create_dataset('adc_clean', data=adcs_clean.flatten()[mask])
+                group.create_dataset('adc', data=adcs.flatten()[mask])
+                group.create_dataset('Q', data=Q)
+                group.create_dataset('pixels', data=jnp.repeat(unique_pixels, 10)[mask])
+                group.create_dataset('ticks', data=ticks.flatten()[mask])
+                group.create_dataset('eventID', data=jnp.repeat(event, 10)[mask])
+                group.create_dataset('pix_x', data=jnp.repeat(pixel_x, 10)[mask])
+                group.create_dataset('pix_y', data=jnp.repeat(pixel_y, 10)[mask])
+                group.create_dataset('pix_z', data=pixel_z.flatten()[mask])
 
-            group = f.create_group(f"batch_{ibatch}")
-            group.create_dataset('adc_clean', data=ref_clean.flatten()[mask])
-            group.create_dataset('adc', data=ref.flatten()[mask])
-            group.create_dataset('Q', data=Q)
-            group.create_dataset('pixels', data=jnp.repeat(pixels_ref, 10)[mask])
-            group.create_dataset('ticks', data=ticks_ref.flatten()[mask])
-            group.create_dataset('eventID', data=jnp.repeat(eventID, 10)[mask])
-            group.create_dataset('pix_x', data=jnp.repeat(pix_x, 10)[mask])
-            group.create_dataset('pix_y', data=jnp.repeat(pix_y, 10)[mask])
-            group.create_dataset('pix_z', data=pix_z.flatten()[mask])
+                if config.save_wfs:
+                    group.create_dataset('wfs', data=jnp.repeat(wfs, 10, axis=0)[mask, :])
+                if config.jac:
+                    for par in pars:
+                        group.create_dataset(f'jac_{par}_adc', data=getattr(jac_res, par)[:, :, 0].flatten()[mask])
+                        group.create_dataset(f'jac_{par}_ticks', data=getattr(jac_res, par)[:, :, 1].flatten()[mask])
 
-            if config.save_wfs:
-                group.create_dataset('wfs', data=jnp.repeat(wfs, 10, axis=0)[mask, :])
-            if config.jac:
-                for par in pars:
-                    group.create_dataset(f'jac_{par}_adc', data=getattr(jac_res, par)[:, :, 0].flatten()[mask])
-                    group.create_dataset(f'jac_{par}_ticks', data=getattr(jac_res, par)[:, :, 1].flatten()[mask])
+        else:
+            l_adc.append(adcs.flatten()[mask])
+            l_Q.append(Q)
+            l_ticks.append(ticks.flatten()[mask])
+            l_eventID.append(jnp.repeat(event, 10)[mask])
+            l_pix_x.append(jnp.repeat(pixel_x, 10)[mask])
+            l_pix_y.append(jnp.repeat(pixel_y, 10)[mask])
+            l_pix_z.append(pixel_z.flatten()[mask])
+            l_hit_prob.append(hit_prob.flatten()[mask])
 
+    if config.out_np:
+        jnp.savez(config.output_file, adcs=np.concatenate(l_adc), Q=np.concatenate(l_Q), x=np.concatenate(l_pix_x), y=np.concatenate(l_pix_y), z=np.concatenate(l_pix_z), ticks=np.concatenate(l_ticks), hit_prob=np.concatenate(l_hit_prob), event_id=np.concatenate(l_eventID))
 
-                # f.create_dataset('pixel_signals', data=signals_ref)
-        # libcudart.cudaProfilerStop()
+    # libcudart.cudaProfilerStop()
     return 0, 'Success'
 
 
@@ -180,7 +194,7 @@ if __name__ == '__main__':
     parser.add_argument('--signal_length', type=int, required=True, help='Signal length')
     parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
     parser.add_argument('--noise', action='store_true', help='Add noise to the simulation')
-    parser.add_argument('--seed', type=int, default=0, help='Random seed for reproducibility')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
     parser.add_argument('--diffusion_in_current_sim', action='store_true', help='Use diffusion in current simulation')
     parser.add_argument('--batch_size', type=float, default=500, help='Batch size for simulation')
     parser.add_argument('--gpu', action='store_true', help='Use GPU for simulation')
@@ -188,6 +202,7 @@ if __name__ == '__main__':
     parser.add_argument('--mc_diff', action='store_true', help='Use Monte Carlo diffusion')
     parser.add_argument('--save_wfs', action='store_true', help='Save waveforms')
     parser.add_argument('--n_events', type=int, default=-1, help='Number of events to be simulated')
+    parser.add_argument('--out_np', action='store_true', default=False, help='store target-like output in npz')
 
     try:
         args = parser.parse_args()

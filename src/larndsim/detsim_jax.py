@@ -30,22 +30,21 @@ def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID,
     start_ticks = response.shape[-1] - signal_length - cathode_ticks
     time_ticks = start_ticks[..., None] + jnp.arange(signal_length)
 
+    # either end of start_ticks or start_ticks + signal_length can be out of the readout range, which is non physical, but it can still have values from the response. They are assigned to time_tick 0, and is meant to be removed.
     time_ticks = jnp.where((time_ticks <= 0 ) | (time_ticks >= Nticks - 1), 0, time_ticks+1) # it should be start_ticks +1 in theory but we cheat by putting the cumsum in the garbage too when strarting at 0 to mimic the expected behavior
 
     start_indices = pixID * Nticks
 
     end_indices = start_indices[..., None] + time_ticks
 
-    # Flatten the indices
+    # Flatten the indices, which is not necessarily unique
     flat_indices = jnp.ravel(end_indices)
 
     Nx, Ny, Nt = response.shape
 
-
     signal_indices = jnp.ravel((currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt + jnp.arange(response.shape[-1] - signal_length, response.shape[-1]))
     # baseline_indices = jnp.ravel(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length))
     # print(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length, axis=0))
-    
 
     # Update wfs with accumulated signals
     wfs = wfs.ravel()
@@ -102,6 +101,23 @@ def pixel2id(params, pixel_x, pixel_y, pixel_plane, eventID):
     outside = (pixel_x >= params.n_pixels_x) | (pixel_y >= params.n_pixels_y) | (pixel_x < 0) | (pixel_y < 0)
     return jnp.where(outside, -1, pixel_x + params.n_pixels_x * (pixel_y + params.n_pixels_y * (pixel_plane + params.tpc_borders.shape[0]*eventID)))
 
+@jit
+def bin2id(params, bin_x, bin_y, pixel_plane, eventID):
+    """
+    Convert the bin coordinates to a unique identifier
+
+    Args:
+        bin_x (int): bin coordinate in x-dimension
+        bin_y (int): bin coordinate in y-dimension
+        pixel_plane (int): pixel plane number
+        eventID (int): event identifier
+
+    Returns:
+        unique integer id
+    """
+    outside = (bin_x >= params.n_pixels_x*params.nb_sampling_bins_per_pixel) | (bin_y >= params.n_pixels_y*params.nb_sampling_bins_per_pixel) | (bin_x < 0) | (bin_y < 0)
+    return jnp.where(outside, -1, bin_x + params.n_pixels_x*params.nb_sampling_bins_per_pixel * (bin_y + params.n_pixels_y*params.nb_sampling_bins_per_pixel * (pixel_plane + params.tpc_borders.shape[0]*eventID)))
+
 # @annotate_function
 @jit
 def id2pixel(params, pid):
@@ -120,6 +136,22 @@ def id2pixel(params, pid):
             pid // (params.n_pixels_x * params.n_pixels_y*params.tpc_borders.shape[0]))
 
 @jit
+def id2bin(params, bin_id):
+    """
+    Convert the unique bin identifier to an x,y,plane tuple
+
+    Args:
+        bin_id (int): unique bin identifier
+    Returns:
+        tuple: number of pixel pitches in x-dimension,
+            number of pixel pitches in y-dimension,
+            pixel plane number
+    """
+    return (bin_id % (params.n_pixels_x*params.nb_sampling_bins_per_pixel), (bin_id // (params.n_pixels_x*params.nb_sampling_bins_per_pixel)) % (params.n_pixels_y*params.nb_sampling_bins_per_pixel),
+            (bin_id // ((params.n_pixels_x*params.nb_sampling_bins_per_pixel) * (params.n_pixels_y*params.nb_sampling_bins_per_pixel))) % params.tpc_borders.shape[0],
+            bin_id // ((params.n_pixels_x*params.nb_sampling_bins_per_pixel) * (params.n_pixels_y*params.nb_sampling_bins_per_pixel)*params.tpc_borders.shape[0]))
+
+@jit
 def get_pixel_coordinates(params, xpitch, ypitch, plane):
     """
     Returns the coordinates of the pixel center given the pixel IDs
@@ -131,14 +163,19 @@ def get_pixel_coordinates(params, xpitch, ypitch, plane):
     pix_y = ypitch * params.pixel_pitch + borders[..., 1, 0] + params.pixel_pitch/2
     return jnp.stack([pix_x, pix_y], axis=-1)
 
-@jit
-def get_hit_z(params, ticks, plane):
+#@jit
+@partial(jit, static_argnames=['fixed_v'])
+def get_hit_z(params, ticks, plane, fixed_v=False):
     """
     Returns the z position of the hit given the time tick with the right sign for the drift direction
     """
     z_anode = jnp.take(params.tpc_borders, plane.astype(int), axis=0)[..., 2, 0]
     z_high = jnp.take(params.tpc_borders, plane.astype(int), axis=0)[..., 2, 1]
-    return z_anode + ticks * params.t_sampling*get_vdrift(params) * jnp.sign(z_high - z_anode)
+    if fixed_v:
+        hit_z = z_anode + ticks * params.t_sampling * params.vdrift_static * jnp.sign(z_high - z_anode)
+    else:
+        hit_z = z_anode + ticks * params.t_sampling * get_vdrift(params) * jnp.sign(z_high - z_anode)
+    return hit_z
 
 @jit
 def gaussian_1d_integral(bin_edges, std):
@@ -150,6 +187,30 @@ def gaussian_1d_integral(bin_edges, std):
     erf_at_borders = erf_at_borders.at[:, 1:-1].set(erf(bin_edges[1:-1] / (jnp.sqrt(2) * std[:, None])))
 
     return 0.5*(erf_at_borders[:, 1:] - erf_at_borders[:, :-1])
+
+def gaussian_1d_integral_new(bin_edges, x0, std):
+    # Use the error function to compute the integral
+
+    calculated_edges = bin_edges - x0
+
+    erf_at_borders = jnp.ones_like(calculated_edges)
+    erf_at_borders = erf_at_borders.at[:, 0].set(-1)
+    erf_at_borders = erf_at_borders.at[:, 1:-1].set(erf(calculated_edges[:, 1:-1] / (jnp.sqrt(2) * std)))
+
+    return 0.5*(erf_at_borders[:, 1:] - erf_at_borders[:, :-1])
+
+@jit
+def density_2d(bins, x0, y0, sigma):
+    """
+    Calculate the 2D density using the Gaussian integral.
+    bins: 1D array of bin edges
+    x0: 1D array of x0 values
+    y0: 1D array of y0 values
+    sigma: 1D array of standard deviations
+    """
+    estimated_x = gaussian_1d_integral_new(bins[None, :], x0[:, None], sigma[:, None])
+    estimated_y = gaussian_1d_integral_new(bins[None, :], y0[:, None], sigma[:, None])
+    return jnp.einsum('ij,ik->ijk', estimated_x, estimated_y)
 
 @partial(jit, static_argnames=['fields'])
 def apply_tran_diff(params, electrons, fields):
@@ -285,12 +346,37 @@ def get_pixels(params, electrons, fields):
     shifts = jnp.vstack([X.ravel(), Y.ravel()]).T
     pixels = pixels_int[:, jnp.newaxis, :] + shifts[jnp.newaxis, :, :]
 
-    if "eventID" in fields:
-        evt_id = "eventID"
-    else:
-        evt_id = "event_id"
+    return pixel2id(params, pixels[:, :, 0], pixels[:, :, 1], electrons[:, fields.index("pixel_plane")].astype(int)[:, jnp.newaxis], electrons[:, fields.index("eventID")].astype(int)[:, jnp.newaxis])
 
-    return pixel2id(params, pixels[:, :, 0], pixels[:, :, 1], electrons[:, fields.index("pixel_plane")].astype(int)[:, jnp.newaxis], electrons[:, fields.index(evt_id)].astype(int)[:, jnp.newaxis])
+@partial(jit, static_argnames=['fields'])
+def get_bin_shifts(params, electrons, fields):
+    """
+    Compute the bin shifts for the electrons based on their positions.
+    Args:
+        params: Detector parameters.
+        electrons (jnp.ndarray): Array of electrons with fields including 'x', 'y', 'pixel_plane'.
+        fields: List of field names in the electrons array.
+    Returns:
+        bin_shifts (jnp.ndarray): Array of bin shifts for each electron.
+    """
+
+    borders = params.tpc_borders[electrons[:, fields.index("pixel_plane")].astype(int)]
+    pos = jnp.stack([(electrons[:, fields.index("x")] - borders[:, 0, 0]),
+            (electrons[:, fields.index("y")] - borders[:, 1, 0])], axis=1) // (params.pixel_pitch / params.nb_sampling_bins_per_pixel)
+
+    # Compute the bin IDs
+    bin_shifts = pos.astype(int)
+
+    return bin_shifts
+
+
+@partial(jit, static_argnames=['fields'])
+def get_bin_id(params, electrons, fields):
+
+    bin_shifts = get_bin_shifts(params, electrons, fields)
+
+    return bin2id(params, bin_shifts[..., 0], bin_shifts[..., 1], electrons[:, fields.index("pixel_plane")].astype(int), electrons[:, fields.index("eventID")].astype(int))
+
 
 # @annotate_function
 @jit
@@ -414,9 +500,19 @@ def current_mc(params, electrons, pixels_coord, fields):
 def current_lut(params, response, electrons, pixels_coord, fields):
     x_dist = abs(electrons[:, fields.index('x')] - pixels_coord[..., 0])
     y_dist = abs(electrons[:, fields.index('y')] - pixels_coord[..., 1])
-    z_cathode = jnp.take(params.tpc_borders, electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 1]
-    t0 = (jnp.abs(electrons[:, fields.index('z')] - z_cathode)) / get_vdrift(params) #Getting t0 as the equivalent time to cathode
-    
+    z_anode = jnp.take(params.tpc_borders, electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 0]
+    # response is produced assuming charge at the cathode
+    # t0 indicate the amount of time we would cut off from the beginning of the response time axis as shifting the readout plane closer
+    # In other part of the code, we always count from anode. Here if we assume the total time and use vdrift to shift t0, it would make the opposite effect.
+    # e.g larger eField, later in time wrt the anode (the assumption of the total time is a constant broke here). It would also compete with gradient 
+    # FIXME "t" contains t0 which is not necessarily the best practice
+    t0 = params.response_full_drift_t - electrons[:, fields.index('t')]
+    #t0 = params.response_full_drift_t - (jnp.abs(electrons[:, fields.index('z')] - z_anode)) / get_vdrift(params)
+    #t0 = params.response_full_drift_t - (jnp.abs(electrons[:, fields.index('z')] - z_anode)) / params.vdrift_static
+
+    #z_cathode = jnp.take(params.tpc_borders, electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 1]
+    #t0 = (jnp.abs(electrons[:, fields.index('z')] - z_cathode)) / get_vdrift(params) #Getting t0 as the equivalent time to cathode
+    #t0 = (jnp.abs(electrons[:, fields.index('z')] - z_cathode)) / params.vdrift_static #Getting t0 as the equivalent time to cathode
     i = (x_dist/params.response_bin_size).astype(int)
     j = (y_dist/params.response_bin_size).astype(int)
 
