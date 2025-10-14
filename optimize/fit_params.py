@@ -76,6 +76,7 @@ class ParamFitter:
                  read_target=False,
                  probabilistic_target=False,
                  probabilistic_sim=False,
+                 sz_mini_bt=1, shuffle_bt=False,
                  config = {}):
 
         self.read_target = read_target
@@ -101,6 +102,8 @@ class ParamFitter:
         self.signal_length = config.signal_length
         self.probabilistic_target = probabilistic_target
         self.probabilistic_sim = probabilistic_sim
+        self.sz_mini_bt = sz_mini_bt
+        self.shuffle_bt = shuffle_bt
 
         self.sim_track_fields = sim_track_fields
         self.tgt_track_fields = tgt_track_fields
@@ -525,6 +528,9 @@ class GradientDescentFitter(ParamFitter):
             self.update_params()
         return scaled_grads
 
+    def add_grads(self, g1, g2):
+        return jax.tree_util.tree_map(lambda a, b: a + b, g1, g2)
+
     def fit(self, dataloader_sim, target, epochs=300, iterations=None, save_freq=10, print_freq=1):
 
         self.prepare_fit()
@@ -553,7 +559,12 @@ class GradientDescentFitter(ParamFitter):
                 logger.info(f"epoch {epoch}")
                 # if epoch == 2: libcudart.cudaProfilerStart()
 
-                for i in range(len(dataloader_sim)):
+                # shuffle batches
+                indices = np.arange(len(dataloader_sim))
+                if self.shuffle_bt:
+                    np.random.shuffle(indices)
+
+                for i_bt, i in enumerate(indices):
                     start_time = time()
 
                     # sim
@@ -572,31 +583,75 @@ class GradientDescentFitter(ParamFitter):
                     # loss
                     loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, epoch=epoch, with_loss=True, with_grad=True)
 
-                    modified_grads = self.process_grads(grads) #Grads are modified ans applied in this function
+                    # split the code, ugly, but no additional operation if there's no averaging
+                    if self.sz_mini_bt > 1:
+                        # initialize batch grads and mean
+                        if i_bt == 0:
+                            summed_grads = jax.tree_util.tree_map(jnp.zeros_like, grads)
+                            bt_loss = []
 
-                    stop_time = time()
+                        summed_grads = self.add_grads(summed_grads, grads)
+                        bt_loss.append(loss_val.item())
 
-                    for param in self.relevant_params_list:
-                        self.training_history[param+"_grad"].append(modified_grads[param].item())
-                    self.training_history['step_time'].append(stop_time - start_time)
+                        if i_bt != 0 and i_bt % self.sz_mini_bt == 0:
+                            update_grads = jax.tree_util.tree_map(lambda x: x / self.sz_mini_bt, summed_grads)
+                            avg_loss = np.mean(bt_loss)
+ 
+                            modified_grads = self.process_grads(update_grads) #Grads are modified ans applied in this function
+                            stop_time = time()
 
-                    self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
-                    for param in self.relevant_params_list:
-                        #TODO: Need to check why this is not consistent
-                        if type(getattr(self.current_params, param)) == float:
-                            self.training_history[param + '_iter'].append(getattr(self.current_params, param))
-                        else:
-                            self.training_history[param + '_iter'].append(getattr(self.current_params, param).item())
-
-                    self.training_history['size_history'].append(get_size_history())
-                    if 'cuda' in jax.devices():
-                        self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
-
-                    if iterations is not None:
-                        if total_iter % print_freq == 0:
                             for param in self.relevant_params_list:
-                                logger.info(f"{param} {getattr(self.current_params,param)} {modified_grads[param]}")
+                                self.training_history[param+"_grad"].append(modified_grads[param].item())
+                            self.training_history['step_time'].append(stop_time - start_time)
+
+                            self.training_history['losses_iter'].append(avg_loss) # type: ignore
+                            for param in self.relevant_params_list:
+                                #TODO: Need to check why this is not consistent
+                                if type(getattr(self.current_params, param)) == float:
+                                    self.training_history[param + '_iter'].append(getattr(self.current_params, param))
+                                else:
+                                    self.training_history[param + '_iter'].append(getattr(self.current_params, param).item())
+
+                            self.training_history['size_history'].append(get_size_history())
+                            if 'cuda' in jax.devices():
+                                self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
+
+                            if iterations is not None:
+                                if total_iter % print_freq == 0:
+                                    for param in self.relevant_params_list:
+                                        logger.info(f"{param} {getattr(self.current_params,param)} {modified_grads[param]}")
+
+                            # zero-ing out the grads and loss
+                            summed_grads = jax.tree_util.tree_map(jnp.zeros_like, grads)
+                            bt_loss = []
+                    else:
+
+                        modified_grads = self.process_grads(grads) #Grads are modified ans applied in this function
+
+                        stop_time = time()
+
+                        for param in self.relevant_params_list:
+                            self.training_history[param+"_grad"].append(modified_grads[param].item())
+                        self.training_history['step_time'].append(stop_time - start_time)
+
+                        self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
+                        for param in self.relevant_params_list:
+                            #TODO: Need to check why this is not consistent
+                            if type(getattr(self.current_params, param)) == float:
+                                self.training_history[param + '_iter'].append(getattr(self.current_params, param))
+                            else:
+                                self.training_history[param + '_iter'].append(getattr(self.current_params, param).item())
+
+                        self.training_history['size_history'].append(get_size_history())
+                        if 'cuda' in jax.devices():
+                            self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
+
+                        if iterations is not None:
+                            if total_iter % print_freq == 0:
+                                for param in self.relevant_params_list:
+                                    logger.info(f"{param} {getattr(self.current_params,param)} {modified_grads[param]}")
                             
+                    if iterations is not None:
                         if total_iter % save_freq == 0:
                             with open(f'fit_result/{self.test_name}/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
                                 pickle.dump(self.training_history, f_history)
