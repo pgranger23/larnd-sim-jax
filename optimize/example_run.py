@@ -122,7 +122,8 @@ def main(config):
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
-                                probabilistic_target=config.probabilistic_target)
+                                probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim,
+                                sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt)
     elif config.fit_type == "scan":
         param_fit = LikelihoodProfiler(relevant_params=param_list,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
@@ -137,7 +138,7 @@ def main(config):
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
-                                scan_tgt_nom=config.scan_tgt_nom, probabilistic_target=config.probabilistic_target)
+                                scan_tgt_nom=config.scan_tgt_nom, probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim)
     elif config.fit_type == "minuit":
         param_fit = MinuitFitter(relevant_params=param_list,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
@@ -152,7 +153,7 @@ def main(config):
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
-                                minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits, probabilistic_target=config.probabilistic_target)
+                                minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits, probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim)
 
     else:
         raise Exception(f"Unknown fit type: {config.fit_type}. Supported types are 'chain' and 'scan'.")
@@ -277,6 +278,9 @@ if __name__ == '__main__':
     parser.add_argument('--read_target', default=False, action="store_true", help='read data(-like) target')
     parser.add_argument('--probabilistic-target', default=False, action="store_true", help='Use probabilistic target (for scan)')
     parser.add_argument('--probabilistic-sim', default=False, action="store_true", help='Use probabilistic sim')
+    parser.add_argument('--shuffle_bt', default=False, action="store_true", help='shuffle the batch order within an epoch')
+    parser.add_argument('--sz_mini_bt', type=int, default=1, help='Number of mini-batch for one update')
+
 
     try:
         args = parser.parse_args()

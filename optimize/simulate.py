@@ -117,7 +117,7 @@ def main(config):
     dataset, fields = load_events_as_batch(config.input_file, config.electron_sampling_resolution, swap_xz=True, n_events=config.n_events)
 
     if config.out_np:
-        l_adc, l_Q, l_ticks, l_eventID, l_pix_x, l_pix_y, l_pix_z = [], [], [], [], [], [], []
+        l_adc, l_Q, l_ticks, l_eventID, l_pix_x, l_pix_y, l_pix_z, l_hit_prob = [], [], [], [], [], [], [], []
 
     # libcudart.cudaProfilerStart()
     for ibatch, batch in tqdm(enumerate(dataset), desc="Loading tracks", total=len(dataset)):
@@ -126,8 +126,12 @@ def main(config):
         batch = np.pad(batch, ((0, size - batch.shape[0]), (0, 0)), mode='constant', constant_values=0)
         tracks = jax.device_put(batch)
 
+        print("config.save_wfs: ", config.save_wfs)
         if args.mode == 'lut':
-            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, wfs = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
+            if config.save_wfs:
+                adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, wfs = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
+            else:
+                adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
         else:
             adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
         if config.jac:
@@ -135,24 +139,25 @@ def main(config):
 
         adc_lowest = digitize(ref_params, ref_params.DISCRIMINATION_THRESHOLD)
         adcs_clean = adcs - adc_lowest
-        mask = (adcs_clean.flatten() != 0) & (jnp.repeat(event, 10) != -1)
+        mask = (adcs_clean.flatten() != 0) & (event.flatten() != -1)
         Q = adc2charge(adcs.flatten()[mask], ref_params)
 
         if not config.out_np:
-            with h5py.File(config.output_file, 'a') as f:
+            with h5py.File(config.output_file+".h5", 'a') as f:
                 group = f.create_group(f"batch_{ibatch}")
                 group.create_dataset('adc_clean', data=adcs_clean.flatten()[mask])
                 group.create_dataset('adc', data=adcs.flatten()[mask])
                 group.create_dataset('Q', data=Q)
-                group.create_dataset('pixels', data=jnp.repeat(unique_pixels, 10)[mask])
+                group.create_dataset('pixels', data=unique_pixels[mask])
                 group.create_dataset('ticks', data=ticks.flatten()[mask])
-                group.create_dataset('eventID', data=jnp.repeat(event, 10)[mask])
-                group.create_dataset('pix_x', data=jnp.repeat(pixel_x, 10)[mask])
-                group.create_dataset('pix_y', data=jnp.repeat(pixel_y, 10)[mask])
+                group.create_dataset('eventID', data=event[mask])
+                group.create_dataset('pix_x', data=pixel_x[mask])
+                group.create_dataset('pix_y', data=pixel_y[mask])
                 group.create_dataset('pix_z', data=pixel_z.flatten()[mask])
 
                 if config.save_wfs:
-                    group.create_dataset('wfs', data=jnp.repeat(wfs, 10, axis=0)[mask, :])
+                    print("yo")
+                    group.create_dataset('wfs', data=wfs)
                 if config.jac:
                     for par in pars:
                         group.create_dataset(f'jac_{par}_adc', data=getattr(jac_res, par)[:, :, 0].flatten()[mask])
@@ -162,9 +167,9 @@ def main(config):
             l_adc.append(adcs.flatten()[mask])
             l_Q.append(Q)
             l_ticks.append(ticks.flatten()[mask])
-            l_eventID.append(jnp.repeat(event, 10)[mask])
-            l_pix_x.append(jnp.repeat(pixel_x, 10)[mask])
-            l_pix_y.append(jnp.repeat(pixel_y, 10)[mask])
+            l_eventID.append(event.flatten()[mask])
+            l_pix_x.append(pixel_x.flatten()[mask])
+            l_pix_y.append(pixel_y.flatten()[mask])
             l_pix_z.append(pixel_z.flatten()[mask])
             l_hit_prob.append(hit_prob.flatten()[mask])
 
