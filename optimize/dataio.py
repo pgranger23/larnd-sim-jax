@@ -147,11 +147,9 @@ class TracksDataset:
             tracks['z_start'] = x_start
             tracks['z_end'] = x_end
             tracks['z'] = x
-        
 
         if not 't0' in tracks.dtype.names:
             tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
-        
         
         self.track_fields = tracks.dtype.names
         replace_map = {
@@ -161,7 +159,6 @@ class TracksDataset:
         self.track_fields = tuple([replace_map.get(field, field) for field in self.track_fields])
 
         tracks.dtype.names = self.track_fields
-
         
         if live_selection:
             # flat index for all reasonable track [eventID, trackID] 
@@ -199,16 +196,24 @@ class TracksDataset:
             all_tracks = jax_from_structured(tracks)
             index, inverse_idx = np.unique(keys, return_inverse=True)
 
-
         # all fit with a sub-set of tracks
         dict_fit_tracks = defaultdict(list)
         random.seed(seed)
+        fit_tracks = []
         if ntrack is None or ntrack >= len(index) or ntrack <= 0:
             fit_index = index
-            for idx, key in enumerate(inverse_idx):
-                dict_fit_tracks[key].append(all_tracks[idx])
-                fit_tracks = [jnp.asarray(dict_fit_tracks[i]) for i in dict_fit_tracks]
-
+            if 'file_traj_id' in self.track_fields:
+                sorted_tracks = all_tracks[all_tracks[:, self.track_fields.index('file_traj_id')].argsort()]
+                unique_file_traj_id, counts = np.unique(sorted_tracks[:, self.track_fields.index('file_traj_id')], return_counts=True)
+                traj_split = np.cumsum(counts)
+                traj_split = np.append(traj_split, len(sorted_tracks))
+                traj_split = np.insert(traj_split, 0, 0)
+                for i in range(len(traj_split)-1):
+                    fit_tracks.append(sorted_tracks[traj_split[i]:traj_split[i+1]])
+            else:
+                for traj_idx in range(len(index)):
+                    mask = inverse_idx == traj_idx
+                    fit_tracks.append(all_tracks[mask])
         else:
             if random_ntrack:
                 index_idx_pool = np.random.randint(0, len(index), ntrack)
@@ -256,7 +261,7 @@ class TracksDataset:
             batches = []
             fit_index_bt = []
             for i in range(len(split_points)-1):
-                batches.append(np.vstack(fit_tracks[split_points[i]:split_points[i+1]]))
+                batches.append(np.vstack(fit_tracks_ft[split_points[i]:split_points[i+1]]))
                 fit_index_bt.append(fit_index[split_points[i]:split_points[i+1]])
             tot_data_length = cumsum_lengths[split_points[-1]-1]
             if chopped:
