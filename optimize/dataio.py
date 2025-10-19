@@ -8,6 +8,7 @@ from jax import vmap
 import jax
 from typing import List, Union, Tuple
 from tqdm import tqdm
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -129,7 +130,7 @@ def pad_sequence(sequences: List[jnp.ndarray],
 class TracksDataset:
     def __init__(self, filename, ntrack, max_nbatch=None, swap_xz=True, seed=3, random_ntrack=False, track_len_sel=2., 
                  max_abs_costheta_sel=0.966, min_abs_segz_sel=15., track_z_bound=28., max_batch_len=None, print_input=False,
-                 chopped=True, pad=True, electron_sampling_resolution=0.001, active_selection=False, live_selection=False):
+                 chopped=True, pad=True, electron_sampling_resolution=0.001, live_selection=False):
 
         with h5py.File(filename, 'r') as f:
             tracks = np.array(f['segments'])
@@ -191,83 +192,86 @@ class TracksDataset:
             mask = np.repeat(trk_mask, n_repeat)
 
             keys = np.ascontiguousarray(selected_tracks[['eventID', 'trackID']])
-            index = set(map(tuple, keys))  # Ensure index is a set of tuples
-            #mask = np.array([tuple(row) in index for row in keys])
-
-            all_tracks = [jax_from_structured(selected_tracks[mask])]
-            index = np.array(list(index))
+            all_tracks = jax_from_structured(selected_tracks[mask])
+            index, inverse_idx = np.unique(keys, return_inverse=True)
         else:
-            all_tracks = [jax_from_structured(tracks)]
-            index = np.array(list(np.unique(tracks[['eventID', 'trackID']])))
+            keys = np.ascontiguousarray(tracks[['eventID', 'trackID']])
+            all_tracks = jax_from_structured(tracks)
+            index, inverse_idx = np.unique(keys, return_inverse=True)
 
 
         # all fit with a sub-set of tracks
-        fit_index = []
-        fit_tracks = []
+        dict_fit_tracks = defaultdict(list)
         random.seed(seed)
         if ntrack is None or ntrack >= len(index) or ntrack <= 0:
-            if random_ntrack:
-                random.shuffle(all_tracks)
-            fit_tracks = all_tracks
             fit_index = index
+            for idx, key in enumerate(inverse_idx):
+                dict_fit_tracks[key].append(all_tracks[idx])
+                fit_tracks = [jnp.asarray(dict_fit_tracks[i]) for i in dict_fit_tracks]
+
         else:
-            # if the information of track index is uninteresting, then the next line + pad_sequence is enough
-            # fit_tracks = random.sample(all_tracks, ntrack)
             if random_ntrack:
-                list_rand = random.sample(range(len(index)), ntrack)
+                index_idx_pool = np.random.randint(0, len(index), ntrack)
             else:
-                list_rand = np.arange(ntrack)
+                index_idx_pool = np.arange(ntrack)
 
-            for i_rand in list_rand:
-                fit_index.append(index[i_rand])
-                trk_msk = ((all_tracks[0][:, self.track_fields.index('eventID')] == index[i_rand][0]) & (all_tracks[0][:, self.track_fields.index('trackID')] == index[i_rand][1]))
-                fit_tracks.append(all_tracks[0][trk_msk])
+            fit_index = index[index_idx_pool]
+            fit_tracks = []
+            for traj_idx in index_idx_pool:
+                mask = inverse_idx == traj_idx
+                fit_tracks.append(all_tracks[mask])
 
-        if print_input:
-            logger.info(f"training set [ev, trk]: {fit_index}")
+        # Exclude [eventID, trackID] == [0, 0] even it's physical due to the pad value
+        idx_0 = np.where((fit_index['eventID'] == 0) & (fit_index['trackID'] == 2))
+        if len(idx_0[0]) > 0:
+            del fit_tracks[idx_0[0][0]]
+            fit_index = np.delete(fit_index, idx_0[0][0])
 
         if max_batch_len is not None:
-            # Flatten tracks into a single array for efficient processing
-            all_segments = np.vstack(fit_tracks)
+            # Get track length per trajectory
+            traj_len = np.array([traj[:, self.track_fields.index("dx")].sum() for traj in fit_tracks])
+
+            remove_traj_index = np.where(traj_len > max_batch_len)
+
+            lengths_ft = traj_len.copy()[traj_len <= max_batch_len]
+            fit_tracks_ft = fit_tracks.copy()
+            if len(remove_traj_index[0]) > 0:
+                for i_remove in remove_traj_index[0]:
+                    del fit_tracks_ft[i_remove]
+                fit_index = np.delete(fit_index, remove_traj_index[0])
             
-            # Extract required fields as numpy arrays
-            lengths = all_segments[:, self.track_fields.index("dx")]
-
-            event_ids = all_segments[:, self.track_fields.index("eventID")]
-            track_ids = all_segments[:, self.track_fields.index("trackID")]
-
-            # Mask out segments longer than max_batch_len
-            valid_mask = lengths <= max_batch_len
-            lengths = lengths[valid_mask]
-            segments = all_segments[valid_mask]
-            event_ids = event_ids[valid_mask]
-            track_ids = track_ids[valid_mask]
-
             # Cumulative sum to track segment lengths
-            cumsum_lengths = np.cumsum(lengths)
-            
+            cumsum_lengths = np.cumsum(lengths_ft)
+
             # Find batch boundaries
             split_points = np.where(np.diff(np.floor_divide(cumsum_lengths, max_batch_len)) > 0)[0] + 1
-
-            batch_indices = np.split(np.arange(len(segments)), split_points)
+            split_points = np.append(split_points, len(cumsum_lengths))
+            split_points = np.insert(split_points, 0, 0)
 
             # Cap the number of batches if max_nbatch is set
             if max_nbatch:
-                batch_indices = batch_indices[:max_nbatch]
+                split_points = split_points[:max_nbatch]
 
             # Create JaX batches
-            batches = [segments[idx] for idx in batch_indices if idx.size > 0]
-            tot_data_length = sum(lengths[idx].sum() for idx in batch_indices if idx.size > 0)
+            batches = []
+            fit_index_bt = []
+            for i in range(len(split_points)-1):
+                batches.append(np.vstack(fit_tracks[split_points[i]:split_points[i+1]]))
+                fit_index_bt.append(fit_index[split_points[i]:split_points[i+1]])
+            tot_data_length = cumsum_lengths[split_points[-1]-1]
             if chopped:
                 fit_tracks = [jnp.array(chop_tracks(batch, self.track_fields, electron_sampling_resolution)) for batch in batches]
             else:
                 fit_tracks = [jnp.array(batch) for batch in batches]
 
-            logger.info(f"-- The used data includes a total track length of {tot_data_length} cm.")
+            if print_input:
+                logger.info(f"training set [ev, trk]: {[idx.tolist() for idx in fit_index_bt]}")
+            logger.info(f"-- The used simulation data includes a total track length of {tot_data_length} cm.")
             logger.info(f"-- The maximum batch track length is {max_batch_len} cm.")
             logger.info(f"-- The number of batches is {len(batches)}.")
 
         if pad:
+            # Fix the pad value to 0, in case unexpected simulation behaviour
             self.tracks = pad_sequence(fit_tracks, padding_value = 0)
         else:
             self.tracks = fit_tracks
@@ -281,3 +285,76 @@ class TracksDataset:
     def get_track_fields(self):
         return self.track_fields
 
+class TgtTracksDataset:
+    def __init__(self, filename, dataloader_sim, swap_xz=True, chopped=True, pad=True, electron_sampling_resolution=0.001):
+
+        with h5py.File(filename, 'r') as f:
+            tracks = np.array(f['segments'])
+
+        if swap_xz:
+            x_start = np.copy(tracks['x_start'] )
+            x_end = np.copy(tracks['x_end'])
+            x = np.copy(tracks['x'])
+
+            tracks['x_start'] = np.copy(tracks['z_start'])
+            tracks['x_end'] = np.copy(tracks['z_end'])
+            tracks['x'] = np.copy(tracks['z'])
+
+            tracks['z_start'] = x_start
+            tracks['z_end'] = x_end
+            tracks['z'] = x
+
+
+        if not 't0' in tracks.dtype.names:
+            tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
+
+
+        self.tgt_track_fields = tracks.dtype.names
+        replace_map = {
+            'event_id': 'eventID',
+            'traj_id': 'trackID',
+        }
+        self.tgt_track_fields = tuple([replace_map.get(field, field) for field in self.tgt_track_fields])
+
+        tracks.dtype.names = self.tgt_track_fields
+
+        self.sim_track_fields = dataloader_sim.get_track_fields()
+
+        query = np.ascontiguousarray(tracks[['eventID', 'trackID']])
+        batches = []
+        total_data_length = 0
+        for bt in dataloader_sim:
+            sim_bt_eID = bt[:, self.sim_track_fields.index("eventID")]
+            sim_bt_tID = bt[:, self.sim_track_fields.index("trackID")]
+            ref = np.unique(np.stack([sim_bt_eID, sim_bt_tID], axis=1), axis=0)
+
+            idx_0 = np.where((ref == [0, 0]).all(axis=1))[0]
+            ref = np.delete(ref, idx_0, axis=0)
+
+            ref_set = {tuple(r) for r in ref}
+            mask = np.array([tuple(q) in ref_set for q in query])
+            batches.append(np.vstack(jax_from_structured(tracks[mask])))
+            total_data_length += np.sum(tracks[mask]['dx'])
+ 
+        if chopped:
+            fit_tracks = [jnp.array(chop_tracks(batch, self.tgt_track_fields, electron_sampling_resolution)) for batch in batches]
+        else:
+            fit_tracks = [jnp.array(batch) for batch in batches]
+
+            logger.info(f"-- The used target data includes a total track length of {tot_data_length} cm.")
+            logger.info(f"-- The maximum batch track length is {max_batch_len} cm.")
+            logger.info(f"-- The number of batches is {len(batches)}.")
+
+        if pad:
+            self.tracks = pad_sequence(fit_tracks, padding_value = 0)
+        else:
+            self.tracks = fit_tracks
+
+    def __len__(self):
+        return len(self.tracks)
+
+    def __getitem__(self, idx):
+        return self.tracks[idx]
+
+    def get_track_fields(self):
+        return self.tgt_track_fields
