@@ -333,6 +333,12 @@ class TgtTracksDataset:
 
             ref_set = {tuple(r) for r in ref}
             mask = np.array([tuple(q) in ref_set for q in query])
+
+            # Explicitly check that the input tracks are the same for the target and the simulation
+            tgt_track_id = np.unique(tracks[mask][['eventID', 'trackID']], axis=0)
+            if not np.allclose(np.array(tgt_track_id.tolist()), ref):
+                raise ValueError("Target and input do not contain the same tracks! Please check.")
+
             batches.append(np.vstack(jax_from_structured(tracks[mask])))
             total_data_length += np.sum(tracks[mask]['dx'])
  
