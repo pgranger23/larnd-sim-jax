@@ -159,6 +159,12 @@ class TracksDataset:
         self.track_fields = tuple([replace_map.get(field, field) for field in self.track_fields])
 
         tracks.dtype.names = self.track_fields
+
+        # Only load useful tracks
+        # assuming tracks are in orders for trajectories
+        length_load_threshold = max_batch_len * (max_nbatch + 2)
+        loaded_tracks = tracks[np.cumsum(tracks['dx']) < length_load_threshold]
+        tracks = loaded_tracks
         
         if live_selection:
             # flat index for all reasonable track [eventID, trackID] 
@@ -325,36 +331,33 @@ class TgtTracksDataset:
 
         self.sim_track_fields = dataloader_sim.get_track_fields()
 
-        query = np.ascontiguousarray(tracks[['eventID', 'trackID']])
+        # Only load useful tracks
         batches = []
         total_data_length = 0
-        for bt in dataloader_sim:
-            sim_bt_eID = bt[:, self.sim_track_fields.index("eventID")]
-            sim_bt_tID = bt[:, self.sim_track_fields.index("trackID")]
-            ref = np.unique(np.stack([sim_bt_eID, sim_bt_tID], axis=1), axis=0)
-
-            idx_0 = np.where((ref == [0, 0]).all(axis=1))[0]
-            ref = np.delete(ref, idx_0, axis=0)
-
-            ref_set = {tuple(r) for r in ref}
-            mask = np.array([tuple(q) in ref_set for q in query])
-
-            # Explicitly check that the input tracks are the same for the target and the simulation
-            tgt_track_id = np.unique(tracks[mask][['eventID', 'trackID']], axis=0)
-            if not np.allclose(np.array(tgt_track_id.tolist()), ref):
-                raise ValueError("Target and input do not contain the same tracks! Please check.")
-
-            batches.append(np.vstack(jax_from_structured(tracks[mask])))
-            total_data_length += np.sum(tracks[mask]['dx'])
+        if 'file_traj_id' in self.sim_track_fields and 'file_traj_id' in self.tgt_track_fields:
+            for bt in dataloader_sim:
+                load_file_traj = np.unique(bt[:, self.sim_track_fields.index("file_traj_id")])
+                mask = np.isin(tracks['file_traj_id'], load_file_traj)
+                batches.append(np.vstack(jax_from_structured(tracks[mask])))
+                total_data_length += np.sum(tracks[mask]['dx'])
+        else:
+            for bt in dataloader_sim:
+                if np.max(bt[:, self.sim_track_fields.index("trackID")]) > 1E5:
+                    raise ValueError("Assumption broke! More than 1E5 trajectories in some event!")
+                load_file_traj = np.unique(bt[:, self.sim_track_fields.index("eventID")]*1E5 + bt[:, self.sim_track_fields.index("trackID")])
+                event_track_id = tracks['eventID']*1E5 + tracks['trackID']
+                mask = np.isin(event_track_id, load_file_traj)
+                batches.append(np.vstack(jax_from_structured(tracks[mask])))
+                total_data_length += np.sum(tracks[mask]['dx'])
  
         if chopped:
             fit_tracks = [jnp.array(chop_tracks(batch, self.tgt_track_fields, electron_sampling_resolution)) for batch in batches]
         else:
             fit_tracks = [jnp.array(batch) for batch in batches]
 
-            logger.info(f"-- The used target data includes a total track length of {tot_data_length} cm.")
-            logger.info(f"-- The maximum batch track length is {max_batch_len} cm.")
-            logger.info(f"-- The number of batches is {len(batches)}.")
+        logger.info(f"-- The used target data includes a total track length of {tot_data_length} cm.")
+        logger.info(f"-- The maximum batch track length is {max_batch_len} cm.")
+        logger.info(f"-- The number of batches is {len(batches)}.")
 
         if pad:
             self.tracks = pad_sequence(fit_tracks, padding_value = 0)
