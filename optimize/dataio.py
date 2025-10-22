@@ -333,13 +333,20 @@ class TgtTracksDataset:
 
         # Only load useful tracks
         batches = []
-        total_data_length = 0
+        tot_data_length = 0
         if 'file_traj_id' in self.sim_track_fields and 'file_traj_id' in self.tgt_track_fields:
             for bt in dataloader_sim:
                 load_file_traj = np.unique(bt[:, self.sim_track_fields.index("file_traj_id")])
+                index0 = np.where(load_file_traj==0)
+                load_file_traj = np.delete(load_file_traj, index0)
                 mask = np.isin(tracks['file_traj_id'], load_file_traj)
+
+                # Explicitly check that the input tracks are the same for the target and the simulation
+                if not np.allclose(tracks['file_traj_id'][mask], load_file_traj):
+                    raise ValueError("Target and input do not contain the same tracks! Please check.")
+
                 batches.append(np.vstack(jax_from_structured(tracks[mask])))
-                total_data_length += np.sum(tracks[mask]['dx'])
+                tot_data_length += np.sum(tracks[mask]['dx'])
         else:
             for bt in dataloader_sim:
                 if np.max(bt[:, self.sim_track_fields.index("trackID")]) > 1E5:
@@ -347,8 +354,13 @@ class TgtTracksDataset:
                 load_file_traj = np.unique(bt[:, self.sim_track_fields.index("eventID")]*1E5 + bt[:, self.sim_track_fields.index("trackID")])
                 event_track_id = tracks['eventID']*1E5 + tracks['trackID']
                 mask = np.isin(event_track_id, load_file_traj)
+ 
+                # Explicitly check that the input tracks are the same for the target and the simulation
+                if not np.allclose(event_track_id[mask], load_file_traj):
+                    raise ValueError("Target and input do not contain the same tracks! Please check.")
+
                 batches.append(np.vstack(jax_from_structured(tracks[mask])))
-                total_data_length += np.sum(tracks[mask]['dx'])
+                tot_data_length += np.sum(tracks[mask]['dx'])
  
         if chopped:
             fit_tracks = [jnp.array(chop_tracks(batch, self.tgt_track_fields, electron_sampling_resolution)) for batch in batches]
@@ -356,8 +368,7 @@ class TgtTracksDataset:
             fit_tracks = [jnp.array(batch) for batch in batches]
 
         logger.info(f"-- The used target data includes a total track length of {tot_data_length} cm.")
-        logger.info(f"-- The maximum batch track length is {max_batch_len} cm.")
-        logger.info(f"-- The number of batches is {len(batches)}.")
+        logger.info(f"-- The number of target batches is {len(batches)}.")
 
         if pad:
             self.tracks = pad_sequence(fit_tracks, padding_value = 0)
