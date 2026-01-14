@@ -21,6 +21,8 @@ logger.setLevel(logging.WARNING)
 logger.info("DETSIM MODULE PARAMETERS")
 
 
+@annotate_function
+@annotate_function
 @partial(jit, static_argnames='signal_length')
 def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID, cathode_ticks, signal_length):
     # Get the number of pixels and ticks
@@ -46,14 +48,25 @@ def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID,
     # baseline_indices = jnp.ravel(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length))
     # print(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length, axis=0))
 
-    # Update wfs with accumulated signals
+    # Update wfs with accumulated signals - Optimize broadcasting
     wfs = wfs.ravel()
     # wfs = wfs.at[(flat_indices,)].add((response.take(signal_indices) - response.take(baseline_indices))*jnp.repeat(charge, signal_length))
-    wfs = wfs.at[(flat_indices,)].add((response.take(signal_indices))*jnp.repeat(charge, signal_length))
+    
+    # More efficient broadcasting - use broadcast_to instead of repeat
+    # Pre-compute shape for better performance
+    charge_shape = (charge.shape[0], signal_length)
+    charge_broadcasted = jnp.broadcast_to(charge[:, None], charge_shape).reshape(-1)
+    
+    # Combine response lookup and multiplication for better cache efficiency
+    response_values = response.take(signal_indices)
+    accumulated_values = response_values * charge_broadcasted
+    wfs = wfs.at[(flat_indices,)].add(accumulated_values)
 
     #Now correct for the missed ticks at the beginning
-    integrated_start = response_cum.take(jnp.ravel((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + response.shape[-1] - signal_length))
-    real_start = response_cum.take(jnp.ravel((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks))
+    # Cache the common base index calculation to avoid recomputation
+    base_curr_indices = (currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt
+    integrated_start = response_cum.take(jnp.ravel(base_curr_indices + response.shape[-1] - signal_length))
+    real_start = response_cum.take(jnp.ravel(base_curr_indices + cathode_ticks))
     difference = (integrated_start - real_start)*charge
 
     start_ticks = jnp.where((start_ticks <= 0 ) | (start_ticks >= Nticks - 1), 0, start_ticks) + pixID * Nticks
@@ -61,6 +74,7 @@ def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID,
 
     return wfs.reshape((Npixels, Nticks))
 
+@annotate_function
 @jit
 def accumulate_signals_parametrized(wfs, signals, pixID, start_ticks):
     # Get the number of pixels and ticks

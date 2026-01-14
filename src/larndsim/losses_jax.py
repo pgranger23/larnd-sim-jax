@@ -56,10 +56,10 @@ def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     adc_loss = jnp.sum(signals**2)
     return adc_loss, dict()
 
-def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event):
+def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, sigma=1):
     ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z, ref_Q), axis=-1)
     stacked = jnp.stack((x + event*1e5, y, z, Q), axis=-1)
-    return mmd(stacked, ref_stacked, hit_prob, ref_hit_prob, 1), dict()
+    return mmd(stacked, ref_stacked, hit_prob, ref_hit_prob, sigma), dict()
     # return mse_loss(adcs, pixels, ref, pixels_ref)
 
 def mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
