@@ -544,6 +544,15 @@ class GradientDescentFitter(ParamFitter):
                 logger.info(f"epoch {epoch}")
                 # if epoch == 2: libcudart.cudaProfilerStart()
 
+                # if epoch == 1:
+                #     options = jax.profiler.ProfileOptions()
+                #     options.host_tracer_level = 2
+                #     jax.profiler.start_trace("/sdf/home/p/pgranger/profile-data", profiler_options=options)
+                #     # libcudart.cudaProfilerStart()
+                # if epoch == 2:
+                #     jax.profiler.stop_trace()
+                #     # libcudart.cudaProfilerStop()
+
                 for i in range(len(dataloader_sim)):
                     start_time = time()
 
@@ -564,6 +573,8 @@ class GradientDescentFitter(ParamFitter):
                     loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, epoch=epoch, with_loss=True, with_grad=True)
 
                     modified_grads = self.process_grads(grads) #Grads are modified ans applied in this function
+
+                    logger.info(f"Loss: {loss_val.item()}")
 
                     stop_time = time()
 

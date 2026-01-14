@@ -536,6 +536,9 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None, save_w
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_unique - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
     pix_renumbering_neigh= jnp.searchsorted(unique_pixels, pIDs_neigh.ravel(), method='sort')
+
+    mask = (pix_renumbering_neigh < unique_pixels.size) & (unique_pixels[pix_renumbering_neigh] == pIDs_neigh.ravel())
+    pix_renumbering_neigh = pix_renumbering_neigh.at[~mask].set(0) #ASSUMES THAT THERE IS ALWAYS A -1 PIXID
     # mask_indices = jnp.nonzero(mask)[0]
     # padded_size = pad_size(mask_indices.shape[0], "pix_renumbering", 0.2)
     # mask_indices = jnp.pad(mask_indices, (0, padded_mask - mask_indices.shape[0]), mode='constant', constant_values=-1)
