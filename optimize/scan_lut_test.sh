@@ -10,6 +10,23 @@ MAX_CLIP_NORM_VAL=1
 DATA_SEED=1
 LOSS=mse_adc
 
+GPU=FALSE
+
+#Read in some input arguments
+while [[ $# -gt 0 ]]
+do
+    key="$1"
+    case $key in
+        --gpu)
+            GPU=TRUE
+            shift # past argument
+            ;;
+        *)
+            echo "Unknown option: $key"
+            exit 1
+    esac
+done
+
 ### proton 5000 events
 INPUT_FILE_TGT=prepared_data/input_1.h5
 INPUT_FILE_SIM=prepared_data/input_1.h5
@@ -45,7 +62,7 @@ python3 -m optimize.example_run \
     --loss_fn ${LOSS} \
     --fit_type 'scan' \
     --sim_seed_strategy 'same' \
-    --cpu_only \
+    $( [ "$GPU" == "FALSE" ] && echo "--cpu_only" ) \
     --scan_tgt_nom \
     --mc_diff
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
