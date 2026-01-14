@@ -16,6 +16,11 @@ Gradient and loss scan (no-noise, long diff in current calc) avg
    :alt: Scan result avg
    :align: center
 
+Iteration time during the loss scan
+
+.. image:: debug-plots/gradient_scan_time.png
+   :alt: Iteration time plot
+   :align: center
 
 LUT Scan results
 ----------------
@@ -28,6 +33,9 @@ LUT Scan results
    :alt: LUT scan result avg
    :align: center
 
+.. image:: scan-lut-plots/gradient_scan_time.png
+   :alt: LUT iteration time plot
+   :align: center
 
 Fit Plots
 ----------------
