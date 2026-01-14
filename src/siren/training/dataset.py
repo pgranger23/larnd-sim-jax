@@ -62,6 +62,7 @@ class ResponseTemplateDataset:
         normalize_outputs: bool = True,
         seed: int = 42,
         precomputed_template: Optional[np.ndarray] = None,
+        use_cdf: bool = False,
     ):
         """
         Initialize dataset.
@@ -73,16 +74,27 @@ class ResponseTemplateDataset:
             normalize_outputs: Whether to normalize outputs.
             seed: Random seed for train/val split.
             precomputed_template: If provided, use this instead of loading from file.
+            use_cdf: If True, train on cumulative distribution (CDF/10) instead of raw response.
         """
         self.lut_path = lut_path
         self.val_fraction = val_fraction
         self.seed = seed
+        self.use_cdf = use_cdf
 
         # Load or use provided template
         if precomputed_template is not None:
             self.response_template = precomputed_template
         else:
             self.response_template = self._load_and_build_template(lut_path)
+
+        # Compute CDF if needed (cumsum along time axis, normalized by 10)
+        if use_cdf:
+            self.cdf_template = np.cumsum(self.response_template, axis=-1) / 10.0
+            print(f"CDF template computed: shape {self.cdf_template.shape}")
+            print(f"CDF range: [{self.cdf_template.min():.4f}, {self.cdf_template.max():.4f}]")
+            # Verify: main pixel (0,0) should end at ~1.0, neighbors should end at ~0
+            print(f"CDF final values - Main pixel (0,0,0): {self.cdf_template[0, 0, 0, -1]:.4f}")
+            print(f"CDF final values - Neighbor (0,9,9): {self.cdf_template[0, 9, 9, -1]:.4f}")
 
         # Get dimensions
         self.n_diff, self.n_x, self.n_y, self.n_t = self.response_template.shape
@@ -95,13 +107,21 @@ class ResponseTemplateDataset:
         self._create_coordinate_grids()
 
         # Setup normalization
+        # For CDF mode, we use the CDF values which are in [0, ~1] for main pixel
+        if use_cdf:
+            output_min = float(self.cdf_template.min())
+            output_max = float(self.cdf_template.max())
+        else:
+            output_min = float(self.response_template.min())
+            output_max = float(self.response_template.max())
+
         self.norm_params = NormalizationParams(
             diff_range=(0.0, float(self.n_diff - 1)),
             x_range=(0.0, float(self.n_x - 1)),
             y_range=(0.0, float(self.n_y - 1)),
             t_range=(0.0, float(self.n_t - 1)),
-            output_min=float(self.response_template.min()),
-            output_max=float(self.response_template.max()),
+            output_min=output_min,
+            output_max=output_max,
             normalize_inputs=normalize_inputs,
             normalize_outputs=normalize_outputs,
         )
@@ -137,28 +157,21 @@ class ResponseTemplateDataset:
         gaus = gaus.astype(np.float32)
 
         print(f"Building response_template with {len(long_diff_template)} diffusion values...")
-        print("  Using vectorized JAX convolution...")
+        print("  Using scipy convolution (CPU)...")
 
-        # Use JAX for fast vectorized convolution
-        # Reshape response to (n_spatial, n_time) for batched convolution
+        # Use scipy for convolution (CPU-based, avoids CUDA initialization issues)
+        from scipy.ndimage import convolve1d
+
         n_x, n_y, n_t = response.shape
-        response_flat = jnp.array(response.reshape(-1, n_t))  # (2025, 1950)
-        gaus_jax = jnp.array(gaus)  # (100, 41)
+        n_diff = len(long_diff_template)
 
-        # Vectorized convolution using JAX vmap
-        def conv_1d(signal, kernel):
-            return jnp.convolve(signal, kernel, mode='same')
+        # Preallocate output
+        response_template = np.zeros((n_diff, n_x, n_y, n_t), dtype=np.float32)
 
-        # vmap over spatial positions
-        batch_conv_spatial = jax.vmap(conv_1d, in_axes=(0, None))
-        # vmap over kernels
-        batch_conv_kernels = jax.vmap(batch_conv_spatial, in_axes=(None, 0))
-
-        # Apply all convolutions at once: (100, 2025, 1950)
-        result = batch_conv_kernels(response_flat, gaus_jax)
-
-        # Reshape back to (100, 45, 45, 1950)
-        response_template = np.array(result.reshape(len(long_diff_template), n_x, n_y, n_t))
+        # Convolve along time axis for each diffusion kernel
+        for i, kernel in enumerate(gaus):
+            # convolve1d applies along axis=-1 (time) by default
+            response_template[i] = convolve1d(response, kernel, axis=-1, mode='constant')
 
         # Set index 0 to raw response (no diffusion)
         response_template[0] = response
@@ -174,7 +187,13 @@ class ResponseTemplateDataset:
         on-the-fly during sampling using index arithmetic.
         """
         # Store flattened values for fast indexing
-        self.values = self.response_template.ravel().astype(np.float32)
+        # In CDF mode, primary values are CDF; also store response for derivative loss
+        if self.use_cdf:
+            self.values = self.cdf_template.ravel().astype(np.float32)
+            self.response_values = self.response_template.ravel().astype(np.float32)
+        else:
+            self.values = self.response_template.ravel().astype(np.float32)
+            self.response_values = None  # Not needed in non-CDF mode
 
         # Precompute strides for index-to-coordinate conversion
         # Flat index = d * (n_x * n_y * n_t) + x * (n_y * n_t) + y * n_t + t
@@ -303,6 +322,58 @@ class ResponseTemplateDataset:
         values_norm = self.normalize_outputs(values_jax)
 
         return coords_norm, values_norm.reshape(-1, 1)
+
+    def sample_batch_cdf(
+        self,
+        rng_key: jax.random.PRNGKey,
+        batch_size: int,
+        split: str = 'train',
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        """
+        Sample a random batch for CDF training with derivative loss.
+
+        Returns both CDF targets and response targets (for derivative loss).
+
+        Args:
+            rng_key: JAX random key.
+            batch_size: Number of samples.
+            split: 'train' or 'val'.
+
+        Returns:
+            Tuple of (normalized_coords, cdf_values, response_values).
+            - cdf_values: CDF/10 values (training target for SIREN)
+            - response_values: Raw response values (training target for derivative)
+        """
+        if not self.use_cdf:
+            raise ValueError("sample_batch_cdf requires use_cdf=True")
+
+        indices = self.train_indices if split == 'train' else self.val_indices
+
+        # Sample random indices from the split
+        sample_idx = jax.random.choice(
+            rng_key, len(indices), shape=(batch_size,), replace=True
+        )
+        batch_indices = np.array(indices[sample_idx])
+
+        # Compute coordinates from flat indices (lazy evaluation)
+        coords = self._indices_to_coords(batch_indices)
+
+        # Get both CDF and response values
+        cdf_values = self.values[batch_indices]  # Already CDF/10 in CDF mode
+        response_values = self.response_values[batch_indices]
+
+        # Convert to JAX arrays
+        coords_jax = jnp.array(coords)
+        cdf_jax = jnp.array(cdf_values)
+        response_jax = jnp.array(response_values)
+
+        # Normalize coordinates
+        coords_norm = self.normalize_inputs(coords_jax)
+
+        # Note: We don't normalize CDF or response values for the derivative loss
+        # CDF is already in [0, ~1] range, response is used as-is for derivative target
+
+        return coords_norm, cdf_jax.reshape(-1, 1), response_jax.reshape(-1, 1)
 
     def get_full_validation_set(self) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """Get the full validation set (may be large - use with caution!)."""

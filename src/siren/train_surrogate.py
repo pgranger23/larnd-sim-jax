@@ -69,9 +69,17 @@ def parse_args():
     parser.add_argument('--val_fraction', type=float, default=0.1,
                         help='Fraction of data for validation')
 
+    # CDF mode
+    parser.add_argument('--use_cdf', action='store_true',
+                        help='Train on cumulative distribution (CDF/10) instead of raw response')
+    parser.add_argument('--lambda_deriv', type=float, default=0.0,
+                        help='Weight for derivative loss (0 = CDF only, >0 = CDF + derivative)')
+
     # Output
     parser.add_argument('--output_dir', type=str, default='siren_training',
                         help='Output directory for checkpoints and logs')
+    parser.add_argument('--run_name', type=str, default=None,
+                        help='Run name (appended to output_dir for unique experiment folders)')
 
     # Resume
     parser.add_argument('--resume', type=str, default=None,
@@ -110,6 +118,10 @@ def main():
     else:
         config = TrainingConfig.from_args(args)
 
+    # Append run_name to output_dir if specified
+    if args.run_name:
+        config.output_dir = str(Path(config.output_dir) / args.run_name)
+
     print("\nConfiguration:")
     print(config)
     print()
@@ -129,6 +141,7 @@ def main():
         normalize_inputs=config.normalize_inputs,
         normalize_outputs=config.normalize_outputs,
         seed=config.seed,
+        use_cdf=config.use_cdf,
     )
 
     print("\nDataset statistics:")

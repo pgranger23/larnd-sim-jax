@@ -164,6 +164,66 @@ class SurrogateTrainer:
         self._train_step = train_step
         self._eval_step = eval_step
 
+        # Compile CDF-specific functions if needed
+        if self.config.use_cdf:
+            self._compile_cdf_functions()
+
+    def _compile_cdf_functions(self) -> None:
+        """JIT-compile CDF training functions with derivative loss."""
+        lambda_deriv = self.config.lambda_deriv
+
+        # Get normalization scale for time coordinate
+        # Time is normalized to [-1, 1], so we need to scale the derivative
+        t_range = self.dataset.norm_params.t_range
+        t_scale = (t_range[1] - t_range[0]) / 2.0  # d(t_norm)/dt = 2/(t_max - t_min)
+
+        @jax.jit
+        def train_step_cdf(params, opt_state, coords, cdf_targets, response_targets):
+            """Training step with CDF + optional derivative loss."""
+
+            def loss_fn(params):
+                # CDF loss
+                cdf_pred = self.model.apply(params, coords)
+                cdf_loss = jnp.mean((cdf_pred - cdf_targets) ** 2)
+
+                if lambda_deriv > 0:
+                    # Derivative loss using JAX autodiff
+                    # coords shape: (batch, 4) where coords[:, 3] is normalized time
+
+                    def siren_scalar(single_coord):
+                        """SIREN output for a single coordinate."""
+                        return self.model.apply(params, single_coord[None, :])[0, 0]
+
+                    # vmap over batch to get per-sample gradients w.r.t. inputs
+                    grad_fn = jax.vmap(jax.grad(siren_scalar))
+                    grads = grad_fn(coords)  # Shape: (batch, 4)
+                    dcdf_dt_norm = grads[:, 3]  # Gradient w.r.t. normalized time
+
+                    # Scale derivative: d(CDF)/dt = d(CDF)/dt_norm * dt_norm/dt
+                    # CDF is scaled by 1/10, so actual response = 10 * d(CDF/10)/dt
+                    # dt_norm/dt = 2/(t_max - t_min)
+                    dcdf_dt = dcdf_dt_norm * (2.0 / t_scale) * 10.0
+
+                    deriv_loss = jnp.mean((dcdf_dt - response_targets.ravel()) ** 2)
+                    return cdf_loss + lambda_deriv * deriv_loss
+
+                return cdf_loss
+
+            loss, grads = jax.value_and_grad(loss_fn)(params)
+            updates, new_opt_state = self.optimizer.update(grads, opt_state, params)
+            new_params = optax.apply_updates(params, updates)
+
+            return new_params, new_opt_state, loss
+
+        @jax.jit
+        def eval_step_cdf(params, coords, cdf_targets):
+            """CDF evaluation step (CDF loss only)."""
+            cdf_pred = self.model.apply(params, coords)
+            return jnp.mean((cdf_pred - cdf_targets) ** 2)
+
+        self._train_step_cdf = train_step_cdf
+        self._eval_step_cdf = eval_step_cdf
+
     def get_current_lr(self) -> float:
         """Get current learning rate."""
         if callable(self.lr_schedule):
@@ -187,6 +247,8 @@ class SurrogateTrainer:
         print(f"Target steps: {config.num_steps}")
         print(f"Batch size: {config.batch_size}")
         print(f"Initial LR: {self.get_current_lr():.2e}")
+        if config.use_cdf:
+            print(f"Mode: CDF training (lambda_deriv={config.lambda_deriv})")
         print()
 
         start_time = time.time()
@@ -195,14 +257,25 @@ class SurrogateTrainer:
         while self.step < config.num_steps:
             # Sample batch
             self.rng_key, batch_key = jax.random.split(self.rng_key)
-            coords, targets = self.dataset.sample_batch(
-                batch_key, config.batch_size, split='train'
-            )
 
-            # Training step
-            self.params, self.opt_state, train_loss = self._train_step(
-                self.params, self.opt_state, coords, targets
-            )
+            if config.use_cdf:
+                # CDF mode: get both CDF and response targets
+                coords, cdf_targets, response_targets = self.dataset.sample_batch_cdf(
+                    batch_key, config.batch_size, split='train'
+                )
+                # Training step with CDF loss
+                self.params, self.opt_state, train_loss = self._train_step_cdf(
+                    self.params, self.opt_state, coords, cdf_targets, response_targets
+                )
+            else:
+                # Standard mode
+                coords, targets = self.dataset.sample_batch(
+                    batch_key, config.batch_size, split='train'
+                )
+                # Training step
+                self.params, self.opt_state, train_loss = self._train_step(
+                    self.params, self.opt_state, coords, targets
+                )
 
             self.step += 1
 
@@ -257,10 +330,19 @@ class SurrogateTrainer:
 
         for _ in range(n_batches):
             self.rng_key, batch_key = jax.random.split(self.rng_key)
-            coords, targets = self.dataset.sample_batch(
-                batch_key, self.config.batch_size, split='val'
-            )
-            loss = self._eval_step(self.params, coords, targets)
+
+            if self.config.use_cdf:
+                # CDF mode: validate on CDF loss only (not derivative)
+                coords, cdf_targets, _ = self.dataset.sample_batch_cdf(
+                    batch_key, self.config.batch_size, split='val'
+                )
+                loss = self._eval_step_cdf(self.params, coords, cdf_targets)
+            else:
+                coords, targets = self.dataset.sample_batch(
+                    batch_key, self.config.batch_size, split='val'
+                )
+                loss = self._eval_step(self.params, coords, targets)
+
             total_loss += float(loss)
 
         return total_loss / n_batches
@@ -294,7 +376,6 @@ class SurrogateTrainer:
         save_checkpoint(
             path=str(path),
             params=self.params,
-            opt_state=self.opt_state,
             step=self.step,
             config=self.config.to_dict(),
             history=self.history,
@@ -307,7 +388,6 @@ class SurrogateTrainer:
         save_checkpoint(
             path=str(latest_path),
             params=self.params,
-            opt_state=self.opt_state,
             step=self.step,
             config=self.config.to_dict(),
             history=self.history,
@@ -399,13 +479,13 @@ class SurrogateTrainer:
 
     def _resume_from_checkpoint(self, path: str) -> None:
         """Resume training from checkpoint."""
-        params, opt_state, step, config, history, norm_params, dataset_stats = load_checkpoint(path)
+        params, step, config, history, norm_params, dataset_stats = load_checkpoint(path)
 
         self.params = params
         self.step = step
         self.history = history
 
-        # Reinitialize optimizer (don't restore opt_state, it may be incompatible)
+        # Reinitialize optimizer
         self._setup_optimizer()
         self.opt_state = self.optimizer.init(self.params)
 

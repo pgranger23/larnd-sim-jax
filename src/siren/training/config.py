@@ -47,6 +47,10 @@ class TrainingConfig:
         normalize_inputs: Whether to normalize inputs to [-1, 1].
         normalize_outputs: Whether to normalize outputs.
 
+        # CDF mode
+        use_cdf: Train on cumulative distribution (CDF) instead of raw response.
+        lambda_deriv: Weight for derivative loss (0 = CDF only, >0 = CDF + derivative).
+
         # Paths
         lut_path: Path to response_template NPZ file.
         output_dir: Directory for outputs.
@@ -85,6 +89,10 @@ class TrainingConfig:
     val_fraction: float = 0.1
     normalize_inputs: bool = True
     normalize_outputs: bool = True
+
+    # CDF mode
+    use_cdf: bool = False  # Train on cumulative distribution instead of raw response
+    lambda_deriv: float = 0.0  # Weight for derivative loss (0 = CDF only, >0 = CDF + derivative)
 
     # Paths
     lut_path: str = 'src/larndsim/detector_properties/response_44_v2a_full_tick.npz'
