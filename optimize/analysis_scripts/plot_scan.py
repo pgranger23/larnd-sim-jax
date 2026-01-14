@@ -138,6 +138,7 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     
     # Try to extract parameter name from filename (e.g., "history_long_diff_batch1_..." -> "long_diff")
     param_from_filename = None
+    batch_num = None
     basename = os.path.basename(fname)
     if basename.startswith('history_'):
         parts = basename.split('_')
@@ -146,9 +147,16 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
             potential_param = '_'.join(parts[1:i+1])
             if potential_param in params:
                 param_from_filename = potential_param
+                # Try to extract batch number from remaining parts
+                for j in range(i+1, len(parts)):
+                    if parts[j].startswith('batch'):
+                        try:
+                            batch_num = int(parts[j].replace('batch', ''))
+                        except ValueError:
+                            pass
                 break
         if param_from_filename:
-            logger.info(f"Detected parameter '{param_from_filename}' from filename: {basename}")
+            logger.info(f"Detected parameter '{param_from_filename}' and batch {batch_num} from filename: {basename}")
     
     # Detect if this is a single-param file or multi-param file
     # Strategy: identify which parameter(s) were intentionally scanned by measuring variation
@@ -170,46 +178,76 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     # Priority: Use filename detection if available, then check divisibility
     if param_from_filename is not None:
         # Filename gives us the parameter - use single-param mode
-        # In LikelihoodProfiler, data accumulates: each file contains all previous scans
-        # We need to extract only the last nb_iter entries for this parameter
+        # In LikelihoodProfiler, data accumulates across batches and parameters
+        # For a given parameter, we want to extract data for ALL batches up to the one in filename
         
         # Check if data looks like accumulated scans (divisible by nb_iter but not exactly nb_iter)
-        if total_data_points > nb_iter and total_data_points % nb_iter == 0:
-            # Accumulated scan data - extract the LAST nb_iter entries
+        if total_data_points >= nb_iter and total_data_points % nb_iter == 0:
+            # Accumulated scan data
             n_accumulated_scans = total_data_points // nb_iter
-            logger.info(f"Detected accumulated scan data: {n_accumulated_scans} scans total, extracting last scan for {param_from_filename}")
             
-            # Find which scan number this parameter is
+            # Calculate which scans correspond to this parameter across all batches
             param_scan_index = params.index(param_from_filename)
-            # Extract data for this parameter's scan (the last one in the file)
-            start_idx = 1 + param_scan_index * nb_iter  # +1 because we skip index 0
-            end_idx = start_idx + nb_iter
             
-            raw_param_values = np.array(results[f"{param_from_filename}_iter"][start_idx:end_idx])
-            logger.info(f"Extracting indices [{start_idx}:{end_idx}] for {param_from_filename} (scan #{param_scan_index+1}/{nparams_in_file})")
-        elif total_data_points == nb_iter:
-            # Simple case: only one scan in file
-            raw_param_values = np.array(results[f"{param_from_filename}_iter"][1:])
-            logger.info(f"Single scan data for {param_from_filename}")
+            # Extract data for this parameter from ALL batches (0 to batch_num)
+            if batch_num is not None:
+                num_batches = batch_num + 1  # batches are 0-indexed
+                logger.info(f"Extracting data for parameter {param_from_filename} across {num_batches} batches (0 to {batch_num})")
+                
+                # Collect data from each batch for this parameter
+                param_values_list = []
+                grad_list = []
+                loss_list = []
+                
+                for b in range(num_batches):
+                    # For batch b, this parameter's scan is at position: b * nparams + param_index
+                    scan_idx = b * nparams_in_file + param_scan_index
+                    
+                    if scan_idx >= n_accumulated_scans:
+                        logger.warning(f"Batch {b} scan index {scan_idx} exceeds available scans {n_accumulated_scans}, skipping")
+                        break
+                    
+                    # Extract data for this scan
+                    start_idx = 1 + scan_idx * nb_iter  # +1 for _iter arrays
+                    end_idx = start_idx + nb_iter
+                    start_idx_no_offset = scan_idx * nb_iter  # for grad and loss arrays
+                    end_idx_no_offset = start_idx_no_offset + nb_iter
+                    
+                    param_values_list.append(np.array(results[f"{param_from_filename}_iter"][start_idx:end_idx]))
+                    grad_list.append(np.array(results[f"{param_from_filename}_grad"][start_idx_no_offset:end_idx_no_offset]))
+                    loss_list.append(np.array(results["losses_iter"][start_idx_no_offset:end_idx_no_offset]))
+                
+                # Stack into (nbatches, nb_iter) arrays
+                raw_param_values = np.array(param_values_list[-1])  # Use last batch for logging
+                param_value = np.array(param_values_list)
+                grad = np.array(grad_list)
+                loss = np.array(loss_list)
+                nbatches = len(param_values_list)
+                
+                logger.info(f"Extracted {nbatches} batches for {param_from_filename}")
+            else:
+                # Fallback: extract just the last occurrence
+                logger.warning(f"Could not extract batch number, extracting last scan only")
+                total_scan_index = param_scan_index
+                while total_scan_index + nparams_in_file < n_accumulated_scans:
+                    total_scan_index += nparams_in_file
+                
+                start_idx = 1 + total_scan_index * nb_iter
+                end_idx = start_idx + nb_iter
+                start_idx_no_offset = total_scan_index * nb_iter
+                end_idx_no_offset = start_idx_no_offset + nb_iter
+                
+                raw_param_values = np.array(results[f"{param_from_filename}_iter"][start_idx:end_idx])
+                param_value = raw_param_values.reshape(1, -1)
+                grad = np.array(results[f"{param_from_filename}_grad"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
+                loss = np.array(results["losses_iter"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
+                nbatches = 1
         else:
             raise ValueError(f"Unexpected data layout: {total_data_points} total points, nb_iter={nb_iter}")
         
         param = param_from_filename
-        nbatches = 1  # After extraction, we have one scan
         logger.info(f"Raw param_iter data: len={len(raw_param_values)}, unique values={len(np.unique(raw_param_values))}, range=[{raw_param_values.min():.6e}, {raw_param_values.max():.6e}]")
         logger.info(f"First 10 values: {raw_param_values[:10]}")
-        
-        # For accumulated scans, also extract corresponding grad and loss
-        if total_data_points > nb_iter:
-            start_idx_no_offset = param_scan_index * nb_iter
-            end_idx_no_offset = start_idx_no_offset + nb_iter
-            param_value = raw_param_values.reshape(1, -1)
-            grad = np.array(results[f"{param}_grad"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
-            loss = np.array(results["losses_iter"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
-        else:
-            param_value = raw_param_values.reshape(1, -1)
-            grad = np.array(results[f"{param}_grad"]).reshape(1, -1)
-            loss = np.array(results["losses_iter"]).reshape(1, -1)
         
         logger.info(f"Single-param mode (from filename): using parameter {param}")
         logger.info(f"Single-param mode: data shape - param_value: {param_value.shape}, grad: {grad.shape}, loss: {loss.shape}")
