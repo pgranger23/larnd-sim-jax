@@ -44,6 +44,32 @@ def parse_args():
     return parser.parse_args()
 
 
+def plot_time(fname, ax=None):
+    with open(fname, 'rb') as f:
+        results = pickle.load(f)
+    # print_config(results['config'])
+    
+    if 'fit_type' not in results['config']:
+        raise ValueError(f"Expected fit_type in {fname}")
+    
+    if results['config'].fit_type != 'scan':
+        raise ValueError(f"Expected fit_type scan, found {results['config']['fit_type']} in {fname}")
+
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+
+    params = [key.replace('_grad', '') for key in results.keys() if '_grad' in key]
+    param = params[0]
+
+    title = f"{results['config'].max_batch_len:.0f}cm batches ; Noise: {'on' if not results['config'].no_noise else 'off'} ; Random strategy: {results['config'].sim_seed_strategy} ; Sampling resolution: {results['config'].electron_sampling_resolution*1e4:.0f}um"
+    
+    time = np.array(results["step_time"])
+
+    ax.plot(time, label='Loss')
+    ax.set_ylabel('Time (s)')
+    ax.set_title(f"Time per iteration for {param}")
+    ax.get_figure().suptitle(title)
+
 def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     with open(fname, 'rb') as f:
         results = pickle.load(f)
@@ -128,16 +154,23 @@ if __name__ == "__main__":
         logger.info(f"Found {len(list_of_files)} files in {input_dir}")
 
     fig, axs = plt.subplots(3, 3, figsize=(20, 15))
+    fig_time, axs_time = plt.subplots(3, 3, figsize=(20, 15))
 
     for i, f in enumerate(list_of_files):
         ax = axs[i//3, i%3]
+        ax_time = axs_time[i//3, i%3]
         if args.input_file is not None:
             plot_gradient_scan(f, ax, True, i)
         else:
             plot_gradient_scan(f, ax, True, 0)
+        plot_time(f, ax_time)
     fig.tight_layout()
     fig.savefig(f'{output_dir}/gradient_scan.pdf')
     fig.savefig(f'{output_dir}/gradient_scan.png', dpi=300)
+
+    fig_time.tight_layout()
+    fig_time.savefig(f'{output_dir}/gradient_scan_time.pdf')
+    fig_time.savefig(f'{output_dir}/gradient_scan_time.png', dpi=300)
 
     fig, axs = plt.subplots(3, 3, figsize=(20, 15))
 
