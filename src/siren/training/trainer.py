@@ -308,6 +308,9 @@ class SurrogateTrainer:
                 # Save progress plot
                 self._save_progress_plot()
 
+                # Save prediction comparison plot (CDF mode only)
+                self._save_prediction_plot()
+
             # Checkpointing
             if self.step % config.checkpoint_every == 0:
                 self._save_checkpoint()
@@ -475,6 +478,78 @@ class SurrogateTrainer:
 
         plot_path = self.output_dir / 'training_progress.png'
         plt.savefig(plot_path, dpi=100, bbox_inches='tight')
+        plt.close(fig)
+
+    def _save_prediction_plot(self) -> None:
+        """Save LUT vs SIREN prediction comparison plot for CDF mode."""
+        if not self.config.use_cdf:
+            return
+
+        import numpy as np
+
+        # Fixed parameters
+        diff_idx = 49
+        pixels = [(0, 0, "Main (0,0)"), (0, 9, "Edge (0,9)")]
+        n_t = self.dataset.n_t
+
+        # Compute scale factor for derivative
+        # Time is normalized to [-1, 1], so dt_norm/dt = 2/(t_max - t_min)
+        # CDF is divided by 10, so response = 10 * d(CDF/10)/dt
+        t_range = self.dataset.norm_params.t_range
+        scale_factor = (2.0 / (t_range[1] - t_range[0])) * 10.0
+
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+        for col, (lut_x, lut_y, label) in enumerate(pixels):
+            # Get time coordinates
+            t_vals = jnp.arange(n_t, dtype=jnp.float32)
+            coords = jnp.stack([
+                jnp.full(n_t, diff_idx, dtype=jnp.float32),
+                jnp.full(n_t, lut_x, dtype=jnp.float32),
+                jnp.full(n_t, lut_y, dtype=jnp.float32),
+                t_vals,
+            ], axis=1)
+            coords_norm = self.dataset.normalize_inputs(coords)
+
+            # Get LUT values
+            lut_response = self.dataset.response_template[diff_idx, lut_x, lut_y, :]
+            lut_cdf = self.dataset.cdf_template[diff_idx, lut_x, lut_y, :]
+
+            # Get SIREN predictions (CDF)
+            siren_cdf = np.array(self.model.apply(self.params, coords_norm).ravel())
+
+            # Compute derivative via autodiff
+            def siren_scalar(coord):
+                return self.model.apply(self.params, coord[None, :])[0, 0]
+            grad_fn = jax.vmap(jax.grad(siren_scalar))
+            grads = grad_fn(coords_norm)
+            siren_deriv = np.array(grads[:, 3]) * scale_factor
+
+            t_vals_np = np.array(t_vals)
+
+            # Plot CDF comparison
+            ax = axes[0, col]
+            ax.plot(t_vals_np, lut_cdf, 'b-', alpha=0.7, linewidth=1.5, label='LUT CDF')
+            ax.plot(t_vals_np, siren_cdf, 'r--', alpha=0.7, linewidth=1.5, label='SIREN CDF')
+            ax.set_xlabel('Time (ticks)')
+            ax.set_ylabel('CDF')
+            ax.set_title(f'{label} - CDF (diff={diff_idx})')
+            ax.legend(loc='upper left')
+            ax.grid(True, alpha=0.3)
+
+            # Plot derivative comparison
+            ax = axes[1, col]
+            ax.plot(t_vals_np, lut_response, 'b-', alpha=0.7, linewidth=1.5, label='LUT Response')
+            ax.plot(t_vals_np, siren_deriv, 'r--', alpha=0.7, linewidth=1.5, label='SIREN d(CDF)/dt')
+            ax.set_xlabel('Time (ticks)')
+            ax.set_ylabel('Response')
+            ax.set_title(f'{label} - Derivative')
+            ax.legend(loc='upper right')
+            ax.grid(True, alpha=0.3)
+
+        plt.suptitle(f'LUT vs SIREN Predictions - Step {self.step}', fontsize=14)
+        plt.tight_layout()
+        plt.savefig(self.output_dir / 'prediction_comparison.png', dpi=100, bbox_inches='tight')
         plt.close(fig)
 
     def _resume_from_checkpoint(self, path: str) -> None:
