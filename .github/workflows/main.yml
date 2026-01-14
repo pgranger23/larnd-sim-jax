@@ -235,51 +235,6 @@ jobs:
           path: fit_result/**/*.pkl
           if-no-files-found: error
 
-  test-scan-lut-gpu:
-    runs-on: self-hosted
-
-    steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4.2.2
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.13
-
-      - name: Install dependencies
-        run: |
-          uv pip install --system .[dev] pytest-xdist  # parallelize tests
-
-      - name: Check fit
-        run: |
-          ./optimize/scan_lut_test.sh
-
-      - name: Make scan plots
-        run: |
-          ./optimize/analysis_scripts/plot_scan.py --input_dir fit_result/fit_noise/ --output_dir output
-
-      - uses: actions/upload-artifact@v4
-        if: github.event_name != 'pull_request'
-        with:
-          name: scan-lut-plots-${{ github.sha }}
-          path: output/*.png
-
-      - uses: actions/upload-artifact@v4
-        if: github.event_name == 'pull_request'
-        with:
-          name: scan-lut-plots-${{ github.event.pull_request.head.sha }}
-          path: output/*.png
-
-      - name: 'Upload Artifact'
-        uses: actions/upload-artifact@v4
-        with:
-          name: scan-lut-result
-          path: fit_result/**/*.pkl
-          if-no-files-found: error
-
 
   test-minuit:
     runs-on: ubuntu-latest
