@@ -44,7 +44,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def plot_time(fname, ax=None):
+def plot_time(fname, ax=None, ipar=0):
     with open(fname, 'rb') as f:
         results = pickle.load(f)
     # print_config(results['config'])
@@ -59,7 +59,11 @@ def plot_time(fname, ax=None):
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
     params = [key.replace('_grad', '') for key in results.keys() if '_grad' in key]
-    param = params[0]
+    
+    if ipar >= len(params):
+        return
+    
+    param = params[ipar]
 
     title = f"{results['config'].max_batch_len:.0f}cm batches ; Noise: {'on' if not results['config'].no_noise else 'off'} ; Random strategy: {results['config'].sim_seed_strategy} ; Sampling resolution: {results['config'].electron_sampling_resolution*1e4:.0f}um"
     
@@ -90,28 +94,35 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     title = f"{batch_size:.0f}cm batches ; Noise: {'on' if noise else 'off'} ; Random strategy: {results['config'].sim_seed_strategy} ; Sampling resolution: {results['config'].electron_sampling_resolution*1e4:.0f}um"
 
     param = params[ipar]
-    nparams = len(params)
+    nparams_in_file = len(params)
 
     nb_iter = results['config'].iterations
 
     target = results[f"{param}_target"]
-
-    # nbatches = results['config'].max_nbatch
     
     if ax is None:
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-    # max_index = (len(results["losses_iter"])//nbatches)*nbatches
 
-    # param_value = np.average(np.array(results[f"{param}_iter"][1:max_index + 1]).reshape(-1, nbatches), axis=1)
-    param_value = np.sort(np.unique(results[f"{param}_iter"][1:]))
-    nbatches = len(results["losses_iter"])//(nb_iter*nparams)
-    if len(results["losses_iter"]) % (nb_iter*nparams) != 0:
-        raise ValueError(f"Expected losses_iter to be divisible by param_value, found {len(results['losses_iter'])} and {param_value}")
-
-
-    param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, nparams, -1)[:, ipar, :]
-    grad = np.array(results[f"{param}_grad"]).reshape(nbatches, nparams, -1)[:, ipar, :]
-    loss = np.array(results["losses_iter"]).reshape(nbatches, nparams, -1)[:, ipar, :]
+    # Detect if this is a single-param file or multi-param file
+    # Single-param files: data for one parameter only (per-file scan mode)
+    # Multi-param files: data for all parameters together (single-file scan mode)
+    total_data_points = len(results["losses_iter"])
+    
+    # Try multi-param layout first
+    if total_data_points % (nb_iter * nparams_in_file) == 0:
+        # Multi-param file: all parameters scanned together
+        nbatches = total_data_points // (nb_iter * nparams_in_file)
+        param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
+        grad = np.array(results[f"{param}_grad"]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
+        loss = np.array(results["losses_iter"]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
+    elif total_data_points % nb_iter == 0:
+        # Single-param file: only one parameter scanned
+        nbatches = total_data_points // nb_iter
+        param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, -1)
+        grad = np.array(results[f"{param}_grad"]).reshape(nbatches, -1)
+        loss = np.array(results["losses_iter"]).reshape(nbatches, -1)
+    else:
+        raise ValueError(f"Cannot determine data layout: losses_iter length {total_data_points} is not divisible by nb_iter ({nb_iter}) or nb_iter*nparams ({nb_iter}*{nparams_in_file}={nb_iter*nparams_in_file})")
 
     if not plot_all:
         grad = np.nanmean(grad, axis=0)
@@ -144,26 +155,52 @@ if __name__ == "__main__":
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
+    # Determine the number of parameters and create file list
     if args.input_file is not None:
         if not os.path.exists(args.input_file):
             raise ValueError(f"Input file {args.input_file} does not exist")
-        list_of_files = [args.input_file] * 9
-        logger.info(f"Using input file {args.input_file}")
+        
+        # Load file to determine number of parameters
+        with open(args.input_file, 'rb') as f:
+            results = pickle.load(f)
+        params = [key.replace('_grad', '') for key in results.keys() if '_grad' in key]
+        nparams = len(params)
+        
+        # Create list with same file repeated for each parameter
+        list_of_files = [args.input_file] * nparams
+        param_indices = list(range(nparams))
+        logger.info(f"Using input file {args.input_file} with {nparams} parameters: {params}")
     else:
         list_of_files = glob.glob(f'{input_dir}/*.pkl')
-        logger.info(f"Found {len(list_of_files)} files in {input_dir}")
+        if not list_of_files:
+            raise ValueError(f"No .pkl files found in {input_dir}")
+        
+        nparams = len(list_of_files)
+        # For directory mode, each file contains a single parameter (ipar=0)
+        param_indices = [0] * nparams
+        logger.info(f"Found {nparams} files in {input_dir}")
 
-    fig, axs = plt.subplots(3, 3, figsize=(20, 15))
-    fig_time, axs_time = plt.subplots(3, 3, figsize=(20, 15))
+    # Calculate grid dimensions
+    ncols = min(3, nparams)
+    nrows = (nparams + ncols - 1) // ncols  # Ceiling division
+    
+    fig, axs = plt.subplots(nrows, ncols, figsize=(7*ncols, 5*nrows), squeeze=False)
+    fig_time, axs_time = plt.subplots(nrows, ncols, figsize=(7*ncols, 5*nrows), squeeze=False)
 
-    for i, f in enumerate(list_of_files):
-        ax = axs[i//3, i%3]
-        ax_time = axs_time[i//3, i%3]
-        if args.input_file is not None:
-            plot_gradient_scan(f, ax, True, i)
-        else:
-            plot_gradient_scan(f, ax, True, 0)
-        plot_time(f, ax_time)
+    for i, (f, ipar) in enumerate(zip(list_of_files, param_indices)):
+        row, col = i // ncols, i % ncols
+        ax = axs[row, col]
+        ax_time = axs_time[row, col]
+        
+        plot_gradient_scan(f, ax, True, ipar)
+        plot_time(f, ax_time, ipar)
+    
+    # Hide unused subplots
+    for i in range(nparams, nrows * ncols):
+        row, col = i // ncols, i % ncols
+        axs[row, col].axis('off')
+        axs_time[row, col].axis('off')
+    
     fig.tight_layout()
     fig.savefig(f'{output_dir}/gradient_scan.pdf')
     fig.savefig(f'{output_dir}/gradient_scan.png', dpi=300)
@@ -172,14 +209,19 @@ if __name__ == "__main__":
     fig_time.savefig(f'{output_dir}/gradient_scan_time.pdf')
     fig_time.savefig(f'{output_dir}/gradient_scan_time.png', dpi=300)
 
-    fig, axs = plt.subplots(3, 3, figsize=(20, 15))
+    # Second figure for averaged plots
+    fig, axs = plt.subplots(nrows, ncols, figsize=(7*ncols, 5*nrows), squeeze=False)
 
-    for i, f in enumerate(list_of_files):
-        ax = axs[i//3, i%3]
-        if args.input_file is not None:
-            plot_gradient_scan(f, ax, False, i)
-        else:
-            plot_gradient_scan(f, ax, False, 0)
+    for i, (f, ipar) in enumerate(zip(list_of_files, param_indices)):
+        row, col = i // ncols, i % ncols
+        ax = axs[row, col]
+        plot_gradient_scan(f, ax, False, ipar)
+    
+    # Hide unused subplots
+    for i in range(nparams, nrows * ncols):
+        row, col = i // ncols, i % ncols
+        axs[row, col].axis('off')
+    
     fig.tight_layout()
     fig.savefig(f'{output_dir}/gradient_scan_avg.pdf')
     fig.savefig(f'{output_dir}/gradient_scan_avg.png', dpi=300)
