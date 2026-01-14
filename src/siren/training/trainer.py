@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, Callable
 from functools import partial
 
+# Use non-interactive backend for matplotlib (no X11 needed)
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 from ..core import SIREN, create_siren, init_siren
 from .config import TrainingConfig
 from .dataset import ResponseTemplateDataset
@@ -227,6 +232,9 @@ class SurrogateTrainer:
                 if config.lr_scheduler == 'patience':
                     self._update_lr_patience(val_loss)
 
+                # Save progress plot
+                self._save_progress_plot()
+
             # Checkpointing
             if self.step % config.checkpoint_every == 0:
                 self._save_checkpoint()
@@ -327,6 +335,67 @@ class SurrogateTrainer:
             final_train_loss=final_train_loss,
             final_val_loss=final_val_loss,
         )
+
+    def _save_progress_plot(self) -> None:
+        """Save training progress plot."""
+        if not self.history['train_loss']:
+            return
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+        steps = self.history['step']
+        train_loss = self.history['train_loss']
+
+        # Plot 1: Training loss
+        ax = axes[0]
+        ax.plot(steps, train_loss, 'b-', alpha=0.7, label='Train')
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Loss (MSE)')
+        ax.set_title('Training Loss')
+        ax.set_yscale('log')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        # Plot 2: Validation loss
+        ax = axes[1]
+        if self.history['val_loss']:
+            # Validation is less frequent
+            val_steps_count = len(self.history['val_loss'])
+            val_steps = [steps[i * (len(steps) // val_steps_count)]
+                         for i in range(val_steps_count)] if val_steps_count > 0 else []
+            if len(val_steps) == len(self.history['val_loss']):
+                ax.plot(val_steps, self.history['val_loss'], 'r-o', alpha=0.7, label='Validation')
+            else:
+                ax.plot(self.history['val_loss'], 'r-o', alpha=0.7, label='Validation')
+            ax.set_xlabel('Step')
+            ax.set_ylabel('Loss (MSE)')
+            ax.set_title('Validation Loss')
+            ax.set_yscale('log')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+        else:
+            ax.text(0.5, 0.5, 'No validation data yet', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title('Validation Loss')
+
+        # Plot 3: Learning rate
+        ax = axes[2]
+        if self.history['learning_rate']:
+            ax.plot(steps, self.history['learning_rate'], 'g-', alpha=0.7)
+            ax.set_xlabel('Step')
+            ax.set_ylabel('Learning Rate')
+            ax.set_title('Learning Rate')
+            ax.set_yscale('log')
+            ax.grid(True, alpha=0.3)
+        else:
+            ax.text(0.5, 0.5, 'No LR data', ha='center', va='center', transform=ax.transAxes)
+            ax.set_title('Learning Rate')
+
+        plt.suptitle(f'SIREN Training Progress - Step {self.step}', fontsize=12)
+        plt.tight_layout()
+
+        plot_path = self.output_dir / 'training_progress.png'
+        plt.savefig(plot_path, dpi=100, bbox_inches='tight')
+        plt.close(fig)
 
     def _resume_from_checkpoint(self, path: str) -> None:
         """Resume training from checkpoint."""

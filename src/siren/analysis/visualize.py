@@ -5,7 +5,12 @@ Provides functions for plotting training curves, predictions, and diagnostics.
 """
 
 import numpy as np
+
+# Use non-interactive backend (no X11 needed)
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Any
 import json

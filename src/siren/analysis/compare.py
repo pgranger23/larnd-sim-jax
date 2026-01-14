@@ -6,7 +6,12 @@ Provides functions for comparing predictions, computing metrics, and visualizing
 """
 
 import numpy as np
+
+# Use non-interactive backend (no X11 needed)
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
 from pathlib import Path
 from typing import Optional, Dict, Tuple, Any
 import jax
