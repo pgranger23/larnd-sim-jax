@@ -67,26 +67,42 @@ def plot_time(fname, ax=None, ipar=0):
     nb_iter = results['config'].iterations
     total_data_points = len(results["losses_iter"])
     
-    # Detect mode by checking which parameter has most variation (is being scanned)
-    param_variations = {}
-    for p in params:
-        param_values = np.array(results[f"{p}_iter"][1:])
-        unique_vals = np.unique(param_values)
-        if len(unique_vals) > 1:
-            variation = (param_values.max() - param_values.min()) / np.abs(param_values.mean() + 1e-10)
-            param_variations[p] = (len(unique_vals), variation)
+    # Try to extract parameter name from filename
+    param_from_filename = None
+    basename = os.path.basename(fname)
+    if basename.startswith('history_'):
+        parts = basename.split('_')
+        for i in range(1, len(parts)):
+            potential_param = '_'.join(parts[1:i+1])
+            if potential_param in params:
+                param_from_filename = potential_param
+                break
     
-    if len(param_variations) == 0:
-        param = params[0]
-    else:
-        sorted_params = sorted(param_variations.items(), key=lambda x: (x[1][0], x[1][1]), reverse=True)
-        
-        # Multi-param file if data divisible by (nb_iter * nparams)
-        if total_data_points % (nb_iter * nparams_in_file) == 0:
-            param = params[ipar]
+    # Detect mode and select appropriate parameter
+    if total_data_points % (nb_iter * nparams_in_file) == 0:
+        # Multi-param file
+        param = params[ipar]
+    elif total_data_points % nb_iter == 0:
+        # Single-param file
+        if param_from_filename is not None:
+            param = param_from_filename
         else:
-            # Single-param file: use parameter with most unique values
-            param = sorted_params[0][0]
+            # Auto-detect by finding parameter with most variation
+            param_variations = {}
+            for p in params:
+                param_values = np.array(results[f"{p}_iter"][1:])
+                unique_vals = np.unique(param_values)
+                if len(unique_vals) > 1:
+                    variation = (param_values.max() - param_values.min()) / np.abs(param_values.mean() + 1e-10)
+                    param_variations[p] = (len(unique_vals), variation)
+            
+            if len(param_variations) > 0:
+                sorted_params = sorted(param_variations.items(), key=lambda x: (x[1][0], x[1][1]), reverse=True)
+                param = sorted_params[0][0]
+            else:
+                param = params[0]
+    else:
+        param = params[0]
 
     title = f"{results['config'].max_batch_len:.0f}cm batches ; Noise: {'on' if not results['config'].no_noise else 'off'} ; Random strategy: {results['config'].sim_seed_strategy} ; Sampling resolution: {results['config'].electron_sampling_resolution*1e4:.0f}um"
     
@@ -120,6 +136,20 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     nb_iter = results['config'].iterations
     total_data_points = len(results["losses_iter"])
     
+    # Try to extract parameter name from filename (e.g., "history_long_diff_batch1_..." -> "long_diff")
+    param_from_filename = None
+    basename = os.path.basename(fname)
+    if basename.startswith('history_'):
+        parts = basename.split('_')
+        # Try to find which part is a valid parameter name
+        for i in range(1, len(parts)):
+            potential_param = '_'.join(parts[1:i+1])
+            if potential_param in params:
+                param_from_filename = potential_param
+                break
+        if param_from_filename:
+            logger.info(f"Detected parameter '{param_from_filename}' from filename: {basename}")
+    
     # Detect if this is a single-param file or multi-param file
     # Strategy: identify which parameter(s) were intentionally scanned by measuring variation
     param_variations = {}
@@ -137,9 +167,55 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     logger.info(f"File {fname}: Parameter variations (unique_vals, rel_variation): {sorted_params}")
     
     # Check data layout to determine mode
-    if total_data_points % (nb_iter * nparams_in_file) == 0:
-        # Multi-param file: all parameters were scanned together
-        # Use the provided ipar to select the parameter
+    # Priority: Use filename detection if available, then check divisibility
+    if param_from_filename is not None:
+        # Filename gives us the parameter - use single-param mode
+        # In LikelihoodProfiler, data accumulates: each file contains all previous scans
+        # We need to extract only the last nb_iter entries for this parameter
+        
+        # Check if data looks like accumulated scans (divisible by nb_iter but not exactly nb_iter)
+        if total_data_points > nb_iter and total_data_points % nb_iter == 0:
+            # Accumulated scan data - extract the LAST nb_iter entries
+            n_accumulated_scans = total_data_points // nb_iter
+            logger.info(f"Detected accumulated scan data: {n_accumulated_scans} scans total, extracting last scan for {param_from_filename}")
+            
+            # Find which scan number this parameter is
+            param_scan_index = params.index(param_from_filename)
+            # Extract data for this parameter's scan (the last one in the file)
+            start_idx = 1 + param_scan_index * nb_iter  # +1 because we skip index 0
+            end_idx = start_idx + nb_iter
+            
+            raw_param_values = np.array(results[f"{param_from_filename}_iter"][start_idx:end_idx])
+            logger.info(f"Extracting indices [{start_idx}:{end_idx}] for {param_from_filename} (scan #{param_scan_index+1}/{nparams_in_file})")
+        elif total_data_points == nb_iter:
+            # Simple case: only one scan in file
+            raw_param_values = np.array(results[f"{param_from_filename}_iter"][1:])
+            logger.info(f"Single scan data for {param_from_filename}")
+        else:
+            raise ValueError(f"Unexpected data layout: {total_data_points} total points, nb_iter={nb_iter}")
+        
+        param = param_from_filename
+        nbatches = 1  # After extraction, we have one scan
+        logger.info(f"Raw param_iter data: len={len(raw_param_values)}, unique values={len(np.unique(raw_param_values))}, range=[{raw_param_values.min():.6e}, {raw_param_values.max():.6e}]")
+        logger.info(f"First 10 values: {raw_param_values[:10]}")
+        
+        # For accumulated scans, also extract corresponding grad and loss
+        if total_data_points > nb_iter:
+            start_idx_no_offset = param_scan_index * nb_iter
+            end_idx_no_offset = start_idx_no_offset + nb_iter
+            param_value = raw_param_values.reshape(1, -1)
+            grad = np.array(results[f"{param}_grad"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
+            loss = np.array(results["losses_iter"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
+        else:
+            param_value = raw_param_values.reshape(1, -1)
+            grad = np.array(results[f"{param}_grad"]).reshape(1, -1)
+            loss = np.array(results["losses_iter"]).reshape(1, -1)
+        
+        logger.info(f"Single-param mode (from filename): using parameter {param}")
+        logger.info(f"Single-param mode: data shape - param_value: {param_value.shape}, grad: {grad.shape}, loss: {loss.shape}")
+        logger.info(f"Single-param mode: param range [{param_value.min():.6e}, {param_value.max():.6e}], loss range [{loss.min():.6e}, {loss.max():.6e}]")
+    elif total_data_points % (nb_iter * nparams_in_file) == 0 and total_data_points % nb_iter != 0:
+        # Data is only divisible by nb_iter*nparams, not by nb_iter alone - must be multi-param
         param = params[ipar]
         nbatches = total_data_points // (nb_iter * nparams_in_file)
         param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
@@ -147,18 +223,20 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
         loss = np.array(results["losses_iter"]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
         logger.info(f"Multi-param mode: using parameter {param}")
     elif total_data_points % nb_iter == 0:
-        # Single-param file: identify the scanned parameter (most unique values)
+        # Single-param file (fallback when no filename detection)
         if len(sorted_params) > 0:
-            param = sorted_params[0][0]  # Parameter with most unique values
+            param = sorted_params[0][0]
+            logger.info(f"Single-param mode (auto-detected): using scanned parameter {param}")
         else:
-            # Fallback: use first parameter
             param = params[0]
+            logger.warning(f"Single-param mode: falling back to first parameter {param}")
         
         nbatches = total_data_points // nb_iter
         param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, -1)
         grad = np.array(results[f"{param}_grad"]).reshape(nbatches, -1)
         loss = np.array(results["losses_iter"]).reshape(nbatches, -1)
-        logger.info(f"Single-param mode: using scanned parameter {param}")
+        logger.info(f"Single-param mode: data shape - param_value: {param_value.shape}, grad: {grad.shape}, loss: {loss.shape}")
+        logger.info(f"Single-param mode: param range [{param_value.min():.6e}, {param_value.max():.6e}], loss range [{loss.min():.6e}, {loss.max():.6e}]")
     else:
         raise ValueError(f"Cannot determine data layout: {total_data_points} not divisible by {nb_iter} or {nb_iter}*{nparams_in_file}")
 
@@ -187,6 +265,7 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     labs = [l.get_label() for l in lns]
     ax2.legend(lns, labs, loc=0)
     ax.set_xlabel(param)
+    ax.set_title(f"Gradient scan for {param}")
     ax.get_figure().suptitle(title)
     # print(len(results[f"{param}_grad"]))
 
