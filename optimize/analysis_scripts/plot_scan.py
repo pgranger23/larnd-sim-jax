@@ -67,21 +67,26 @@ def plot_time(fname, ax=None, ipar=0):
     nb_iter = results['config'].iterations
     total_data_points = len(results["losses_iter"])
     
-    # Detect mode and select appropriate parameter
-    if total_data_points % (nb_iter * nparams_in_file) == 0:
-        # Multi-param file
-        param = params[ipar]
-    elif total_data_points % nb_iter == 0:
-        # Single-param file: find which parameter was scanned
-        scanned_param = None
-        for p in params:
-            param_values = np.array(results[f"{p}_iter"][1:])
-            if len(np.unique(param_values)) > 1:
-                scanned_param = p
-                break
-        param = scanned_param if scanned_param else params[0]
-    else:
+    # Detect mode by checking which parameter has most variation (is being scanned)
+    param_variations = {}
+    for p in params:
+        param_values = np.array(results[f"{p}_iter"][1:])
+        unique_vals = np.unique(param_values)
+        if len(unique_vals) > 1:
+            variation = (param_values.max() - param_values.min()) / np.abs(param_values.mean() + 1e-10)
+            param_variations[p] = (len(unique_vals), variation)
+    
+    if len(param_variations) == 0:
         param = params[0]
+    else:
+        sorted_params = sorted(param_variations.items(), key=lambda x: (x[1][0], x[1][1]), reverse=True)
+        
+        # Multi-param file if data divisible by (nb_iter * nparams)
+        if total_data_points % (nb_iter * nparams_in_file) == 0:
+            param = params[ipar]
+        else:
+            # Single-param file: use parameter with most unique values
+            param = sorted_params[0][0]
 
     title = f"{results['config'].max_batch_len:.0f}cm batches ; Noise: {'on' if not results['config'].no_noise else 'off'} ; Random strategy: {results['config'].sim_seed_strategy} ; Sampling resolution: {results['config'].electron_sampling_resolution*1e4:.0f}um"
     
@@ -116,40 +121,46 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     total_data_points = len(results["losses_iter"])
     
     # Detect if this is a single-param file or multi-param file
-    # Single-param files: data for one parameter only (per-file scan mode)
-    # Multi-param files: data for all parameters together (single-file scan mode)
+    # Strategy: identify which parameter(s) were intentionally scanned by measuring variation
+    param_variations = {}
+    for p in params:
+        param_values = np.array(results[f"{p}_iter"][1:])
+        unique_vals = np.unique(param_values)
+        if len(unique_vals) > 1:
+            # Measure variation as (max-min)/mean to get relative spread
+            variation = (param_values.max() - param_values.min()) / np.abs(param_values.mean() + 1e-10)
+            param_variations[p] = (len(unique_vals), variation)
     
-    # Try multi-param layout first
+    # Sort by number of unique values (primary) and variation (secondary)
+    sorted_params = sorted(param_variations.items(), key=lambda x: (x[1][0], x[1][1]), reverse=True)
+    
+    logger.info(f"File {fname}: Parameter variations (unique_vals, rel_variation): {sorted_params}")
+    
+    # Check data layout to determine mode
     if total_data_points % (nb_iter * nparams_in_file) == 0:
-        # Multi-param file: all parameters scanned together
+        # Multi-param file: all parameters were scanned together
         # Use the provided ipar to select the parameter
         param = params[ipar]
         nbatches = total_data_points // (nb_iter * nparams_in_file)
         param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
         grad = np.array(results[f"{param}_grad"]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
         loss = np.array(results["losses_iter"]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
+        logger.info(f"Multi-param mode: using parameter {param}")
     elif total_data_points % nb_iter == 0:
-        # Single-param file: only one parameter was scanned
-        # Find which parameter actually has varying values
-        scanned_param = None
-        for p in params:
-            param_values = np.array(results[f"{p}_iter"][1:])
-            if len(np.unique(param_values)) > 1:  # This parameter varies
-                scanned_param = p
-                break
-        
-        if scanned_param is None:
+        # Single-param file: identify the scanned parameter (most unique values)
+        if len(sorted_params) > 0:
+            param = sorted_params[0][0]  # Parameter with most unique values
+        else:
             # Fallback: use first parameter
-            logger.warning(f"Could not determine which parameter was scanned in {fname}, using {params[0]}")
-            scanned_param = params[0]
+            param = params[0]
         
-        param = scanned_param
         nbatches = total_data_points // nb_iter
         param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, -1)
         grad = np.array(results[f"{param}_grad"]).reshape(nbatches, -1)
         loss = np.array(results["losses_iter"]).reshape(nbatches, -1)
+        logger.info(f"Single-param mode: using scanned parameter {param}")
     else:
-        raise ValueError(f"Cannot determine data layout: losses_iter length {total_data_points} is not divisible by nb_iter ({nb_iter}) or nb_iter*nparams ({nb_iter}*{nparams_in_file}={nb_iter*nparams_in_file})")
+        raise ValueError(f"Cannot determine data layout: {total_data_points} not divisible by {nb_iter} or {nb_iter}*{nparams_in_file}")
 
     target = results[f"{param}_target"]
     
