@@ -50,7 +50,7 @@ if [ "$LUT" = TRUE ]; then
         --seed ${TARGET_SEED} \
         --optimizer_fn Adam \
         --random_ntrack \
-        --iterations 20 \
+        --iterations 100 \
         --max_batch_len ${BATCH_SIZE} \
         --lr_scheduler exponential_decay \
         --lr_kw '{"decay_rate" : 0.97}' \
