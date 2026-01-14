@@ -63,7 +63,25 @@ def plot_time(fname, ax=None, ipar=0):
     if ipar >= len(params):
         return
     
-    param = params[ipar]
+    nparams_in_file = len(params)
+    nb_iter = results['config'].iterations
+    total_data_points = len(results["losses_iter"])
+    
+    # Detect mode and select appropriate parameter
+    if total_data_points % (nb_iter * nparams_in_file) == 0:
+        # Multi-param file
+        param = params[ipar]
+    elif total_data_points % nb_iter == 0:
+        # Single-param file: find which parameter was scanned
+        scanned_param = None
+        for p in params:
+            param_values = np.array(results[f"{p}_iter"][1:])
+            if len(np.unique(param_values)) > 1:
+                scanned_param = p
+                break
+        param = scanned_param if scanned_param else params[0]
+    else:
+        param = params[0]
 
     title = f"{results['config'].max_batch_len:.0f}cm batches ; Noise: {'on' if not results['config'].no_noise else 'off'} ; Random strategy: {results['config'].sim_seed_strategy} ; Sampling resolution: {results['config'].electron_sampling_resolution*1e4:.0f}um"
     
@@ -93,36 +111,50 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     noise = (not results['config'].no_noise)
     title = f"{batch_size:.0f}cm batches ; Noise: {'on' if noise else 'off'} ; Random strategy: {results['config'].sim_seed_strategy} ; Sampling resolution: {results['config'].electron_sampling_resolution*1e4:.0f}um"
 
-    param = params[ipar]
     nparams_in_file = len(params)
-
     nb_iter = results['config'].iterations
-
-    target = results[f"{param}_target"]
+    total_data_points = len(results["losses_iter"])
     
-    if ax is None:
-        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-
     # Detect if this is a single-param file or multi-param file
     # Single-param files: data for one parameter only (per-file scan mode)
     # Multi-param files: data for all parameters together (single-file scan mode)
-    total_data_points = len(results["losses_iter"])
     
     # Try multi-param layout first
     if total_data_points % (nb_iter * nparams_in_file) == 0:
         # Multi-param file: all parameters scanned together
+        # Use the provided ipar to select the parameter
+        param = params[ipar]
         nbatches = total_data_points // (nb_iter * nparams_in_file)
         param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
         grad = np.array(results[f"{param}_grad"]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
         loss = np.array(results["losses_iter"]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
     elif total_data_points % nb_iter == 0:
-        # Single-param file: only one parameter scanned
+        # Single-param file: only one parameter was scanned
+        # Find which parameter actually has varying values
+        scanned_param = None
+        for p in params:
+            param_values = np.array(results[f"{p}_iter"][1:])
+            if len(np.unique(param_values)) > 1:  # This parameter varies
+                scanned_param = p
+                break
+        
+        if scanned_param is None:
+            # Fallback: use first parameter
+            logger.warning(f"Could not determine which parameter was scanned in {fname}, using {params[0]}")
+            scanned_param = params[0]
+        
+        param = scanned_param
         nbatches = total_data_points // nb_iter
         param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, -1)
         grad = np.array(results[f"{param}_grad"]).reshape(nbatches, -1)
         loss = np.array(results["losses_iter"]).reshape(nbatches, -1)
     else:
         raise ValueError(f"Cannot determine data layout: losses_iter length {total_data_points} is not divisible by nb_iter ({nb_iter}) or nb_iter*nparams ({nb_iter}*{nparams_in_file}={nb_iter*nparams_in_file})")
+
+    target = results[f"{param}_target"]
+    
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
 
     if not plot_all:
         grad = np.nanmean(grad, axis=0)
