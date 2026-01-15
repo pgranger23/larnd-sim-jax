@@ -511,3 +511,78 @@ srun --partition=ampere --account=mli:cider-ml --gpus=1 --mem=32G --time=12:00:0
 **Multi-seed training** (for reproducibility studies):
 - Seeds: 42, 43, 44, 45, 46
 - 1M steps each, no min LR
+
+### 2026-01-15: SIREN Surrogate Integration into Simulation
+
+**Goal**: Add a third simulation mode ('surrogate') that uses the trained SIREN CDF model instead of the LUT.
+
+**Key Insight**: The FEE code immediately computes `q_cumsum = (wfs * t_sampling).cumsum(axis=-1)` and only uses the cumsum. The SIREN CDF model outputs exactly this, so we can skip waveform generation entirely.
+
+**Architecture**:
+```
+LUT mode:       electrons → simulate_drift_new() → simulate_signals_new() → waveforms → FEE:cumsum → q_cumsum → ADC
+Surrogate mode: electrons → simulate_drift_surrogate() → simulate_signals_surrogate() → q_cumsum → ADC (direct!)
+```
+
+**Benefits**:
+- Exact continuous diffusion values (no interpolation across 3 indices)
+- Fractional bin positions (no integer discretization)
+- Direct CDF output (bypasses waveform generation)
+
+**Files Created/Modified**:
+
+1. **`src/larndsim/surrogate_utils.py`** (NEW) - Coordinate transforms:
+   - `long_diff_to_siren_diff()`: Map diffusion ticks → SIREN range [0, 99]
+   - `position_to_siren_xy()`: Map distances → fractional bin indices [0, 44]
+   - `normalize_siren_inputs()`: Normalize to [-1, 1] for SIREN
+   - `siren_cdf_to_q_cumsum()`: Convert CDF output to charge
+
+2. **`src/larndsim/consts_jax.py`**:
+   - Added surrogate normalization parameters to `Params_template`
+   - Added `load_surrogate()` function (handles both checkpoints and final_model.npz)
+
+3. **`src/larndsim/sim_jax.py`**:
+   - `simulate_drift_surrogate()`: Returns fractional coordinates
+   - `simulate_signals_surrogate()`: Evaluates SIREN at coordinates, outputs q_cumsum
+   - `simulate_surrogate()`: Main entry point
+
+4. **`src/larndsim/fee_jax.py`**:
+   - `get_adc_values_from_cumsum()`: FEE simulation from pre-computed cumsum
+
+5. **`optimize/simulate.py`**:
+   - Added 'surrogate' mode
+   - Added `--surrogate_model` argument
+
+6. **`documentation/SIREN_surrogate_integration.md`** - Full documentation
+
+**Test Script**: `src/siren/test_surrogate.py`
+```bash
+python3 -m src.siren.test_surrogate
+```
+
+**Usage (Surrogate Simulation)**:
+```bash
+python -m optimize.simulate \
+    --mode surrogate \
+    --surrogate_model siren_training/seed42/final_model.npz \
+    --input_file data/tracks.h5 \
+    --output_file results/output \
+    --electron_sampling_resolution 0.001 \
+    --number_pix_neighbors 1 \
+    --signal_length 150
+```
+
+**Coordinate Mappings**:
+- Diffusion: `diff_siren = (long_diff_ticks - 0.001) / (10.0 - 0.001) * 99.0` → [0, 99]
+- Position: `x_frac = x_dist / response_bin_size` → continuous [0, 44]
+- CDF to charge: `q_cumsum = siren_output * 10 * n_electrons * t_sampling`
+
+**Test Results** (seed46, 150k steps):
+- SIREN evaluation: 0.044841 at main pixel center
+- Full simulation produces ADC values: [84.8, 83.9, 82.8]
+- q_cumsum max: 17068.83
+
+**Checkpoint vs Final Model**:
+- `checkpoint_*.npz`: Full training state (wrapped params, optimizer state) - for resume
+- `final_model.npz`: Inference only (unwrapped params, model_config) - created at end
+- `load_surrogate()` handles both formats automatically
