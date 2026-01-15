@@ -7,8 +7,8 @@ import os
 import argparse
 import sys
 import traceback
-from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
-from larndsim.sim_jax import prepare_tracks, simulate_new, simulate_parametrized, id2pixel, get_pixel_coordinates
+from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut, load_surrogate
+from larndsim.sim_jax import prepare_tracks, simulate_new, simulate_parametrized, simulate_surrogate, id2pixel, get_pixel_coordinates
 from larndsim.losses_jax import get_hits_space_coords
 from pprint import pprint
 import numpy as np
@@ -82,6 +82,8 @@ def main(config):
         os.remove(config.output_file)
     if config.lut_file == "" and config.mode == 'lut':
         return 1, 'Error: LUT file is required for mode "lut"'
+    if config.surrogate_model == "" and config.mode == 'surrogate':
+        return 1, 'Error: Surrogate model file is required for mode "surrogate"'
     
     if not config.gpu:
         jax.config.update('jax_platform_name', 'cpu')
@@ -97,8 +99,10 @@ def main(config):
 
     if args.mode == 'lut':
         response, ref_params = load_lut(config.lut_file, ref_params)
-    
-    
+    elif args.mode == 'surrogate':
+        surrogate_params, surrogate_apply_fn, ref_params = load_surrogate(config.surrogate_model, ref_params)
+        logger.info(f"Loaded SIREN surrogate model from {config.surrogate_model}")
+
     params_to_apply = [
         'diffusion_in_current_sim',
         'mc_diff',
@@ -132,6 +136,11 @@ def main(config):
                 adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, wfs = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
             else:
                 adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
+        elif args.mode == 'surrogate':
+            if config.save_wfs:
+                adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, wfs = simulate_surrogate(ref_params, surrogate_params, surrogate_apply_fn, tracks, fields, save_wfs=True)
+            else:
+                adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_surrogate(ref_params, surrogate_params, surrogate_apply_fn, tracks, fields, save_wfs=False)
         else:
             adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
         if config.jac:
@@ -193,11 +202,12 @@ if __name__ == '__main__':
     parser.add_argument("--pixel_layouts", dest="pixel_layouts",
                         default="src/larndsim/pixel_layouts/multi_tile_layout-2.4.16_v4.yaml",
                         help="Path to pixel layouts YAML file")
-    parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
+    parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized', 'surrogate'], default='lut')
     parser.add_argument('--electron_sampling_resolution', type=float, required=True, help='Electron sampling resolution')
     parser.add_argument('--number_pix_neighbors', type=int, required=True, help='Number of pixel neighbors')
     parser.add_argument('--signal_length', type=int, required=True, help='Signal length')
     parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
+    parser.add_argument('--surrogate_model', type=str, required=False, default="", help='Path to the trained SIREN surrogate model (.npz file)')
     parser.add_argument('--noise', action='store_true', help='Add noise to the simulation')
     parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
     parser.add_argument('--diffusion_in_current_sim', action='store_true', help='Use diffusion in current simulation')

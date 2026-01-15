@@ -152,6 +152,18 @@ class Params_template:
     nb_tran_diff_bins: int = struct.field(pytree_node=False, default=5)
     hit_prob_threshold: float = struct.field(pytree_node=False, default=1e-5)  # Threshold for hit probability
 
+    # Surrogate model parameters (for 'surrogate' simulation mode)
+    surrogate_model_path: str = struct.field(pytree_node=False, default=None)
+    # SIREN normalization ranges (set by load_surrogate_model)
+    surrogate_diff_range: tuple = struct.field(pytree_node=False, default=(0.0, 99.0))
+    surrogate_x_range: tuple = struct.field(pytree_node=False, default=(0.0, 44.0))
+    surrogate_y_range: tuple = struct.field(pytree_node=False, default=(0.0, 44.0))
+    surrogate_t_range: tuple = struct.field(pytree_node=False, default=(0.0, 1949.0))
+    surrogate_output_min: float = struct.field(pytree_node=False, default=0.0)
+    surrogate_output_max: float = struct.field(pytree_node=False, default=1.0)
+    surrogate_normalize_inputs: bool = struct.field(pytree_node=False, default=True)
+    surrogate_normalize_outputs: bool = struct.field(pytree_node=False, default=True)
+
 def build_params_class(params_with_grad):
     """
     Dynamically creates a dataclass based on the fields of `Params_template`, modifying the metadata of fields
@@ -439,3 +451,84 @@ def load_lut(lut_file, params):
 
     return response_template, updated_params
     # return np.cumsum(response, axis=-1)
+
+
+def load_surrogate(surrogate_path, params):
+    """
+    Load a trained SIREN surrogate model for simulation.
+
+    This function loads the model, creates a JIT-compiled apply function,
+    and updates the params with normalization ranges from the model.
+
+    Supports both checkpoint files (checkpoint_*.npz) and final model files (final_model.npz).
+
+    Args:
+        surrogate_path (str): Path to the trained SIREN model (.npz file).
+        params (Params): The simulation parameters.
+
+    Returns:
+        tuple: (model_params, apply_fn, updated_params) where:
+            - model_params: SIREN model parameters (frozen dict)
+            - apply_fn: JIT-compiled function that takes (params, coords) and returns predictions
+            - updated_params: Params with surrogate normalization ranges set
+
+    Example:
+        >>> model_params, apply_fn, params = load_surrogate('siren_training/seed42/checkpoint_latest.npz', params)
+        >>> coords = jnp.array([[50.0, 22.0, 22.0, 1000.0]])  # (diff, x, y, t)
+        >>> # Normalize coords to [-1, 1] before calling
+        >>> output = apply_fn(model_params, coords_normalized)
+    """
+    from src.siren.core import create_siren
+    from src.siren.training.checkpointing import load_final_model, load_checkpoint
+    from pathlib import Path
+
+    path = Path(surrogate_path)
+
+    # Detect if this is a checkpoint or final_model based on filename
+    is_checkpoint = 'checkpoint' in path.name
+
+    if is_checkpoint:
+        # Load from checkpoint (training format)
+        model_params, step, config, history, norm_params, dataset_stats, _ = load_checkpoint(surrogate_path)
+
+        # Extract model config from training config
+        model_config = {
+            'hidden_features': config.get('hidden_features', 256),
+            'hidden_layers': config.get('hidden_layers', 4),
+            'out_features': 1,
+            'outermost_linear': config.get('outermost_linear', True),
+            'w0': config.get('w0', 30.0),
+        }
+        trained_steps = step
+        logger.info(f"Loaded from checkpoint at step {step}")
+    else:
+        # Load from final_model (inference format)
+        model_params, model_config, norm_params, dataset_stats, metadata = load_final_model(surrogate_path)
+        trained_steps = metadata['final_step']
+
+    # Create model instance
+    model = create_siren(**model_config)
+
+    # Create JIT-compiled apply function
+    @jax.jit
+    def apply_fn(params, coords):
+        return model.apply(params, coords)
+
+    # Update params with normalization ranges from the trained model
+    updated_params = params.replace(
+        surrogate_model_path=surrogate_path,
+        surrogate_diff_range=tuple(norm_params['diff_range']),
+        surrogate_x_range=tuple(norm_params['x_range']),
+        surrogate_y_range=tuple(norm_params['y_range']),
+        surrogate_t_range=tuple(norm_params['t_range']),
+        surrogate_output_min=norm_params['output_min'],
+        surrogate_output_max=norm_params['output_max'],
+        surrogate_normalize_inputs=norm_params['normalize_inputs'],
+        surrogate_normalize_outputs=norm_params['normalize_outputs'],
+    )
+
+    logger.info(f"Loaded SIREN surrogate from {surrogate_path}")
+    logger.info(f"  Architecture: {model_config['hidden_features']} x {model_config['hidden_layers']} layers")
+    logger.info(f"  Trained for {trained_steps} steps")
+
+    return model_params, apply_fn, updated_params

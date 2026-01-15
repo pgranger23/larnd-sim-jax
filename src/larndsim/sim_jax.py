@@ -14,6 +14,13 @@ from larndsim.drifting_jax import drift
 from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise, get_adc_values_average_noise_vmap
 from optimize.dataio import chop_tracks
 from larndsim.consts_jax import get_vdrift
+from larndsim.surrogate_utils import (
+    long_diff_to_siren_diff,
+    position_to_siren_xy,
+    normalize_siren_inputs,
+    siren_cdf_to_q_cumsum,
+    denormalize_siren_output,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -634,3 +641,361 @@ def backtrack_electrons(unique_pixels, pixId, hit_t0, pix_renumbering, electrons
     t0 = start_ticks[pix_renumbering == pix_idx]
     matching_electrons = matching_electrons[jnp.logical_and(t0 >= hit_t0 - 50, t0 <= hit_t0 + 50)] #TODO: Put sensible values for time window
     return matching_electrons
+
+
+# ==============================================================================
+# SIREN Surrogate Simulation Functions
+# ==============================================================================
+
+@partial(jit, static_argnames=['fields'])
+def simulate_drift_surrogate(params, tracks, fields):
+    """
+    Drift simulation variant for surrogate mode.
+
+    Similar to simulate_drift_new(), but returns fractional coordinates
+    suitable for SIREN evaluation instead of integer LUT indices.
+
+    Returns:
+        main_pixels: Main pixel IDs (same as simulate_drift_new)
+        pixels: All pixel IDs including transverse diffusion bins
+        nelectrons: Number of electrons per deposit
+        t0_ticks: Time to cathode in ticks (for SIREN t-coordinate)
+        long_diff_siren: Longitudinal diffusion mapped to SIREN range [0, 99]
+        x_dist_frac: Fractional x bin index for SIREN [0, 44]
+        y_dist_frac: Fractional y bin index for SIREN [0, 44]
+        pIDs_neigh: Neighbor pixel IDs
+        x_dist_neigh: Neighbor x distances (fractional)
+        y_dist_neigh: Neighbor y distances (fractional)
+        nelectrons_neigh: Number of electrons for neighbors
+        t0_neigh: t0 for neighbors
+    """
+    # Shifting tracks
+    new_tracks = shift_tracks(params, tracks, fields)
+    # Quenching and drifting
+    new_tracks = quench(params, new_tracks, 2, fields)
+    new_tracks = drift(params, new_tracks, fields)
+
+    main_electrons = new_tracks
+
+    # Get bin shifts for pixel identification (still needed for pixel IDs)
+    bins_pitches = get_bin_shifts(params, main_electrons, fields)
+
+    # Transverse diffusion weighting (same as simulate_drift_new)
+    nb_tran_diff_bins = params.nb_tran_diff_bins
+    nb_tran_diff_bins_sym = (nb_tran_diff_bins - 1) // 2
+    bins = jnp.linspace(-(nb_tran_diff_bins/2)*params.pixel_pitch/params.nb_sampling_bins_per_pixel,
+                        (nb_tran_diff_bins/2)*params.pixel_pitch/params.nb_sampling_bins_per_pixel,
+                        nb_tran_diff_bins + 1)
+    x0 = main_electrons[:, fields.index("x")] % (params.pixel_pitch/params.nb_sampling_bins_per_pixel)
+    y0 = main_electrons[:, fields.index("y")] % (params.pixel_pitch/params.nb_sampling_bins_per_pixel)
+    sigma = main_electrons[:, fields.index("tran_diff")]
+    tran_diff_weights = density_2d(bins, x0, y0, sigma)
+
+    nelectrons = (tran_diff_weights * main_electrons[:, fields.index("n_electrons")][:, None, None]).reshape(-1)
+
+    # Time to cathode in ticks
+    z_cathode = jnp.take(params.tpc_borders, main_electrons[:, fields.index("pixel_plane")].astype(int), axis=0)[..., 2, 1]
+    t0 = (jnp.abs(main_electrons[:, fields.index('z')] - z_cathode)) / get_vdrift(params)
+    t0_ticks = (t0 / params.t_sampling).astype(int)
+    t0_ticks_expanded = (jnp.ones((main_electrons.shape[0], nb_tran_diff_bins, nb_tran_diff_bins)) * t0_ticks[:, None, None]).reshape(-1)
+
+    # Longitudinal diffusion in ticks -> SIREN diff coordinate [0, 99]
+    long_diff_ticks = main_electrons[:, fields.index("long_diff")] / get_vdrift(params) / params.t_sampling
+    long_diff_siren = long_diff_to_siren_diff(long_diff_ticks)
+    long_diff_siren = long_diff_siren[:, None, None].repeat(nb_tran_diff_bins**2, axis=-1).reshape(-1)
+
+    # Compute pixel coordinates and fractional distances
+    bin_shifts = jnp.mgrid[-nb_tran_diff_bins_sym:nb_tran_diff_bins_sym+1, -nb_tran_diff_bins_sym:nb_tran_diff_bins_sym+1]
+    bins_pitches_new = (bins_pitches[..., jnp.newaxis, jnp.newaxis] + bin_shifts).swapaxes(1, -1)
+    pix_pitches = bins_pitches_new // params.nb_sampling_bins_per_pixel
+
+    # Pixel IDs
+    pixels = pixel2id(params, pix_pitches[..., 0], pix_pitches[..., 1],
+                      main_electrons[:, fields.index("pixel_plane")][:, None, None].astype(int),
+                      main_electrons[:, fields.index("eventID")][:, None, None].astype(int))
+    main_pixels = pixels[:, nb_tran_diff_bins_sym, nb_tran_diff_bins_sym]
+
+    # Fractional position indices for SIREN (key difference from simulate_drift_new)
+    # Compute distance from electron to pixel center in bin units
+    # The distance is computed as the fractional part of the bin position
+    # scaled to the response_bin_size
+    sub_bin_pos = (bins_pitches_new % params.nb_sampling_bins_per_pixel - params.nb_sampling_bins_per_pixel//2 + 0.5)
+    sub_bin_pos = jnp.abs(sub_bin_pos)  # Take absolute value since response is symmetric
+
+    # Convert sub-bin position to fractional LUT index
+    # Each sub-bin corresponds to response_bin_size / (nb_sampling_bins_per_pixel) in distance
+    # But we want the total distance from pixel center in LUT bin units
+    x_dist_frac = sub_bin_pos[..., 0].reshape(-1)  # Already in sub-bin units (0 to ~nb_sampling_bins_per_pixel/2)
+    y_dist_frac = sub_bin_pos[..., 1].reshape(-1)
+
+    # Scale to match LUT indexing: 1 pixel = nb_sampling_bins_per_pixel sub-bins = 9 LUT bins
+    # So 1 sub-bin ≈ 9/nb_sampling_bins_per_pixel LUT bins
+    lut_bins_per_subbin = 9.0 / params.nb_sampling_bins_per_pixel
+    x_dist_frac = x_dist_frac * lut_bins_per_subbin
+    y_dist_frac = y_dist_frac * lut_bins_per_subbin
+
+    #########################################################
+    ################# Adding neighbors ######################
+    #########################################################
+    pix_grid = jnp.mgrid[-params.number_pix_neighbors:params.number_pix_neighbors+1,
+                         -params.number_pix_neighbors:params.number_pix_neighbors+1]
+
+    principal_pitches = pix_pitches[:, nb_tran_diff_bins_sym, nb_tran_diff_bins_sym, :]
+    new_pitches = jnp.moveaxis((principal_pitches[:, :, None, None] + pix_grid), 1, -1)
+    pIDs = pixel2id(params, new_pitches[..., 0], new_pitches[..., 1],
+                    main_electrons[:, fields.index("pixel_plane")][:, None, None].astype(int),
+                    main_electrons[:, fields.index("eventID")][:, None, None].astype(int))
+    pIDs_neigh = pIDs.at[:, params.number_pix_neighbors, params.number_pix_neighbors].set(-999)
+
+    # Neighbor distances (fractional)
+    # For neighbors, the distance is: (sub-bin offset from main pixel) + (pixel offset * bins_per_pixel)
+    bin_shifts_neighbors = pix_grid * params.nb_sampling_bins_per_pixel
+    neigh_sub_pos = jnp.abs(bins_pitches[:, :, None, None] % params.nb_sampling_bins_per_pixel
+                           - params.nb_sampling_bins_per_pixel//2 + 0.5 - bin_shifts_neighbors)
+    neigh_sub_pos = jnp.moveaxis(neigh_sub_pos, 1, -1).reshape(-1, 2)
+
+    x_dist_neigh = neigh_sub_pos[:, 0] * lut_bins_per_subbin
+    y_dist_neigh = neigh_sub_pos[:, 1] * lut_bins_per_subbin
+
+    nelectrons_neigh = main_electrons[:, fields.index("n_electrons")]
+    t0_neigh_ticks = t0_ticks
+
+    return (main_pixels, pixels, nelectrons, t0_ticks_expanded, long_diff_siren,
+            x_dist_frac, y_dist_frac, pIDs_neigh, x_dist_neigh, y_dist_neigh,
+            nelectrons_neigh, t0_neigh_ticks)
+
+
+@partial(jit, static_argnames=['surrogate_apply_fn', 'n_time_ticks'])
+def simulate_signals_surrogate(params, surrogate_apply_fn, surrogate_params,
+                               unique_pixels, pixels, nelectrons,
+                               t0_ticks, long_diff_siren, x_dist_frac, y_dist_frac,
+                               pIDs_neigh, x_dist_neigh, y_dist_neigh, nelectrons_neigh, t0_neigh_ticks,
+                               n_time_ticks):
+    """
+    Signal simulation using SIREN surrogate model.
+
+    Evaluates the SIREN CDF model at electron coordinates and outputs
+    q_cumsum directly, bypassing waveform generation.
+
+    Args:
+        params: Simulation parameters (with surrogate norm ranges set).
+        surrogate_apply_fn: JIT-compiled SIREN apply function.
+        surrogate_params: SIREN model parameters.
+        unique_pixels: Unique pixel IDs.
+        pixels: All pixel IDs including transverse diffusion bins.
+        nelectrons: Number of electrons per deposit.
+        t0_ticks: Time to cathode in ticks.
+        long_diff_siren: Longitudinal diffusion in SIREN range [0, 99].
+        x_dist_frac: Fractional x bin index [0, 44].
+        y_dist_frac: Fractional y bin index [0, 44].
+        pIDs_neigh: Neighbor pixel IDs.
+        x_dist_neigh: Neighbor x distances (fractional).
+        y_dist_neigh: Neighbor y distances (fractional).
+        nelectrons_neigh: Number of electrons for neighbors.
+        t0_neigh_ticks: t0 for neighbors.
+        n_time_ticks: Number of time ticks in output (static).
+
+    Returns:
+        q_cumsum: Charge cumsum array of shape (Npixels, Nticks).
+    """
+    pix_renumbering = jnp.searchsorted(unique_pixels, pixels.ravel(), method='sort')
+
+    Npixels = unique_pixels.shape[0]
+    Nticks = n_time_ticks + 1  # +1 for garbage collector at index 0
+
+    # Response parameters
+    response_length = 1950  # Full response template length
+    signal_length = int(params.signal_length)
+
+    # Compute start ticks (when signal begins for each electron)
+    cathode_ticks = t0_ticks.astype(int)
+    start_ticks = response_length - signal_length - cathode_ticks
+
+    # Generate time indices for SIREN evaluation
+    # We evaluate at the last signal_length ticks of the response
+    time_indices = jnp.arange(response_length - signal_length, response_length)  # [signal_length]
+
+    # Broadcast coordinates for batch evaluation
+    n_electrons_batch = nelectrons.shape[0]
+
+    # Create coordinate arrays for all (electron, time) pairs
+    diff_batch = jnp.repeat(long_diff_siren, signal_length)  # [n_electrons * signal_length]
+    x_batch = jnp.repeat(x_dist_frac, signal_length)
+    y_batch = jnp.repeat(y_dist_frac, signal_length)
+    t_batch = jnp.tile(time_indices, n_electrons_batch)  # Repeat time indices for each electron
+
+    # Normalize inputs to [-1, 1] for SIREN
+    coords_norm = normalize_siren_inputs(
+        diff_batch, x_batch, y_batch, t_batch.astype(jnp.float32),
+        diff_range=params.surrogate_diff_range,
+        x_range=params.surrogate_x_range,
+        y_range=params.surrogate_y_range,
+        t_range=params.surrogate_t_range,
+    )
+
+    # Evaluate SIREN (single batched forward pass)
+    siren_output = surrogate_apply_fn(surrogate_params, coords_norm)  # [n_electrons * signal_length, 1]
+
+    # Denormalize output if needed
+    if params.surrogate_normalize_outputs:
+        siren_output = denormalize_siren_output(
+            siren_output,
+            params.surrogate_output_min,
+            params.surrogate_output_max,
+        )
+
+    siren_output = siren_output.squeeze(-1)  # [n_electrons * signal_length]
+
+    # Convert CDF output to q_cumsum
+    # SIREN outputs CDF/10, so we scale back up and multiply by n_electrons
+    nelectrons_expanded = jnp.repeat(nelectrons, signal_length)
+    q_cumsum_values = siren_cdf_to_q_cumsum(
+        siren_output, nelectrons_expanded, params.t_sampling, output_scale=10.0
+    )
+
+    # Reshape to [n_electrons, signal_length]
+    q_cumsum_per_electron = q_cumsum_values.reshape(n_electrons_batch, signal_length)
+
+    # Initialize output q_cumsum array
+    q_cumsum = jnp.zeros((Npixels, Nticks))
+    q_cumsum_flat = q_cumsum.ravel()
+
+    # Compute indices for accumulation
+    time_ticks = start_ticks[..., None] + jnp.arange(signal_length)  # [n_electrons, signal_length]
+    time_ticks = jnp.where((time_ticks <= 0) | (time_ticks >= Nticks - 1), 0, time_ticks + 1)
+
+    start_indices = pix_renumbering * Nticks
+    flat_indices = (start_indices[..., None] + time_ticks).ravel()
+
+    # Accumulate signals (take max CDF value at each position, since CDF is monotonic)
+    # Using add for now, may need refinement
+    q_cumsum_flat = q_cumsum_flat.at[flat_indices].add(q_cumsum_per_electron.ravel())
+
+    # Handle neighbors (simplified: use diffusion index 0 for no-diffusion response)
+    npix_neigh = (2 * params.number_pix_neighbors + 1) ** 2
+    pix_renumbering_neigh = jnp.searchsorted(unique_pixels, pIDs_neigh.ravel(), method='sort')
+
+    mask = (pix_renumbering_neigh < unique_pixels.size) & (unique_pixels[pix_renumbering_neigh] == pIDs_neigh.ravel())
+    pix_renumbering_neigh = jnp.where(mask, pix_renumbering_neigh, 0)
+
+    n_neighbors = pIDs_neigh.ravel().shape[0]
+    elec_ids = jnp.arange(n_neighbors) // npix_neigh
+
+    # Neighbor coordinates (use diff=0 for no longitudinal diffusion on neighbors)
+    diff_neigh = jnp.zeros(n_neighbors)  # No diffusion for neighbors
+    t0_neighbors = jnp.take(t0_neigh_ticks, elec_ids, mode='fill', fill_value=0)
+    nelectrons_neigh_expanded = jnp.take(nelectrons_neigh, elec_ids, mode='fill', fill_value=0)
+
+    # Batch evaluate neighbors
+    diff_neigh_batch = jnp.repeat(diff_neigh, signal_length)
+    x_neigh_batch = jnp.repeat(x_dist_neigh, signal_length)
+    y_neigh_batch = jnp.repeat(y_dist_neigh, signal_length)
+    t_neigh_batch = jnp.tile(time_indices, n_neighbors)
+
+    coords_neigh_norm = normalize_siren_inputs(
+        diff_neigh_batch, x_neigh_batch, y_neigh_batch, t_neigh_batch.astype(jnp.float32),
+        diff_range=params.surrogate_diff_range,
+        x_range=params.surrogate_x_range,
+        y_range=params.surrogate_y_range,
+        t_range=params.surrogate_t_range,
+    )
+
+    siren_neigh_output = surrogate_apply_fn(surrogate_params, coords_neigh_norm)
+    if params.surrogate_normalize_outputs:
+        siren_neigh_output = denormalize_siren_output(
+            siren_neigh_output,
+            params.surrogate_output_min,
+            params.surrogate_output_max,
+        )
+    siren_neigh_output = siren_neigh_output.squeeze(-1)
+
+    nelectrons_neigh_batch = jnp.repeat(nelectrons_neigh_expanded, signal_length)
+    q_cumsum_neigh_values = siren_cdf_to_q_cumsum(
+        siren_neigh_output, nelectrons_neigh_batch, params.t_sampling, output_scale=10.0
+    )
+    q_cumsum_neigh = q_cumsum_neigh_values.reshape(n_neighbors, signal_length)
+
+    # Accumulate neighbor signals
+    cathode_ticks_neigh = t0_neighbors.astype(int)
+    start_ticks_neigh = response_length - signal_length - cathode_ticks_neigh
+    time_ticks_neigh = start_ticks_neigh[..., None] + jnp.arange(signal_length)
+    time_ticks_neigh = jnp.where((time_ticks_neigh <= 0) | (time_ticks_neigh >= Nticks - 1), 0, time_ticks_neigh + 1)
+
+    start_indices_neigh = pix_renumbering_neigh * Nticks
+    flat_indices_neigh = (start_indices_neigh[..., None] + time_ticks_neigh).ravel()
+
+    q_cumsum_flat = q_cumsum_flat.at[flat_indices_neigh].add(q_cumsum_neigh.ravel())
+
+    q_cumsum = q_cumsum_flat.reshape((Npixels, Nticks))
+
+    return q_cumsum
+
+
+def simulate_surrogate(params, surrogate_params, surrogate_apply_fn, tracks, fields, save_wfs=False):
+    """
+    Main entry point for SIREN surrogate simulation.
+
+    This function simulates detector response using a trained SIREN model
+    instead of the LUT. The SIREN directly outputs CDF values, bypassing
+    waveform generation.
+
+    Args:
+        params: Simulation parameters (with surrogate ranges set via load_surrogate).
+        surrogate_params: SIREN model parameters (from load_surrogate).
+        surrogate_apply_fn: JIT-compiled SIREN apply function (from load_surrogate).
+        tracks: Track data array.
+        fields: List of field names in tracks.
+        save_wfs: If True, return q_cumsum array (for debugging).
+
+    Returns:
+        Tuple of (adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels).
+        If save_wfs=True, also returns q_cumsum.
+    """
+    from larndsim.fee_jax import get_adc_values_from_cumsum, digitize
+
+    # Drift simulation (returns fractional coordinates)
+    (main_pixels, pixels, nelectrons, t0_ticks, long_diff_siren,
+     x_dist_frac, y_dist_frac, pIDs_neigh, x_dist_neigh, y_dist_neigh,
+     nelectrons_neigh, t0_neigh_ticks) = simulate_drift_surrogate(params, tracks, fields)
+
+    # Get unique pixels
+    unique_pixels = jnp.unique(main_pixels.ravel())
+    padded_unique = pad_size(unique_pixels.shape[0], "unique_pixels_surrogate", 0.2)
+    unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_unique - unique_pixels.shape[0]),
+                                     mode='constant', constant_values=-1))
+
+    # Signal simulation using SIREN
+    n_time_ticks = int(params.time_interval[1] / params.t_sampling)
+
+    q_cumsum = simulate_signals_surrogate(
+        params, surrogate_apply_fn, surrogate_params,
+        unique_pixels, pixels, nelectrons,
+        t0_ticks, long_diff_siren, x_dist_frac, y_dist_frac,
+        pIDs_neigh, x_dist_neigh, y_dist_neigh, nelectrons_neigh, t0_neigh_ticks,
+        n_time_ticks,
+    )
+
+    # FEE simulation from cumsum
+    integral, ticks, no_hit_prob = get_adc_values_from_cumsum(params, q_cumsum[:, 1:])
+    hit_prob = 1 - no_hit_prob
+
+    adcs = digitize(params, integral)
+
+    # Get pixel coordinates
+    pixel_x, pixel_y, pixel_plane, event = id2pixel(params, unique_pixels)
+    pixel_coords = get_pixel_coordinates(params, pixel_x, pixel_y, pixel_plane)
+    pixel_x = pixel_coords[:, 0]
+    pixel_y = pixel_coords[:, 1]
+    pixel_z = get_hit_z(params, ticks.flatten(), jnp.repeat(pixel_plane, 10))
+
+    # Parse output
+    adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, nb_valid = parse_output(
+        params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels
+    )
+
+    if save_wfs:
+        return (adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid],
+                ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid], q_cumsum)
+    else:
+        return (adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid],
+                ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid])
