@@ -68,7 +68,7 @@ class ParamFitter:
                  loss_fn=None, loss_fn_kw=None, readout_noise_target=True, readout_noise_guess=False, 
                  out_label="", test_name="this_test",
                  shift_no_fit=[], set_target_vals=[], vary_init=False, keep_in_memory=False,
-                 compute_target_hessian=False, sim_seed_strategy="different",
+                 compute_hessian=False, compute_target_hessian=False, sim_seed_strategy="different",
                  target_seed=0, target_fixed_range=None,
                  adc_norm=1, match_z=True,
                  diffusion_in_current_sim=False,
@@ -94,6 +94,7 @@ class ParamFitter:
         self.out_label = out_label
         self.test_name = test_name
 
+        self.compute_hessian = compute_hessian
         self.compute_target_hessian = compute_target_hessian
 
         self.current_mode = config.mode
@@ -186,7 +187,7 @@ class ParamFitter:
         for param in self.shift_no_fit:
             self.training_history[param + '_target'] = []
 
-        if self.compute_target_hessian:
+        if self.compute_hessian:
             self.training_history['hessian'] = []
         self.training_history['size_history'] = []
         self.training_history['memory'] = []
@@ -931,4 +932,73 @@ class MinuitFitter(ParamFitter):
             pickle.dump(self.training_history, f_history)
 
 
+class CovarianceCalculator(ParamFitter):
+    def __init__(self, scan_tgt_nom=False, **kwargs):
+        self.scan_tgt_nom = scan_tgt_nom
+        super().__init__(**kwargs)
 
+
+    def make_target_sim(self, seed=2, fixed_range=None):
+        if self.scan_tgt_nom:
+            target_params = {}
+            logger.info("Using the fitter in a gradient profile mode. Setting targets to nominal values")
+            for param in self.relevant_params_list:
+                target_params[param] = ranges[param]['nom']
+            self.target_params = self.ref_params.replace(**target_params)
+            if not self.readout_noise_target:
+                logger.info("Not simulating electronics noise for target")
+                self.target_params = remove_noise_from_params(self.target_params)
+        else:
+            super().make_target_sim()
+
+    def fit(self, dataloader_sim, target, iterations=100, **kwargs):
+
+        self.prepare_fit()
+
+        logger.info("Using the fitter in a gradient profile mode. The sampling will follow a regular grid.")
+        logger.warning(f"Arguments {kwargs} are ignored in this mode.")
+
+        nb_var_params = len(self.relevant_params_list)
+        logger.info(f"{nb_var_params} parameters are to be scanned.")
+        #nb_steps = iterations
+        #logger.info(f"Each parameter will be scanned with {nb_steps} steps")
+
+        self.ref_params = self.current_params
+
+        H_total = 0.0
+        J_total = 0.0
+        N_total = 0
+        self.training_history['n_hit'] = []
+        for i in range(len(dataloader_sim)):
+            logger.info(f"Batch {i}/{len(target)}")
+
+            # sim
+            selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+            selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
+            evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+
+            # target
+            if not self.read_target:
+                selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                this_target = jax.device_put(selected_tracks_bt_tgt)
+            else:
+                this_target = target
+            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
+            n_hit = np.sum(ref_hit_prob)
+            self.training_history['n_hit'].append(n_hit)
+
+            self.fit_params = self.current_params
+            if self.current_mode == 'lut':
+                hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.fit_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, selected_tracks_sim, self.sim_track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                self.training_history['hessian'].append(format_hessian(hess))
+
+            else:
+                hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.sim_track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
+
+            with open(f'fit_result/{self.test_name}/history_batch{i}_{self.out_label}.pkl', "wb") as f_history:
+                pickle.dump(self.training_history, f_history)
+            if os.path.exists(f'fit_result/{self.test_name}/history_batch{i-1}_{self.out_label}.pkl'):
+                os.remove(f'fit_result/{self.test_name}/history_batch{i-1}_{self.out_label}.pkl')
+
+        if os.path.exists('target_' + self.out_label):
+            shutil.rmtree('target_' + self.out_label, ignore_errors=True)
