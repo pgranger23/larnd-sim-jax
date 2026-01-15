@@ -36,6 +36,8 @@ def parse_args():
                         help='Number of hidden layers')
     parser.add_argument('--w0', type=float, default=30.0,
                         help='SIREN frequency parameter')
+    parser.add_argument('--square_output', action='store_true',
+                        help='Square output to constrain to [0,1] (uses sin output layer)')
 
     # Training
     parser.add_argument('--batch_size', type=int, default=65536,
@@ -53,12 +55,14 @@ def parse_args():
                         help='Learning rate scheduler type')
     parser.add_argument('--lr_decay_rate', type=float, default=0.9999,
                         help='Decay rate for exponential scheduler')
+    parser.add_argument('--lr_min', type=float, default=1e-7,
+                        help='Minimum learning rate')
 
     # Logging and checkpointing
     parser.add_argument('--log_every', type=int, default=100,
                         help='Steps between logging')
-    parser.add_argument('--val_every', type=int, default=500,
-                        help='Steps between validation')
+    parser.add_argument('--plot_every', type=int, default=1000,
+                        help='Steps between generating prediction plots')
     parser.add_argument('--checkpoint_every', type=int, default=5000,
                         help='Steps between checkpoints')
 
@@ -66,14 +70,15 @@ def parse_args():
     parser.add_argument('--lut_path', type=str,
                         default='src/larndsim/detector_properties/response_44_v2a_full_tick.npz',
                         help='Path to LUT file')
-    parser.add_argument('--val_fraction', type=float, default=0.1,
-                        help='Fraction of data for validation')
 
     # CDF mode
     parser.add_argument('--use_cdf', action='store_true',
                         help='Train on cumulative distribution (CDF/10) instead of raw response')
     parser.add_argument('--lambda_deriv', type=float, default=0.0,
                         help='Weight for derivative loss (0 = CDF only, >0 = CDF + derivative)')
+    parser.add_argument('--loss_type', type=str, default='mse',
+                        choices=['mse', 'relative_mse', 'log_cosh'],
+                        help='Loss function: mse (default), relative_mse (better for small values), log_cosh (robust)')
 
     # Output
     parser.add_argument('--output_dir', type=str, default='siren_training',
@@ -137,7 +142,6 @@ def main():
     print("\nLoading dataset...")
     dataset = ResponseTemplateDataset(
         lut_path=config.lut_path,
-        val_fraction=config.val_fraction,
         normalize_inputs=config.normalize_inputs,
         normalize_outputs=config.normalize_outputs,
         seed=config.seed,

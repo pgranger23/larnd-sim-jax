@@ -63,14 +63,20 @@ class SurrogateTrainer:
         # Save config
         config.save(self.output_dir / 'config.yaml')
 
+        # Handle square_output: keep linear output layer, square the result
+        # This matches LUCiD implementation
+        if config.square_output:
+            print("Square output enabled: linear output layer, then squaring")
+
         # Initialize model
         self.model = create_siren(
             hidden_features=config.hidden_features,
             hidden_layers=config.hidden_layers,
             out_features=1,
             w0=config.w0,
-            outermost_linear=config.outermost_linear,
+            outermost_linear=config.outermost_linear,  # Keep default (True)
         )
+        self.square_output = config.square_output
 
         # Initialize parameters
         self.rng_key = jax.random.PRNGKey(config.seed)
@@ -88,14 +94,9 @@ class SurrogateTrainer:
         self.step = 0
         self.history = {
             'train_loss': [],
-            'val_loss': [],
             'learning_rate': [],
             'step': [],
         }
-
-        # Best validation loss for patience-based scheduling
-        self.best_val_loss = float('inf')
-        self.steps_since_improvement = 0
 
         # Compile training and evaluation functions
         self._compile_functions()
@@ -112,6 +113,7 @@ class SurrogateTrainer:
                 init_value=config.learning_rate,
                 transition_steps=1,
                 decay_rate=config.lr_decay_rate,
+                end_value=config.lr_min,
             )
         else:
             # Patience-based: use constant LR, we'll manually adjust
@@ -139,14 +141,24 @@ class SurrogateTrainer:
         # Store schedule for logging
         self.lr_schedule = lr_schedule
 
+    def _apply_model(self, params, coords):
+        """Apply model with optional squaring for [0,1] output."""
+        preds = self.model.apply(params, coords)
+        if self.square_output:
+            preds = preds ** 2
+        return preds
+
     def _compile_functions(self) -> None:
         """JIT-compile training and evaluation functions."""
+        square_output = self.square_output
 
         @jax.jit
         def train_step(params, opt_state, coords, targets):
             """Single training step."""
             def loss_fn(params):
                 preds = self.model.apply(params, coords)
+                if square_output:
+                    preds = preds ** 2
                 return jnp.mean((preds - targets) ** 2)
 
             loss, grads = jax.value_and_grad(loss_fn)(params)
@@ -159,6 +171,8 @@ class SurrogateTrainer:
         def eval_step(params, coords, targets):
             """Evaluation step."""
             preds = self.model.apply(params, coords)
+            if square_output:
+                preds = preds ** 2
             return jnp.mean((preds - targets) ** 2)
 
         self._train_step = train_step
@@ -171,11 +185,30 @@ class SurrogateTrainer:
     def _compile_cdf_functions(self) -> None:
         """JIT-compile CDF training functions with derivative loss."""
         lambda_deriv = self.config.lambda_deriv
+        loss_type = self.config.loss_type
+        square_output = self.square_output
 
         # Get normalization scale for time coordinate
         # Time is normalized to [-1, 1], so we need to scale the derivative
         t_range = self.dataset.norm_params.t_range
         t_scale = (t_range[1] - t_range[0]) / 2.0  # d(t_norm)/dt = 2/(t_max - t_min)
+
+        def compute_loss(pred, target, loss_type):
+            """Compute loss based on loss_type."""
+            if loss_type == 'mse':
+                return jnp.mean((pred - target) ** 2)
+            elif loss_type == 'relative_mse':
+                # Relative MSE: better for small values
+                # Add eps to avoid division by zero
+                eps = 1e-6
+                rel_error = (pred - target) / (jnp.abs(target) + eps)
+                return jnp.mean(rel_error ** 2)
+            elif loss_type == 'log_cosh':
+                # Log-cosh loss: robust to outliers, smooth
+                diff = pred - target
+                return jnp.mean(jnp.log(jnp.cosh(diff * 10.0)))  # Scale for sensitivity
+            else:
+                return jnp.mean((pred - target) ** 2)
 
         @jax.jit
         def train_step_cdf(params, opt_state, coords, cdf_targets, response_targets):
@@ -184,7 +217,9 @@ class SurrogateTrainer:
             def loss_fn(params):
                 # CDF loss
                 cdf_pred = self.model.apply(params, coords)
-                cdf_loss = jnp.mean((cdf_pred - cdf_targets) ** 2)
+                if square_output:
+                    cdf_pred = cdf_pred ** 2
+                cdf_loss = compute_loss(cdf_pred, cdf_targets, loss_type)
 
                 if lambda_deriv > 0:
                     # Derivative loss using JAX autodiff
@@ -192,7 +227,10 @@ class SurrogateTrainer:
 
                     def siren_scalar(single_coord):
                         """SIREN output for a single coordinate."""
-                        return self.model.apply(params, single_coord[None, :])[0, 0]
+                        out = self.model.apply(params, single_coord[None, :])[0, 0]
+                        if square_output:
+                            out = out ** 2
+                        return out
 
                     # vmap over batch to get per-sample gradients w.r.t. inputs
                     grad_fn = jax.vmap(jax.grad(siren_scalar))
@@ -204,7 +242,7 @@ class SurrogateTrainer:
                     # dt_norm/dt = 2/(t_max - t_min)
                     dcdf_dt = dcdf_dt_norm * (2.0 / t_scale) * 10.0
 
-                    deriv_loss = jnp.mean((dcdf_dt - response_targets.ravel()) ** 2)
+                    deriv_loss = compute_loss(dcdf_dt, response_targets.ravel(), loss_type)
                     return cdf_loss + lambda_deriv * deriv_loss
 
                 return cdf_loss
@@ -219,7 +257,9 @@ class SurrogateTrainer:
         def eval_step_cdf(params, coords, cdf_targets):
             """CDF evaluation step (CDF loss only)."""
             cdf_pred = self.model.apply(params, coords)
-            return jnp.mean((cdf_pred - cdf_targets) ** 2)
+            if square_output:
+                cdf_pred = cdf_pred ** 2
+            return compute_loss(cdf_pred, cdf_targets, loss_type)
 
         self._train_step_cdf = train_step_cdf
         self._eval_step_cdf = eval_step_cdf
@@ -261,7 +301,7 @@ class SurrogateTrainer:
             if config.use_cdf:
                 # CDF mode: get both CDF and response targets
                 coords, cdf_targets, response_targets = self.dataset.sample_batch_cdf(
-                    batch_key, config.batch_size, split='train'
+                    batch_key, config.batch_size
                 )
                 # Training step with CDF loss
                 self.params, self.opt_state, train_loss = self._train_step_cdf(
@@ -270,7 +310,7 @@ class SurrogateTrainer:
             else:
                 # Standard mode
                 coords, targets = self.dataset.sample_batch(
-                    batch_key, config.batch_size, split='train'
+                    batch_key, config.batch_size
                 )
                 # Training step
                 self.params, self.opt_state, train_loss = self._train_step(
@@ -294,17 +334,8 @@ class SurrogateTrainer:
 
                 last_log_time = time.time()
 
-            # Validation
-            if self.step % config.val_every == 0:
-                val_loss = self._validate()
-                self.history['val_loss'].append(float(val_loss))
-
-                print(f"  Validation loss: {val_loss:.6f}")
-
-                # Patience-based LR scheduling
-                if config.lr_scheduler == 'patience':
-                    self._update_lr_patience(val_loss)
-
+            # Generate plots at regular intervals
+            if self.step % config.plot_every == 0:
                 # Save progress plot
                 self._save_progress_plot()
 
@@ -322,55 +353,6 @@ class SurrogateTrainer:
         total_time = time.time() - start_time
         print(f"\nTraining complete in {total_time / 60:.1f} minutes")
         print(f"Final train loss: {self.history['train_loss'][-1]:.6f}")
-        if self.history['val_loss']:
-            print(f"Final val loss: {self.history['val_loss'][-1]:.6f}")
-
-    def _validate(self) -> float:
-        """Run validation and return mean loss."""
-        # Sample several batches for validation
-        total_loss = 0.0
-        n_batches = 10
-
-        for _ in range(n_batches):
-            self.rng_key, batch_key = jax.random.split(self.rng_key)
-
-            if self.config.use_cdf:
-                # CDF mode: validate on CDF loss only (not derivative)
-                coords, cdf_targets, _ = self.dataset.sample_batch_cdf(
-                    batch_key, self.config.batch_size, split='val'
-                )
-                loss = self._eval_step_cdf(self.params, coords, cdf_targets)
-            else:
-                coords, targets = self.dataset.sample_batch(
-                    batch_key, self.config.batch_size, split='val'
-                )
-                loss = self._eval_step(self.params, coords, targets)
-
-            total_loss += float(loss)
-
-        return total_loss / n_batches
-
-    def _update_lr_patience(self, val_loss: float) -> None:
-        """Update learning rate based on patience."""
-        if val_loss < self.best_val_loss:
-            self.best_val_loss = val_loss
-            self.steps_since_improvement = 0
-        else:
-            self.steps_since_improvement += self.config.val_every
-
-            if self.steps_since_improvement >= self.config.lr_patience:
-                # Reduce learning rate
-                current_lr = self.get_current_lr()
-                new_lr = max(current_lr * self.config.lr_factor, self.config.lr_min)
-
-                if new_lr < current_lr:
-                    print(f"  Reducing LR: {current_lr:.2e} -> {new_lr:.2e}")
-                    self.lr_schedule = new_lr
-                    # Reinitialize optimizer with new LR
-                    self._setup_optimizer()
-                    self.opt_state = self.optimizer.init(self.params)
-
-                self.steps_since_improvement = 0
 
     def _save_checkpoint(self) -> None:
         """Save training checkpoint."""
@@ -406,7 +388,6 @@ class SurrogateTrainer:
         path = self.output_dir / 'final_model.npz'
 
         final_train_loss = self.history['train_loss'][-1] if self.history['train_loss'] else None
-        final_val_loss = self.history['val_loss'][-1] if self.history['val_loss'] else None
 
         save_final_model(
             path=str(path),
@@ -416,52 +397,29 @@ class SurrogateTrainer:
             dataset_stats=self.dataset.get_stats(),
             final_step=self.step,
             final_train_loss=final_train_loss,
-            final_val_loss=final_val_loss,
         )
 
     def _save_progress_plot(self) -> None:
-        """Save training progress plot."""
+        """Save training progress plot with 2 panels: loss and learning rate."""
         if not self.history['train_loss']:
             return
 
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
         steps = self.history['step']
         train_loss = self.history['train_loss']
 
         # Plot 1: Training loss
         ax = axes[0]
-        ax.plot(steps, train_loss, 'b-', alpha=0.7, label='Train')
+        ax.plot(steps, train_loss, 'b-', alpha=0.7)
         ax.set_xlabel('Step')
         ax.set_ylabel('Loss (MSE)')
         ax.set_title('Training Loss')
         ax.set_yscale('log')
         ax.grid(True, alpha=0.3)
-        ax.legend()
 
-        # Plot 2: Validation loss
+        # Plot 2: Learning rate
         ax = axes[1]
-        if self.history['val_loss']:
-            # Validation is less frequent
-            val_steps_count = len(self.history['val_loss'])
-            val_steps = [steps[i * (len(steps) // val_steps_count)]
-                         for i in range(val_steps_count)] if val_steps_count > 0 else []
-            if len(val_steps) == len(self.history['val_loss']):
-                ax.plot(val_steps, self.history['val_loss'], 'r-o', alpha=0.7, label='Validation')
-            else:
-                ax.plot(self.history['val_loss'], 'r-o', alpha=0.7, label='Validation')
-            ax.set_xlabel('Step')
-            ax.set_ylabel('Loss (MSE)')
-            ax.set_title('Validation Loss')
-            ax.set_yscale('log')
-            ax.grid(True, alpha=0.3)
-            ax.legend()
-        else:
-            ax.text(0.5, 0.5, 'No validation data yet', ha='center', va='center', transform=ax.transAxes)
-            ax.set_title('Validation Loss')
-
-        # Plot 3: Learning rate
-        ax = axes[2]
         if self.history['learning_rate']:
             ax.plot(steps, self.history['learning_rate'], 'g-', alpha=0.7)
             ax.set_xlabel('Step')
@@ -469,9 +427,6 @@ class SurrogateTrainer:
             ax.set_title('Learning Rate')
             ax.set_yscale('log')
             ax.grid(True, alpha=0.3)
-        else:
-            ax.text(0.5, 0.5, 'No LR data', ha='center', va='center', transform=ax.transAxes)
-            ax.set_title('Learning Rate')
 
         plt.suptitle(f'SIREN Training Progress - Step {self.step}', fontsize=12)
         plt.tight_layout()
@@ -481,7 +436,10 @@ class SurrogateTrainer:
         plt.close(fig)
 
     def _save_prediction_plot(self) -> None:
-        """Save LUT vs SIREN prediction comparison plot for CDF mode."""
+        """Save LUT vs SIREN prediction comparison plot for CDF mode.
+
+        Shows 3x3 grid of pixels (main + 8 neighbors) with CDF and derivative.
+        """
         if not self.config.use_cdf:
             return
 
@@ -489,68 +447,100 @@ class SurrogateTrainer:
 
         # Fixed parameters
         diff_idx = 49
-        pixels = [(0, 0, "Main (0,0)"), (0, 9, "Edge (0,9)")]
         n_t = self.dataset.n_t
 
+        # 3x3 pixel grid: LUT indices for main pixel and neighbors
+        # Main pixel = (0,0), neighbors at 1 pixel spacing = 9 LUT bins
+        pixel_grid = [
+            [(9, 9, "(-1,-1)"), (9, 0, "(-1,0)"), (9, 9, "(-1,+1)")],
+            [(0, 9, "(0,-1)"),  (0, 0, "Main"),   (0, 9, "(0,+1)")],
+            [(9, 9, "(+1,-1)"), (9, 0, "(+1,0)"), (9, 9, "(+1,+1)")],
+        ]
+
         # Compute scale factor for derivative
-        # Time is normalized to [-1, 1], so dt_norm/dt = 2/(t_max - t_min)
-        # CDF is divided by 10, so response = 10 * d(CDF/10)/dt
         t_range = self.dataset.norm_params.t_range
         scale_factor = (2.0 / (t_range[1] - t_range[0])) * 10.0
 
-        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        # Create figure with 3x3 subplots for CDF
+        fig_cdf, axes_cdf = plt.subplots(3, 3, figsize=(15, 12))
+        fig_deriv, axes_deriv = plt.subplots(3, 3, figsize=(15, 12))
 
-        for col, (lut_x, lut_y, label) in enumerate(pixels):
-            # Get time coordinates
-            t_vals = jnp.arange(n_t, dtype=jnp.float32)
-            coords = jnp.stack([
-                jnp.full(n_t, diff_idx, dtype=jnp.float32),
-                jnp.full(n_t, lut_x, dtype=jnp.float32),
-                jnp.full(n_t, lut_y, dtype=jnp.float32),
-                t_vals,
-            ], axis=1)
-            coords_norm = self.dataset.normalize_inputs(coords)
+        t_vals = jnp.arange(n_t, dtype=jnp.float32)
+        t_vals_np = np.array(t_vals)
 
-            # Get LUT values
-            lut_response = self.dataset.response_template[diff_idx, lut_x, lut_y, :]
-            lut_cdf = self.dataset.cdf_template[diff_idx, lut_x, lut_y, :]
+        for row in range(3):
+            for col in range(3):
+                lut_x, lut_y, label = pixel_grid[row][col]
 
-            # Get SIREN predictions (CDF)
-            siren_cdf = np.array(self.model.apply(self.params, coords_norm).ravel())
+                # Build coordinates
+                coords = jnp.stack([
+                    jnp.full(n_t, diff_idx, dtype=jnp.float32),
+                    jnp.full(n_t, lut_x, dtype=jnp.float32),
+                    jnp.full(n_t, lut_y, dtype=jnp.float32),
+                    t_vals,
+                ], axis=1)
+                coords_norm = self.dataset.normalize_inputs(coords)
 
-            # Compute derivative via autodiff
-            def siren_scalar(coord):
-                return self.model.apply(self.params, coord[None, :])[0, 0]
-            grad_fn = jax.vmap(jax.grad(siren_scalar))
-            grads = grad_fn(coords_norm)
-            siren_deriv = np.array(grads[:, 3]) * scale_factor
+                # Get LUT values
+                lut_response = self.dataset.response_template[diff_idx, lut_x, lut_y, :]
+                lut_cdf = self.dataset.cdf_template[diff_idx, lut_x, lut_y, :]
 
-            t_vals_np = np.array(t_vals)
+                # Get SIREN predictions (CDF)
+                siren_cdf_raw = self.model.apply(self.params, coords_norm).ravel()
+                if self.square_output:
+                    siren_cdf = np.array(siren_cdf_raw ** 2)
+                else:
+                    siren_cdf = np.array(siren_cdf_raw)
 
-            # Plot CDF comparison
-            ax = axes[0, col]
-            ax.plot(t_vals_np, lut_cdf, 'b-', alpha=0.7, linewidth=1.5, label='LUT CDF')
-            ax.plot(t_vals_np, siren_cdf, 'r--', alpha=0.7, linewidth=1.5, label='SIREN CDF')
-            ax.set_xlabel('Time (ticks)')
-            ax.set_ylabel('CDF')
-            ax.set_title(f'{label} - CDF (diff={diff_idx})')
-            ax.legend(loc='upper left')
-            ax.grid(True, alpha=0.3)
+                # Compute derivative via autodiff
+                def siren_scalar(coord):
+                    out = self.model.apply(self.params, coord[None, :])[0, 0]
+                    if self.square_output:
+                        out = out ** 2
+                    return out
+                grad_fn = jax.vmap(jax.grad(siren_scalar))
+                grads = grad_fn(coords_norm)
+                siren_deriv = np.array(grads[:, 3]) * scale_factor
 
-            # Plot derivative comparison
-            ax = axes[1, col]
-            ax.plot(t_vals_np, lut_response, 'b-', alpha=0.7, linewidth=1.5, label='LUT Response')
-            ax.plot(t_vals_np, siren_deriv, 'r--', alpha=0.7, linewidth=1.5, label='SIREN d(CDF)/dt')
-            ax.set_xlabel('Time (ticks)')
-            ax.set_ylabel('Response')
-            ax.set_title(f'{label} - Derivative')
-            ax.legend(loc='upper right')
-            ax.grid(True, alpha=0.3)
+                # Compute MAE for this pixel
+                cdf_mae = np.mean(np.abs(siren_cdf - lut_cdf))
+                deriv_mae = np.mean(np.abs(siren_deriv - lut_response))
 
-        plt.suptitle(f'LUT vs SIREN Predictions - Step {self.step}', fontsize=14)
-        plt.tight_layout()
-        plt.savefig(self.output_dir / 'prediction_comparison.png', dpi=100, bbox_inches='tight')
-        plt.close(fig)
+                # Plot CDF
+                ax = axes_cdf[row, col]
+                ax.plot(t_vals_np, lut_cdf, 'b-', alpha=0.7, linewidth=1, label='LUT')
+                ax.plot(t_vals_np, siren_cdf, 'r--', alpha=0.7, linewidth=1, label='SIREN')
+                ax.set_title(f'{label} (MAE={cdf_mae:.4f})', fontsize=10)
+                if row == 2:
+                    ax.set_xlabel('Time')
+                if col == 0:
+                    ax.set_ylabel('CDF')
+                ax.grid(True, alpha=0.3)
+                if row == 0 and col == 2:
+                    ax.legend(loc='upper left', fontsize=8)
+
+                # Plot derivative
+                ax = axes_deriv[row, col]
+                ax.plot(t_vals_np, lut_response, 'b-', alpha=0.7, linewidth=1, label='LUT')
+                ax.plot(t_vals_np, siren_deriv, 'r--', alpha=0.7, linewidth=1, label='SIREN')
+                ax.set_title(f'{label} (MAE={deriv_mae:.4f})', fontsize=10)
+                if row == 2:
+                    ax.set_xlabel('Time')
+                if col == 0:
+                    ax.set_ylabel('Response')
+                ax.grid(True, alpha=0.3)
+                if row == 0 and col == 2:
+                    ax.legend(loc='upper right', fontsize=8)
+
+        fig_cdf.suptitle(f'CDF: LUT vs SIREN - Step {self.step} (diff={diff_idx})', fontsize=14)
+        fig_cdf.tight_layout()
+        fig_cdf.savefig(self.output_dir / 'prediction_cdf.png', dpi=100, bbox_inches='tight')
+        plt.close(fig_cdf)
+
+        fig_deriv.suptitle(f'Derivative: LUT vs SIREN - Step {self.step} (diff={diff_idx})', fontsize=14)
+        fig_deriv.tight_layout()
+        fig_deriv.savefig(self.output_dir / 'prediction_deriv.png', dpi=100, bbox_inches='tight')
+        plt.close(fig_deriv)
 
     def _resume_from_checkpoint(self, path: str) -> None:
         """Resume training from checkpoint."""

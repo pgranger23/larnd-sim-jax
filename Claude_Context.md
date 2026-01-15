@@ -398,3 +398,116 @@ python3 -m src.siren.train_surrogate \
 - `src/siren/train_surrogate.py` - CLI flags
 
 **Memory note**: CDF mode stores both templates (~6GB), use `--mem=32G` in srun.
+
+### Run Name Parameter (NEW)
+
+Use `--run_name` to organize multiple experiments:
+```bash
+python3 -m src.siren.train_surrogate --use_cdf --lambda_deriv 0.0 --run_name cdf_only
+python3 -m src.siren.train_surrogate --use_cdf --lambda_deriv 1.0 --run_name cdf_deriv_1.0
+
+# Results in:
+# siren_training/cdf_only/
+# siren_training/cdf_deriv_1.0/
+```
+
+### Training Visualization (CDF Mode)
+
+During CDF training, `prediction_comparison.png` is generated at each validation step showing:
+- **Top row**: LUT CDF vs SIREN CDF for main (0,0) and edge (0,9) pixels
+- **Bottom row**: LUT response vs SIREN derivative (d(CDF)/dt)
+
+Uses diff=49 as representative diffusion value. This helps monitor whether the trained CDF correctly recovers the original waveform when differentiated.
+
+**Output files**:
+- `training_progress.png` - Loss curves (2 panels: loss + LR)
+- `prediction_cdf.png` - 3x3 grid of LUT vs SIREN CDF predictions
+- `prediction_deriv.png` - 3x3 grid of LUT vs SIREN derivative (response)
+
+### 2026-01-15: Training Improvements
+
+#### Removed Train/Val Split
+
+**Rationale**: The surrogate is trying to perfectly memorize the LUT, not generalize. Therefore, all data should be used for training (no validation holdout).
+
+**Changes**:
+- Removed `val_fraction` parameter
+- Removed `_create_train_val_split()` method
+- All 395M data points used for training
+- Progress plot reduced from 3 subplots to 2 (train loss + LR)
+- Renamed `val_every` → `plot_every` (for generating prediction plots)
+
+#### Square Output Feature (`--square_output`)
+
+**Problem**: SIREN predictions could go negative, but CDF values should be in [0, ∞).
+
+**Solution**: When `--square_output` is enabled:
+1. Keep `outermost_linear=True` (linear output layer) - matches LUCiD implementation
+2. Square the linear output: output² ∈ [0, ∞)
+3. Network learns to output values that when squared match the targets
+
+**Usage**:
+```bash
+python3 -m src.siren.train_surrogate --use_cdf --square_output ...
+```
+
+**Technical notes**:
+- Derivative via autodiff applies chain rule: d(f²)/dt = 2*f*df/dt
+- The trainer's `_apply_model()` helper handles squaring consistently
+- This approach works much better than squaring sin output (which caused learning issues)
+
+#### Visualization Scripts
+
+Created comprehensive visualization scripts for trained models:
+
+**1. `src/siren/analysis/plot_cdf_pixels.py`** - 5×5 pixel grid (25 pixels)
+```bash
+python3 -m src.siren.analysis.plot_cdf_pixels \
+    --model siren_training/seed42/final_model.npz \
+    --output_dir siren_training/seed42/validation \
+    --square_output
+```
+
+**2. `src/siren/analysis/plot_cdf_subgrid.py`** - Main pixel subgrid (LUT indices 0-4)
+```bash
+python3 -m src.siren.analysis.plot_cdf_subgrid \
+    --model siren_training/seed42/final_model.npz \
+    --output_dir siren_training/seed42/validation_subgrid \
+    --square_output
+```
+
+**Plot settings**: figsize=(10,10), linewidth=2, 10 diffusion values
+
+#### Optimizer State Saving (for proper resume)
+
+**Problem**: Resuming training caused loss to jump from ~1e-8 to ~1e-5 because Adam optimizer state (momentum) was reset.
+
+**Solution**: Save and restore full optimizer state in checkpoints.
+- `save_checkpoint()` now saves `opt_state`
+- `load_checkpoint()` restores `opt_state`
+- Proper resume maintains training continuity
+
+### Current Training Command
+
+```bash
+srun --partition=ampere --account=mli:cider-ml --gpus=1 --mem=32G --time=12:00:00 \
+  singularity exec --nv -B /sdf /sdf/group/neutrino/pgranger/larnd-sim-jax.sif /bin/bash -c "
+    export PYTHONNOUSERSITE=1
+    pip3 install --quiet .
+    python3 -m src.siren.train_surrogate \
+        --output_dir siren_training \
+        --run_name seed42 \
+        --use_cdf \
+        --square_output \
+        --learning_rate 1e-4 \
+        --lr_decay_rate 0.99998 \
+        --lr_min 0 \
+        --num_steps 1000000 \
+        --batch_size 65536 \
+        --seed 42
+"
+```
+
+**Multi-seed training** (for reproducibility studies):
+- Seeds: 42, 43, 44, 45, 46
+- 1M steps each, no min LR

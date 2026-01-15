@@ -89,8 +89,8 @@ def compare_lut_siren(
     # Sample random indices
     indices = rng.choice(dataset.total_points, size=n_samples, replace=False)
 
-    # Get coordinates and values
-    coords = dataset.coords[indices]
+    # Get coordinates and values using lazy computation
+    coords = dataset._indices_to_coords(indices)
     targets = dataset.values[indices]
 
     # Normalize coordinates

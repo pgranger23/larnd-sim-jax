@@ -15,38 +15,32 @@ import optax
 
 
 def _to_numpy(obj: Any) -> Any:
-    """Recursively convert JAX arrays to numpy for saving."""
-    if isinstance(obj, jnp.ndarray):
-        return np.array(obj)
-    elif isinstance(obj, dict):
-        return {k: _to_numpy(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return type(obj)(_to_numpy(x) for x in obj)
-    else:
-        return obj
+    """Recursively convert JAX arrays to numpy for saving using tree_map."""
+    def convert_leaf(x):
+        if isinstance(x, jnp.ndarray):
+            return np.array(x)
+        return x
+    return jax.tree_util.tree_map(convert_leaf, obj)
 
 
 def _to_jax(obj: Any) -> Any:
-    """Recursively convert numpy arrays to JAX arrays."""
-    if isinstance(obj, np.ndarray):
-        return jnp.array(obj)
-    elif isinstance(obj, dict):
-        return {k: _to_jax(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return type(obj)(_to_jax(x) for x in obj)
-    else:
-        return obj
+    """Recursively convert numpy arrays to JAX arrays using tree_map."""
+    def convert_leaf(x):
+        if isinstance(x, np.ndarray):
+            return jnp.array(x)
+        return x
+    return jax.tree_util.tree_map(convert_leaf, obj)
 
 
 def save_checkpoint(
     path: str,
     params: Dict,
-    opt_state: optax.OptState,
     step: int,
     config: Dict,
     history: Dict,
     normalization_params: Dict,
     dataset_stats: Dict,
+    opt_state: Optional[Any] = None,
 ) -> None:
     """
     Save a training checkpoint.
@@ -54,30 +48,32 @@ def save_checkpoint(
     Args:
         path: Path to save checkpoint.
         params: Model parameters.
-        opt_state: Optimizer state.
         step: Current training step.
         config: Training configuration.
         history: Training history (losses, etc.).
         normalization_params: Data normalization parameters.
         dataset_stats: Dataset statistics.
+        opt_state: Optimizer state (for proper resume).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Convert to numpy for saving
+    # Convert params to numpy for saving
     params_np = _to_numpy(unfreeze(params) if hasattr(params, 'unfreeze') else params)
-    opt_state_np = _to_numpy(opt_state)
+
+    # Convert optimizer state to numpy for saving
+    opt_state_np = _to_numpy(opt_state) if opt_state is not None else None
 
     # Save as npz
     np.savez(
         path,
         params=params_np,
-        opt_state=opt_state_np,
         step=step,
         config=config,
         history=history,
         normalization_params=normalization_params,
         dataset_stats=dataset_stats,
+        opt_state=opt_state_np,
     )
 
     print(f"Saved checkpoint to {path}")
@@ -85,7 +81,7 @@ def save_checkpoint(
 
 def load_checkpoint(
     path: str,
-) -> Tuple[Dict, Any, int, Dict, Dict, Dict, Dict]:
+) -> Tuple[Dict, int, Dict, Dict, Dict, Dict, Any]:
     """
     Load a training checkpoint.
 
@@ -93,7 +89,8 @@ def load_checkpoint(
         path: Path to checkpoint file.
 
     Returns:
-        Tuple of (params, opt_state, step, config, history, normalization_params, dataset_stats).
+        Tuple of (params, step, config, history, normalization_params, dataset_stats, opt_state).
+        opt_state may be None if not saved in checkpoint.
     """
     path = Path(path)
     if not path.exists():
@@ -101,17 +98,24 @@ def load_checkpoint(
 
     data = np.load(path, allow_pickle=True)
 
-    params = freeze({'params': _to_jax(data['params'].item())})
-    opt_state = data['opt_state'].item()  # Will be recreated by trainer
+    # Params are already saved with {'params': ...} structure, don't double-wrap
+    params = freeze(_to_jax(data['params'].item()))
     step = int(data['step'])
     config = data['config'].item()
     history = data['history'].item()
     normalization_params = data['normalization_params'].item()
     dataset_stats = data['dataset_stats'].item()
 
-    print(f"Loaded checkpoint from {path} at step {step}")
+    # Load optimizer state if available (for proper resume)
+    opt_state = None
+    if 'opt_state' in data.files and data['opt_state'].item() is not None:
+        opt_state = _to_jax(data['opt_state'].item())
 
-    return params, opt_state, step, config, history, normalization_params, dataset_stats
+    print(f"Loaded checkpoint from {path} at step {step}")
+    if opt_state is not None:
+        print(f"  Optimizer state loaded for proper resume")
+
+    return params, step, config, history, normalization_params, dataset_stats, opt_state
 
 
 def save_final_model(
@@ -187,6 +191,7 @@ def load_final_model(path: str) -> Tuple[Dict, Dict, Dict, Dict, Dict]:
 
     data = np.load(path, allow_pickle=True)
 
+    # Final model saves just the inner params (not wrapped), so wrap here
     params = freeze({'params': _to_jax(data['params'].item())})
     model_config = data['model_config'].item()
     normalization_params = data['normalization_params'].item()

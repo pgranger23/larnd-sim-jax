@@ -57,7 +57,6 @@ class ResponseTemplateDataset:
     def __init__(
         self,
         lut_path: str,
-        val_fraction: float = 0.1,
         normalize_inputs: bool = True,
         normalize_outputs: bool = True,
         seed: int = 42,
@@ -69,15 +68,13 @@ class ResponseTemplateDataset:
 
         Args:
             lut_path: Path to response NPZ file.
-            val_fraction: Fraction of data for validation.
             normalize_inputs: Whether to normalize inputs to [-1, 1].
             normalize_outputs: Whether to normalize outputs.
-            seed: Random seed for train/val split.
+            seed: Random seed for sampling.
             precomputed_template: If provided, use this instead of loading from file.
             use_cdf: If True, train on cumulative distribution (CDF/10) instead of raw response.
         """
         self.lut_path = lut_path
-        self.val_fraction = val_fraction
         self.seed = seed
         self.use_cdf = use_cdf
 
@@ -127,9 +124,6 @@ class ResponseTemplateDataset:
         )
 
         print(f"Output range: [{self.norm_params.output_min:.4f}, {self.norm_params.output_max:.4f}]")
-
-        # Create train/val split
-        self._create_train_val_split()
 
     def _load_and_build_template(self, lut_path: str) -> np.ndarray:
         """Load raw LUT and build response_template with diffusion convolution."""
@@ -212,20 +206,6 @@ class ResponseTemplateDataset:
 
         return np.stack([d, x, y, t], axis=1).astype(np.float32)
 
-    def _create_train_val_split(self):
-        """Create deterministic train/validation split."""
-        rng = np.random.default_rng(self.seed)
-        n_val = int(self.total_points * self.val_fraction)
-        n_train = self.total_points - n_val
-
-        # Create shuffled indices
-        indices = rng.permutation(self.total_points)
-        self.train_indices = indices[:n_train]
-        self.val_indices = indices[n_train:]
-
-        print(f"Train samples: {len(self.train_indices):,}")
-        print(f"Val samples: {len(self.val_indices):,}")
-
     def normalize_inputs(self, coords: jnp.ndarray) -> jnp.ndarray:
         """Normalize coordinates to [-1, 1] range."""
         if not self.norm_params.normalize_inputs:
@@ -289,26 +269,22 @@ class ResponseTemplateDataset:
         self,
         rng_key: jax.random.PRNGKey,
         batch_size: int,
-        split: str = 'train',
     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """
-        Sample a random batch from training or validation set.
+        Sample a random batch from the dataset.
 
         Args:
             rng_key: JAX random key.
             batch_size: Number of samples.
-            split: 'train' or 'val'.
 
         Returns:
             Tuple of (normalized_coords, normalized_values).
         """
-        indices = self.train_indices if split == 'train' else self.val_indices
-
-        # Sample random indices from the split
-        sample_idx = jax.random.choice(
-            rng_key, len(indices), shape=(batch_size,), replace=True
+        # Sample random indices from all data points
+        batch_indices = jax.random.choice(
+            rng_key, self.total_points, shape=(batch_size,), replace=True
         )
-        batch_indices = np.array(indices[sample_idx])
+        batch_indices = np.array(batch_indices)
 
         # Compute coordinates from flat indices (lazy evaluation)
         coords = self._indices_to_coords(batch_indices)
@@ -327,7 +303,6 @@ class ResponseTemplateDataset:
         self,
         rng_key: jax.random.PRNGKey,
         batch_size: int,
-        split: str = 'train',
     ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Sample a random batch for CDF training with derivative loss.
@@ -337,7 +312,6 @@ class ResponseTemplateDataset:
         Args:
             rng_key: JAX random key.
             batch_size: Number of samples.
-            split: 'train' or 'val'.
 
         Returns:
             Tuple of (normalized_coords, cdf_values, response_values).
@@ -347,13 +321,11 @@ class ResponseTemplateDataset:
         if not self.use_cdf:
             raise ValueError("sample_batch_cdf requires use_cdf=True")
 
-        indices = self.train_indices if split == 'train' else self.val_indices
-
-        # Sample random indices from the split
-        sample_idx = jax.random.choice(
-            rng_key, len(indices), shape=(batch_size,), replace=True
+        # Sample random indices from all data points
+        batch_indices = jax.random.choice(
+            rng_key, self.total_points, shape=(batch_size,), replace=True
         )
-        batch_indices = np.array(indices[sample_idx])
+        batch_indices = np.array(batch_indices)
 
         # Compute coordinates from flat indices (lazy evaluation)
         coords = self._indices_to_coords(batch_indices)
@@ -374,16 +346,6 @@ class ResponseTemplateDataset:
         # CDF is already in [0, ~1] range, response is used as-is for derivative target
 
         return coords_norm, cdf_jax.reshape(-1, 1), response_jax.reshape(-1, 1)
-
-    def get_full_validation_set(self) -> Tuple[jnp.ndarray, jnp.ndarray]:
-        """Get the full validation set (may be large - use with caution!)."""
-        coords = self._indices_to_coords(self.val_indices)
-        values = self.values[self.val_indices]
-
-        coords_norm = self.normalize_inputs(jnp.array(coords))
-        values_norm = self.normalize_outputs(jnp.array(values))
-
-        return coords_norm, values_norm.reshape(-1, 1)
 
     def get_slice(
         self,
@@ -433,8 +395,6 @@ class ResponseTemplateDataset:
         return {
             'shape': self.response_template.shape,
             'total_points': self.total_points,
-            'train_points': len(self.train_indices),
-            'val_points': len(self.val_indices),
             'value_min': float(self.norm_params.output_min),
             'value_max': float(self.norm_params.output_max),
             'value_mean': float(self.values.mean()),

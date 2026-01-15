@@ -36,8 +36,11 @@ echo "Running training inside container..."
 echo ""
 
 singularity exec --nv -B /sdf ${CONTAINER} /bin/bash -c "
-    # Install package
-    pip3 install --quiet .
+    # Use container's Python packages (avoid conflicts with user site-packages)
+    export PYTHONNOUSERSITE=1
+
+    # Install package to container's temp location
+    pip3 install --quiet --no-deps .
 
     # Run training
     python3 -m src.siren.train_surrogate \

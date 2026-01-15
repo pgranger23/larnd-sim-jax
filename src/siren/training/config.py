@@ -39,11 +39,10 @@ class TrainingConfig:
 
         # Logging and checkpointing
         log_every: Steps between logging.
-        val_every: Steps between validation.
+        plot_every: Steps between generating prediction plots.
         checkpoint_every: Steps between checkpoints.
 
         # Data
-        val_fraction: Fraction of data for validation.
         normalize_inputs: Whether to normalize inputs to [-1, 1].
         normalize_outputs: Whether to normalize outputs.
 
@@ -63,11 +62,12 @@ class TrainingConfig:
     hidden_layers: int = 4
     w0: float = 30.0
     outermost_linear: bool = True
+    square_output: bool = False  # Square output to constrain to [0, inf) (matches LUCiD)
 
     # Training
     batch_size: int = 65536
-    num_steps: int = 50000
-    learning_rate: float = 1e-4
+    num_steps: int = 100000
+    learning_rate: float = 5e-4
     weight_decay: float = 0.0
 
     # Learning rate scheduling
@@ -82,17 +82,17 @@ class TrainingConfig:
 
     # Logging and checkpointing
     log_every: int = 100
-    val_every: int = 500
+    plot_every: int = 1000
     checkpoint_every: int = 5000
 
     # Data
-    val_fraction: float = 0.1
     normalize_inputs: bool = True
     normalize_outputs: bool = True
 
     # CDF mode
     use_cdf: bool = False  # Train on cumulative distribution instead of raw response
     lambda_deriv: float = 0.0  # Weight for derivative loss (0 = CDF only, >0 = CDF + derivative)
+    loss_type: Literal['mse', 'relative_mse', 'log_cosh'] = 'mse'  # Loss function type
 
     # Paths
     lut_path: str = 'src/larndsim/detector_properties/response_44_v2a_full_tick.npz'
