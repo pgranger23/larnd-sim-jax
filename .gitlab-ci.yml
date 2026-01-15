@@ -54,7 +54,7 @@ test-scan:
 test-scan-lut:
   extends: .gpu_template
   script:
-    - ./optimize/scan_lut_test.sh
+    - ./optimize/scan_lut_test.sh --gpu
     - python3 ./optimize/analysis_scripts/plot_scan.py --input_file fit_result/**/*.pkl --output_dir output
 
 test-minuit:
