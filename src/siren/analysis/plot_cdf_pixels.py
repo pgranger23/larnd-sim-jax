@@ -43,8 +43,8 @@ PIXEL_TO_LUT = {
 
 def load_model_and_dataset(model_path: str, lut_path: str, square_output: bool):
     """Load SIREN model and CDF dataset."""
-    # Load checkpoint
-    params, step, config, history, norm_params, dataset_stats = load_checkpoint(model_path)
+    # Load checkpoint (ignore opt_state for visualization)
+    params, step, config, history, norm_params, dataset_stats, _ = load_checkpoint(model_path)
 
     # Create model
     model = create_siren(

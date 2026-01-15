@@ -26,6 +26,7 @@ from .checkpointing import (
     save_final_model,
     save_history,
     find_latest_checkpoint,
+    _restore_opt_state,
 )
 
 
@@ -366,6 +367,7 @@ class SurrogateTrainer:
             history=self.history,
             normalization_params=self.dataset.norm_params.to_dict(),
             dataset_stats=self.dataset.get_stats(),
+            opt_state=self.opt_state,
         )
 
         # Also save as latest
@@ -378,6 +380,7 @@ class SurrogateTrainer:
             history=self.history,
             normalization_params=self.dataset.norm_params.to_dict(),
             dataset_stats=self.dataset.get_stats(),
+            opt_state=self.opt_state,
         )
 
         # Save history as JSON
@@ -544,14 +547,19 @@ class SurrogateTrainer:
 
     def _resume_from_checkpoint(self, path: str) -> None:
         """Resume training from checkpoint."""
-        params, step, config, history, norm_params, dataset_stats = load_checkpoint(path)
+        params, step, config, history, norm_params, dataset_stats, opt_state_data = load_checkpoint(path)
 
         self.params = params
         self.step = step
         self.history = history
 
-        # Reinitialize optimizer
+        # Reinitialize optimizer (for schedule and to get correct structure)
         self._setup_optimizer()
-        self.opt_state = self.optimizer.init(self.params)
 
-        print(f"Resumed from step {step}")
+        # Restore optimizer state if available, otherwise keep fresh init
+        if opt_state_data is not None:
+            # Use fresh opt_state as template for correct structure, fill with saved values
+            self.opt_state = _restore_opt_state(opt_state_data, self.opt_state)
+            print(f"Resumed from step {step} with optimizer state")
+        else:
+            print(f"Resumed from step {step} (no optimizer state, initialized fresh)")

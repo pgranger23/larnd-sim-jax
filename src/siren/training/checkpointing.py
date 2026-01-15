@@ -32,6 +32,44 @@ def _to_jax(obj: Any) -> Any:
     return jax.tree_util.tree_map(convert_leaf, obj)
 
 
+def _serialize_opt_state(opt_state: Any) -> Dict:
+    """Serialize optimizer state to a dict for saving.
+
+    Saves only the array leaves - the structure will be recreated from
+    a fresh optimizer init, then values copied over.
+    """
+    # Flatten the pytree to get leaves only
+    leaves, _ = jax.tree_util.tree_flatten(opt_state)
+
+    # Convert leaves to numpy
+    leaves_np = [np.array(leaf) if hasattr(leaf, '__array__') else leaf for leaf in leaves]
+
+    return {'leaves': leaves_np}
+
+
+def _restore_opt_state(saved_data: Dict, template_opt_state: Any) -> Any:
+    """Restore optimizer state by copying saved values into a template structure.
+
+    Args:
+        saved_data: Dict with 'leaves' key containing saved array values.
+        template_opt_state: Fresh optimizer state with correct structure.
+
+    Returns:
+        Optimizer state with values from saved_data but structure from template.
+    """
+    saved_leaves = saved_data['leaves']
+
+    # Convert saved leaves to JAX arrays
+    saved_leaves_jax = [jnp.array(leaf) if isinstance(leaf, np.ndarray) else leaf
+                        for leaf in saved_leaves]
+
+    # Get template structure
+    _, treedef = jax.tree_util.tree_flatten(template_opt_state)
+
+    # Reconstruct with saved values but correct structure
+    return jax.tree_util.tree_unflatten(treedef, saved_leaves_jax)
+
+
 def save_checkpoint(
     path: str,
     params: Dict,
@@ -61,8 +99,8 @@ def save_checkpoint(
     # Convert params to numpy for saving
     params_np = _to_numpy(unfreeze(params) if hasattr(params, 'unfreeze') else params)
 
-    # Convert optimizer state to numpy for saving
-    opt_state_np = _to_numpy(opt_state) if opt_state is not None else None
+    # Serialize optimizer state (handles complex optax structures)
+    opt_state_serialized = _serialize_opt_state(opt_state) if opt_state is not None else None
 
     # Save as npz
     np.savez(
@@ -73,7 +111,7 @@ def save_checkpoint(
         history=history,
         normalization_params=normalization_params,
         dataset_stats=dataset_stats,
-        opt_state=opt_state_np,
+        opt_state=opt_state_serialized,
     )
 
     print(f"Saved checkpoint to {path}")
@@ -106,16 +144,17 @@ def load_checkpoint(
     normalization_params = data['normalization_params'].item()
     dataset_stats = data['dataset_stats'].item()
 
-    # Load optimizer state if available (for proper resume)
-    opt_state = None
+    # Load optimizer state data if available (for proper resume)
+    # Note: This returns raw saved data, use _restore_opt_state() with a template to restore
+    opt_state_data = None
     if 'opt_state' in data.files and data['opt_state'].item() is not None:
-        opt_state = _to_jax(data['opt_state'].item())
+        opt_state_data = data['opt_state'].item()
 
     print(f"Loaded checkpoint from {path} at step {step}")
-    if opt_state is not None:
+    if opt_state_data is not None:
         print(f"  Optimizer state loaded for proper resume")
 
-    return params, step, config, history, normalization_params, dataset_stats, opt_state
+    return params, step, config, history, normalization_params, dataset_stats, opt_state_data
 
 
 def save_final_model(

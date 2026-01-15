@@ -31,7 +31,8 @@ from ..training.dataset import ResponseTemplateDataset
 
 def load_model_and_dataset(model_path: str, lut_path: str, square_output: bool):
     """Load SIREN model and CDF dataset."""
-    params, step, config, history, norm_params, dataset_stats = load_checkpoint(model_path)
+    # Load checkpoint (ignore opt_state for visualization)
+    params, step, config, history, norm_params, dataset_stats, _ = load_checkpoint(model_path)
 
     model = create_siren(
         hidden_features=config['hidden_features'],
