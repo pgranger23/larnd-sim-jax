@@ -3,6 +3,15 @@ variables:
   # Use the OFFICIAL Nvidia image with CUDA 12.3 (Matches JAX 0.5.x requirements)
   # "devel" is required to get the compiler tools (nvcc) needed for some JAX builds
   GENERIC_IMAGE: "nvidia/cuda:12.3.2-devel-ubuntu22.04"
+  # --- ADD THESE 3 LINES ---
+  # 1. Stop JAX from grabbing 90% of RAM at startup
+  XLA_PYTHON_CLIENT_PREALLOCATE: "false"
+  
+  # 2. Use the new CUDA async allocator (Fixes the specific fragmentation error in your logs)
+  TF_GPU_ALLOCATOR: "cuda_malloc_async"
+  
+  # 3. Force JAX to be strict about memory limits (Optional but good for MIG)
+  XLA_PYTHON_CLIENT_ALLOCATOR: "platform"
 
 stages:
   - gpu-tests
