@@ -173,7 +173,7 @@ def main(config):
                                 compute_target_hessian=True)
 
     else:
-        raise Exception(f"Unknown fit type: {config.fit_type}. Supported types are 'chain' and 'scan'.")
+        raise Exception(f"Unknown fit type: {config.fit_type}. Supported types are 'chain', 'scan', 'minuit', and 'hess'.")
 
     # jax.profiler.start_trace("/tmp/tensorboard")
 
