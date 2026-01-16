@@ -2,10 +2,10 @@
 
 #SBATCH --partition=ampere
 
-##SBATCH --account=mli:nu-ml-dev
+#SBATCH --account=mli:nu-ml-dev
 ##SBATCH --account=mli:cider-ml
 ##SBATCH --account=neutrino:cider-nu
-#SBATCH --account=neutrino:dune-ml
+##SBATCH --account=neutrino:dune-ml
 ##SBATCH --account=neutrino:ml-dev
 
 #SBATCH --job-name=diffsim_cov
@@ -102,6 +102,7 @@ python3 -m optimize.example_run \
     --no-noise \
     --mc_diff \
     --detector_props src/larndsim/detector_properties/module0.yaml \
+    --set_init_params Ab 0.8254188985824585 kb 0.04097877711802721 eField 0.5052360675930977 tran_diff 8.251938067587617e-06 long_diff 4.883656642959977e-06 lifetime 1998.2867766113282 \
     #--scan_tgt_nom \
     #--live_selection \
     #--chamfer_match_z

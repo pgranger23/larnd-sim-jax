@@ -63,12 +63,12 @@ def remove_noise_from_params(params):
     return params.replace(**{key: 0. for key in noise_params})
 
 class ParamFitter:
-    def __init__(self, relevant_params, sim_track_fields, tgt_track_fields,
+    def __init__(self, relevant_params, set_init_params, sim_track_fields, tgt_track_fields,
                  detector_props, pixel_layouts,
                  loss_fn=None, loss_fn_kw=None, readout_noise_target=True, readout_noise_guess=False, 
                  out_label="", test_name="this_test",
                  shift_no_fit=[], set_target_vals=[], vary_init=False, keep_in_memory=False,
-                 compute_hessian=False, compute_target_hessian=False, sim_seed_strategy="different",
+                 compute_target_hessian=False, sim_seed_strategy="different",
                  target_seed=0, target_fixed_range=None,
                  adc_norm=1, match_z=True,
                  diffusion_in_current_sim=False,
@@ -94,7 +94,6 @@ class ParamFitter:
         self.out_label = out_label
         self.test_name = test_name
 
-        self.compute_hessian = compute_hessian
         self.compute_target_hessian = compute_target_hessian
 
         self.current_mode = config.mode
@@ -134,6 +133,8 @@ class ParamFitter:
                 param_name = set_target_vals[2*i_val]
                 param_val = set_target_vals[2*i_val+1]
                 self.target_val_dict[param_name] = float(param_val)
+
+        self.set_init_params = set_init_params
 
         if self.current_mode == 'lut':
             self.lut_file = config.lut_file
@@ -187,7 +188,7 @@ class ParamFitter:
         for param in self.shift_no_fit:
             self.training_history[param + '_target'] = []
 
-        if self.compute_hessian:
+        if self.compute_target_hessian:
             self.training_history['hessian'] = []
         self.training_history['size_history'] = []
         self.training_history['memory'] = []
@@ -226,6 +227,14 @@ class ParamFitter:
                 init_val = np.random.uniform(low=ranges[param]['down'], 
                                             high=ranges[param]['up'])
                 initial_params[param] = init_val
+
+        elif len(self.set_init_params) > 0:
+            if len(self.set_init_params) % 2 != 0:
+                raise ValueError("Incorrect format for set_init_params!")
+            for i_val in range(len(self.set_init_params)//2):
+                param_name = self.set_init_params[2*i_val]
+                param_val = self.set_init_params[2*i_val+1]
+                initial_params[param_name] = float(param_val)
 
         self.current_params = ref_params.replace(**initial_params)
 
@@ -321,15 +330,15 @@ class ParamFitter:
                 else:
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_parametrized(self.target_params, target, self.tgt_track_fields, i+1) #Setting a different random seed for each target
 
-                if self.compute_target_hessian:
-                    logger.error("Computing target hessian is not implemented yet")
-                    raise NotImplementedError("Computing target hessian is not implemented yet")
-                    # logger.info("Computing target hessian")
-                    # if self.current_mode == 'lut':
-                    #     hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.target_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
-                    # else:
-                    #     hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
-                    # self.training_history['hessian'].append(format_hessian(hess))
+                #if self.compute_target_hessian:
+                #    logger.error("Computing target hessian is not implemented yet")
+                #    raise NotImplementedError("Computing target hessian is not implemented yet")
+                #    # logger.info("Computing target hessian")
+                #    # if self.current_mode == 'lut':
+                #    #     hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.target_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
+                #    # else:
+                #    #     hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
+                #    # self.training_history['hessian'].append(format_hessian(hess))
 
                 # embed_target = embed_adc_list(self.sim_target, target, pix_target, ticks_list_targ)
                 #Saving the target for the batch
@@ -937,31 +946,12 @@ class CovarianceCalculator(ParamFitter):
         self.scan_tgt_nom = scan_tgt_nom
         super().__init__(**kwargs)
 
-
-    def make_target_sim(self, seed=2, fixed_range=None):
-        if self.scan_tgt_nom:
-            target_params = {}
-            logger.info("Using the fitter in a gradient profile mode. Setting targets to nominal values")
-            for param in self.relevant_params_list:
-                target_params[param] = ranges[param]['nom']
-            self.target_params = self.ref_params.replace(**target_params)
-            if not self.readout_noise_target:
-                logger.info("Not simulating electronics noise for target")
-                self.target_params = remove_noise_from_params(self.target_params)
-        else:
-            super().make_target_sim()
-
     def fit(self, dataloader_sim, target, iterations=100, **kwargs):
 
         self.prepare_fit()
 
-        logger.info("Using the fitter in a gradient profile mode. The sampling will follow a regular grid.")
+        logger.info("Using the fitter for Hessian matrix calculation.")
         logger.warning(f"Arguments {kwargs} are ignored in this mode.")
-
-        nb_var_params = len(self.relevant_params_list)
-        logger.info(f"{nb_var_params} parameters are to be scanned.")
-        #nb_steps = iterations
-        #logger.info(f"Each parameter will be scanned with {nb_steps} steps")
 
         self.ref_params = self.current_params
 
@@ -993,7 +983,8 @@ class CovarianceCalculator(ParamFitter):
                 self.training_history['hessian'].append(format_hessian(hess))
 
             else:
-                hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.sim_track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
+                hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.fit_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.sim_track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
+                self.training_history['hessian'].append(format_hessian(hess))
 
             with open(f'fit_result/{self.test_name}/history_batch{i}_{self.out_label}.pkl', "wb") as f_history:
                 pickle.dump(self.training_history, f_history)

@@ -106,7 +106,7 @@ def main(config):
     logger.info(f"Param list: {param_list}")
 
     if config.fit_type == "chain":
-        param_fit = GradientDescentFitter(relevant_params=param_list,
+        param_fit = GradientDescentFitter(relevant_params=param_list, set_init_params=config.set_init_params,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 lr=config.lr, readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
@@ -125,7 +125,7 @@ def main(config):
                                 probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim,
                                 sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt)
     elif config.fit_type == "scan":
-        param_fit = LikelihoodProfiler(relevant_params=param_list,
+        param_fit = LikelihoodProfiler(relevant_params=param_list, set_init_params=config.set_init_params,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
@@ -140,7 +140,7 @@ def main(config):
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 scan_tgt_nom=config.scan_tgt_nom, probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim)
     elif config.fit_type == "minuit":
-        param_fit = MinuitFitter(relevant_params=param_list,
+        param_fit = MinuitFitter(relevant_params=param_list, set_init_params=config.set_init_params,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
@@ -156,7 +156,8 @@ def main(config):
                                 minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits, probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim)
 
     elif config.fit_type == "hess":
-        param_fit = CovarianceCalculator(relevant_params=param_list, sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
+        param_fit = CovarianceCalculator(relevant_params=param_list, set_init_params=config.set_init_params,
+                                sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
                                 readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
@@ -169,7 +170,7 @@ def main(config):
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 scan_tgt_nom=config.scan_tgt_nom, probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim,
-                                compute_hessian=True, compute_target_hessian=config.compute_target_hessian)
+                                compute_target_hessian=True)
 
     else:
         raise Exception(f"Unknown fit type: {config.fit_type}. Supported types are 'chain' and 'scan'.")
@@ -268,6 +269,8 @@ if __name__ == '__main__':
                         help="Set of params to shift in target sim without fitting them (robustness/separability check).")
     parser.add_argument("--set-target-vals", dest="set_target_vals", default=[], nargs="+", 
                         help="Explicitly set values of target. Syntax is <param1> <val1> <param2> <val2>...")
+    parser.add_argument("--set_init_params", dest="set_init_params", default=[], nargs="+",
+                        help="Init parameter values. Syntax is <param1> <val1> <param2> <val2>...")
     parser.add_argument("--scan_tgt_nom", dest="scan_tgt_nom", default=False, action="store_true",
                         help="Set the gradient and loss scan target to the parameter nominal value, otherwise there will be a target throw.")
     parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
