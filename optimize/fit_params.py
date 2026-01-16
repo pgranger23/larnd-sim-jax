@@ -942,9 +942,10 @@ class MinuitFitter(ParamFitter):
 
 
 class CovarianceCalculator(ParamFitter):
-    def __init__(self, scan_tgt_nom=False, **kwargs):
-        self.scan_tgt_nom = scan_tgt_nom
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        if not len(self.set_init_params) > 0:
+            raise ValueError("Remember to set the initial parameter values for Hessian calculation!")
 
     def fit(self, dataloader_sim, target, iterations=100, **kwargs):
 

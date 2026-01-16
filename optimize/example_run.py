@@ -169,7 +169,7 @@ def main(config):
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
-                                scan_tgt_nom=config.scan_tgt_nom, probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim,
+                                probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim,
                                 compute_target_hessian=True)
 
     else:
