@@ -167,6 +167,18 @@ jobs:
         run: |
           ./optimize/scan_test.sh
 
+      - name: Validate scan input directory
+        run: |
+          if [ ! -d "fit_result/fit_noise" ]; then
+            echo "Error: input_dir 'fit_result/fit_noise' does not exist."
+            exit 1
+          fi
+          shopt -s nullglob
+          files=(fit_result/fit_noise/*.pkl)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "Error: no .pkl files found in 'fit_result/fit_noise'."
+            exit 1
+          fi
       - name: Make scan plots
         run: |
           ./optimize/analysis_scripts/plot_scan.py --input_dir fit_result/fit_noise/ --output_dir output

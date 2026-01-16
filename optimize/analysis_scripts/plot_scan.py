@@ -153,6 +153,7 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
                         try:
                             batch_num = int(parts[j].replace('batch', ''))
                         except ValueError:
+                            # Ignore non-integer batch suffixes; absence or malformation of a batch number is allowed.
                             pass
                 break
         if param_from_filename:

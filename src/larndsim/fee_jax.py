@@ -4,7 +4,7 @@ Module that simulates the front-end electronics (triggering, ADC)
 
 import jax.numpy as jnp
 from jax.profiler import annotate_function
-from jax import jit, vmap, lax, random, debug, checkpoint
+from jax import jit, vmap, lax, random, checkpoint
 from jax.scipy.special import erf
 from functools import partial
 
@@ -312,7 +312,6 @@ def _find_one_hit_step(q_sum, prev_charges, previous_prob, sigma, threshold, Nva
     prob_distrib = prob_event * previous_prob[:, None]
     total_hit_prob_per_path = jnp.sum(prob_event, axis=-1) * previous_prob
     total_distrib_prob_per_tick = jnp.sum(prob_distrib, axis=0)
-    norm_across = jnp.sum(total_hit_prob_per_path)
     
     # Step 4: Optimized Merging & Selection
     future_hit_earliest_end = jnp.clip(shifted_ticks + interval + 1, 0, Nticks - 1)
@@ -347,7 +346,8 @@ def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
     )
 
     # --- Pre-calculate q_sum for all pixels ---
-    q = wfs * 0.1
+    charge_scaling_factor = 0.1  # scaling factor (e.g., related to sampling interval)
+    q = wfs * charge_scaling_factor
     q_sum_all = q.cumsum(axis=-1)
     
 
@@ -396,7 +396,7 @@ def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
     
     init_loop = (initial_charges, initial_probs, initial_active)
 
-    _, (charge_avg, tick_avg, no_hit_prob, prob_distrib) = lax.scan(global_scan_fun, init_loop, jnp.arange(0, 10))
+    _, (charge_avg, tick_avg, no_hit_prob, prob_distrib) = lax.scan(global_scan_fun, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
     # next_loop, (charge_avg_0, tick_avg_0, no_hit_prob_0, prob_distrib_0) = vmapped_step_fun(
     #             q_sum_all, init_loop[0], init_loop[1], params.RESET_NOISE_CHARGE, params.DISCRIMINATION_THRESHOLD, Nvalues
     #         )

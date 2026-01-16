@@ -22,7 +22,6 @@ logger.info("DETSIM MODULE PARAMETERS")
 
 
 @annotate_function
-@annotate_function
 @partial(jit, static_argnames='signal_length')
 def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID, cathode_ticks, signal_length):
     # Get the number of pixels and ticks

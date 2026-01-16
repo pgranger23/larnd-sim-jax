@@ -11,7 +11,7 @@ import logging
 from larndsim.detsim_jax import generate_electrons, get_pixels, id2pixel, accumulate_signals, accumulate_signals_parametrized, current_lut, get_pixel_coordinates, current_mc, apply_tran_diff, get_hit_z, pixel2id, get_bin_shifts, density_2d
 from larndsim.quenching_jax import quench
 from larndsim.drifting_jax import drift
-from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise, get_adc_values_average_noise_vmap
+from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise_vmap
 from optimize.dataio import chop_tracks
 from larndsim.consts_jax import get_vdrift
 
@@ -297,7 +297,7 @@ def simulate_drift_new(params, tracks, fields):
     
     #Shifting tracks
     new_tracks = shift_tracks(params, tracks, fields)
-    #Quenching and drifting - TODO: parameterize the hard-coded "2"
+    # Quenching and drifting - TODO: parameterize the hard-coded "2"
     new_tracks = quench(params, new_tracks, params.quench_mode if hasattr(params, 'quench_mode') else 2, fields)
     new_tracks = drift(params, new_tracks, fields)
 
@@ -322,7 +322,6 @@ def simulate_drift_new(params, tracks, fields):
     # Optimize broadcasting operations - combine into single operation
     n_electrons_base = main_electrons[:, n_electrons_idx]
     shape_2d = (main_electrons.shape[0], nb_tran_diff_bins, nb_tran_diff_bins)
-    total_elements = nb_tran_diff_bins * nb_tran_diff_bins
     
     # More efficient broadcasting
     nelectrons = (tran_diff_weights * n_electrons_base[:, None, None]).reshape(-1)
@@ -586,6 +585,9 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None, save_w
         hit_prob = jnp.where(ticks < wfs.shape[1] - 3, 1., 0.)  # Assuming hit probability is based on whether ticks are within the waveform length
     else:
         Npix = wfs.shape[0]
+        # ROI selection is a discrete, non-differentiable operation; we explicitly stop
+        # gradients from flowing through select_split_roi to avoid backpropagating through
+        # this indexing/masking logic while still allowing gradients on downstream signals.
         nb_small_rois, mask_small_rois, roi_start = jax.lax.stop_gradient(select_split_roi(params, wfs[:, 1:]))
         nb_small_rois = int(nb_small_rois)
         padded_small_nb = pad_size(nb_small_rois, "wfs_roi", 0.1)
