@@ -151,6 +151,7 @@ class Params_template:
     fee_paths_scaling: int = struct.field(pytree_node=False, default=20)  # Scaling factor for fee paths
     nb_tran_diff_bins: int = struct.field(pytree_node=False, default=5)
     hit_prob_threshold: float = struct.field(pytree_node=False, default=1e-5)  # Threshold for hit probability
+    tran_diff_bin_edges: jax.Array = struct.field(pytree_node=False, default=None) # Bin edges for transverse diffusion
 
 def build_params_class(params_with_grad):
     """
@@ -310,6 +311,13 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         tile_layout = yaml.load(pf, Loader=yaml.FullLoader)
 
     params_dict['pixel_pitch'] = tile_layout['pixel_pitch'] * mm2cm
+
+    params_dict['tran_diff_bin_edges'] = jnp.linspace(
+        -(params_dict['nb_tran_diff_bins']/2)*params_dict['pixel_pitch']/params_dict['nb_sampling_bins_per_pixel'],
+        (params_dict['nb_tran_diff_bins']/2)*params_dict['pixel_pitch']/params_dict['nb_sampling_bins_per_pixel'],
+        params_dict['nb_tran_diff_bins'] + 1
+    )
+
     chip_channel_to_position = tile_layout['chip_channel_to_position']
     params_dict['pixel_connection_dict'] = {tuple(pix): (chip_channel//1000,chip_channel%1000) for chip_channel, pix in chip_channel_to_position.items()}
     params_dict['tile_chip_to_io'] = tile_layout['tile_chip_to_io']
