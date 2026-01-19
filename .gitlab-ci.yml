@@ -85,6 +85,12 @@ test-scan-lut:
     - ./optimize/scan_lut_test.sh --gpu
     - python3 ./optimize/analysis_scripts/plot_scan.py --input_dir fit_result/fit_noise --output_dir output
 
+test-scan-nll-lut:
+  extends: .gpu_template
+  script:
+    - ./optimize/scan_nll_lut_test.sh --gpu
+    - python3 ./optimize/analysis_scripts/plot_scan.py --input_dir fit_result/scan_nll --output_dir output
+
 test-minuit:
   extends: .gpu_template
   script:
@@ -95,7 +101,7 @@ test-minuit:
 push-plots-back:
   stage: sync-artifacts
   image: alpine/git
-  needs: [test-fit, test-fit-lut, test-scan, test-scan-lut, test-sim, test-fit-nll]
+  needs: [test-fit, test-fit-lut, test-scan, test-scan-lut, test-sim, test-fit-nll, test-scan-nll-lut]
   script:
     - git config --global user.email "gitlab-ci@cern.ch"
     - git config --global user.name "CERN GPU Runner"

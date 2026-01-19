@@ -37,6 +37,17 @@ LUT Scan results
    :alt: LUT iteration time plot
    :align: center
 
+NLL LUT Scan results
+--------------------
+
+.. image:: scan-nll-lut-plots/gradient_scan.png
+   :alt: NLL LUT scan result
+   :align: center
+
+.. image:: scan-nll-lut-plots/gradient_scan_avg.png
+   :alt: NLL LUT scan result avg
+   :align: center
+
 Fit Plots
 ----------------
 

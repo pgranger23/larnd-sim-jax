@@ -64,6 +64,15 @@ download_artifact(
 )
 
 download_artifact(
+    prefix="scan-nll-lut-plots-",
+    path="scan-nll-lut-plots",
+    repo="pgranger23/larnd-sim-jax",
+    token=os.environ["GITHUB_TOKEN"],
+    raise_error=True,
+    retries=3,
+)
+
+download_artifact(
     prefix="fit-plots-",
     path="fit-plots",
     repo="pgranger23/larnd-sim-jax",
