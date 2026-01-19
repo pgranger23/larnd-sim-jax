@@ -36,14 +36,14 @@ html_static_path = ['_static']
 
 # Download artifacts from GitHub Actions
 
-# download_artifact(
-#     prefix="simulation-plots-",
-#     path="debug-plots",
-#     repo="pgranger23/larnd-sim-jax",
-#     token=os.environ["GITHUB_TOKEN"],
-#     raise_error=True,
-#     retries=3,
-# )
+download_artifact(
+    prefix="simulation-plots-",
+    path="debug-plots",
+    repo="pgranger23/larnd-sim-jax",
+    token=os.environ["GITHUB_TOKEN"],
+    raise_error=True,
+    retries=3,
+)
 
 download_artifact(
     prefix="scan-plots-",
