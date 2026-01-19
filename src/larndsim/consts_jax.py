@@ -285,6 +285,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "mc_diff": False,
         "tpc_centers": jnp.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
         "response_full_drift_t": 190.61638,
+        "nb_tran_diff_bins": 5,
         "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
         "long_diff_template": jnp.linspace(0.001, 10, 100), # Placeholder for long diffusion template
         "long_diff_extent": 20
