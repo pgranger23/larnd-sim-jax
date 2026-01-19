@@ -60,6 +60,17 @@ LUT Fit Plots
    :alt: LUT Loss fit plot
    :align: center
 
+NLL Fit Plots
+----------------
+
+.. image:: fit-nll-plots/eField_fit.png
+   :alt: NLL eField fit plot
+   :align: center
+
+.. image:: fit-nll-plots/loss_fit.png
+   :alt: NLL Loss fit plot
+   :align: center
+
 Simulation Consistency Plots
 ----------------------------
 

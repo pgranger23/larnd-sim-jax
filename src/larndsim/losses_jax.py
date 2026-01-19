@@ -309,6 +309,38 @@ def sdtw_time_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw,
     loss_time, _ = sdtw_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw)
     return alpha * loss_adc + (1 - alpha) * loss_time, dict()
 
+def nll_loss(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, adc_norm=10., sigma=1., match_z=False):
+    ref_all = jnp.stack((ref_x + ref_event*1e9, ref_y, ref_z, ref_Q/adc_norm), axis=-1)
+    current_all = jnp.stack((x + event*1e9, y, z, Q/adc_norm), axis=-1)
+    
+    new_ref_size, new_cur_size = pad_size((ref_all.shape[0], current_all.shape[0]), "nll_loss")
+    
+    ref_all = jnp.pad(ref_all, ((0, new_ref_size - ref_all.shape[0]), (0, 0)), mode='constant', constant_values=-1e9)
+    current_all = jnp.pad(current_all, ((0, new_cur_size - current_all.shape[0]), (0, 0)), mode='constant', constant_values=-1e9)
+    
+    hit_prob = jnp.pad(hit_prob, (0, new_cur_size - hit_prob.shape[0]), mode='constant', constant_values=0)
+    ref_hit_prob = jnp.pad(ref_hit_prob, (0, new_ref_size - ref_hit_prob.shape[0]), mode='constant', constant_values=0)
+
+    # Compute pairwise distances
+    dists_sq = jnp.sum((current_all[:, None, :] - ref_all[None, :, :])**2, axis=-1)
+    
+    # Gaussian Kernel
+    K = jnp.exp(-dists_sq / (2 * sigma**2))
+    
+    # Intensity at each reference point
+    lambda_j = jnp.sum(hit_prob[:, None] * K, axis=0)
+    
+    # Term 1: Log-likelihood of observing reference points
+    epsilon = 1e-10
+    term1 = jnp.sum(jnp.log(lambda_j + epsilon) * (ref_hit_prob > 0.5))
+    
+    # Term 2: Integral of intensity (expected number of points)
+    term2 = jnp.sum(hit_prob)
+    
+    loss = term2 - term1
+    
+    return loss, dict()
+
 @jit
 @jax.named_scope("get_hits_space_coords")
 def get_hits_space_coords(params, pIDs, ticks):

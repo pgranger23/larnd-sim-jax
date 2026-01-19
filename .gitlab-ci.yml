@@ -63,6 +63,13 @@ test-fit-lut:
     - python3 ./optimize/analysis_scripts/plot_fit.py --input_file fit_result/**/*.pkl --output_dir output
     - python3 tests/test_fit_convergence.py --input_file fit_result/**/*.pkl --strict
 
+test-fit-nll:
+  extends: .gpu_template
+  script:
+    - ./optimize/fit_nll_test.sh
+    - python3 ./optimize/analysis_scripts/plot_fit.py --input_file fit_result/**/*.pkl --output_dir output
+    - python3 tests/test_fit_convergence.py --input_file fit_result/**/*.pkl --strict
+
 test-scan:
   extends: .gpu_template
   script:
@@ -85,7 +92,7 @@ test-minuit:
 push-plots-back:
   stage: sync-artifacts
   image: alpine/git
-  needs: [test-fit, test-fit-lut, test-scan, test-scan-lut, test-sim]
+  needs: [test-fit, test-fit-lut, test-scan, test-scan-lut, test-sim, test-fit-nll]
   script:
     - git config --global user.email "gitlab-ci@cern.ch"
     - git config --global user.name "CERN GPU Runner"
