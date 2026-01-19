@@ -42,17 +42,26 @@ stages:
 
 # --- Jobs ---
 
+test-sim:
+  extends: .gpu_template
+  script:
+    - ./optimize/simulate_test.sh
+    - python3 tests/test_simulation_consistency.py --ref_file output/jax_ref/output_0.h5 --test_file output/output_0.h5
+    - python3 tests/test_simulation_consistency.py --ref_file output/jax_ref/output_parametrized_0.h5 --test_file output/output_parametrized_0.h5
+
 test-fit:
   extends: .gpu_template
   script:
     - ./optimize/fit_test.sh
     - python3 ./optimize/analysis_scripts/plot_fit.py --input_file fit_result/**/*.pkl --output_dir output
+    - python3 tests/test_fit_convergence.py --input_file fit_result/**/*.pkl --strict
 
 test-fit-lut:
   extends: .gpu_template
   script:
     - ./optimize/fit_test.sh --lut
     - python3 ./optimize/analysis_scripts/plot_fit.py --input_file fit_result/**/*.pkl --output_dir output
+    - python3 tests/test_fit_convergence.py --input_file fit_result/**/*.pkl --strict
 
 test-scan:
   extends: .gpu_template
@@ -76,7 +85,7 @@ test-minuit:
 push-plots-back:
   stage: sync-artifacts
   image: alpine/git
-  needs: [test-fit, test-fit-lut, test-scan, test-scan-lut]
+  needs: [test-fit, test-fit-lut, test-scan, test-scan-lut, test-sim]
   script:
     - git config --global user.email "gitlab-ci@cern.ch"
     - git config --global user.name "CERN GPU Runner"
