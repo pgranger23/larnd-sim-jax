@@ -41,7 +41,7 @@ download_artifact(
     path="debug-plots",
     repo="pgranger23/larnd-sim-jax",
     token=os.environ["GITHUB_TOKEN"],
-    raise_error=True,
+    raise_error=False,
     retries=3,
 )
 
