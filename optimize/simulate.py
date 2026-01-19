@@ -133,7 +133,8 @@ def main(config):
             else:
                 adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
         else:
-            adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
+            rngseed = config.seed if config.seed is not None else 0
+            adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=rngseed)
         if config.jac:
             jac_res = jax.jacfwd(sim_wrapper)(ref_params, tracks)
 
