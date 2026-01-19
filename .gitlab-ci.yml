@@ -13,6 +13,9 @@ variables:
   # 3. Force JAX to be strict about memory limits (Optional but good for MIG)
   XLA_PYTHON_CLIENT_ALLOCATOR: "platform"
 
+default:
+  interruptible: true
+
 stages:
   - gpu-tests
   - sync-artifacts
