@@ -45,6 +45,7 @@ python3 -m optimize.example_run \
     --max_abs_costheta_sel 0.966 \
     --min_abs_segz_sel 15. \
     --no-noise-target \
+    --no-noise-guess \
     --data_seed ${DATA_SEED} \
     --out_label scan_test${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target \
     --test_name fit_noise \
@@ -63,7 +64,6 @@ python3 -m optimize.example_run \
     --fit_type 'scan' \
     --sim_seed_strategy 'same' \
     $( [ "$GPU" == "FALSE" ] && echo "--cpu_only" ) \
-    --scan_tgt_nom \
-    --mc_diff
+    --scan_tgt_nom
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
 
