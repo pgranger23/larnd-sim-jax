@@ -3,7 +3,7 @@ from jax import jit, vmap
 import jax
 from jax.nn import softmax
 from functools import partial
-from larndsim.sim_jax import pad_size, simulate_new, simulate_parametrized
+from larndsim.sim_jax import pad_size, simulate_new, simulate_parametrized, simulate_surrogate
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
 #from ott.geometry import pointcloud
@@ -356,6 +356,19 @@ def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, r
     if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
         raise NotImplementedError("🍝 SDTW losses need to be fixed 🍝")
         # loss_val, aux = loss_fn(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, loss_kwargs['dstw'])
+    else:
+        loss_val, aux = loss_fn(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event , **loss_kwargs)
+
+    return loss_val, aux
+
+def params_loss_surrogate(params, surrogate_params, surrogate_apply_fn, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, rngkey=None, loss_fn=mse_adc, **loss_kwargs):
+    adcs, x, y, z, ticks, hit_prob, event, _ = simulate_surrogate(params, surrogate_params, surrogate_apply_fn, tracks, fields)
+
+    Q = adc2charge(adcs, params)
+    ref_Q = adc2charge(ref_adcs, params)
+
+    if loss_fn.__name__ in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']:
+        raise NotImplementedError("🍝 SDTW losses need to be fixed 🍝")
     else:
         loss_val, aux = loss_fn(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event , **loss_kwargs)
 

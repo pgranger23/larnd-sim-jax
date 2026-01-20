@@ -833,7 +833,7 @@ def simulate_signals_surrogate(params, surrogate_apply_fn, surrogate_params,
         t_range=params.surrogate_t_range,
     )
 
-    # Evaluate SIREN (single batched forward pass)
+    # Evaluate SIREN
     siren_output = surrogate_apply_fn(surrogate_params, coords_norm)  # [n_electrons * signal_length, 1]
 
     # Denormalize output if needed

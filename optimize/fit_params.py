@@ -7,9 +7,9 @@ import shutil
 import pickle
 import numpy as np
 from .ranges import ranges
-from larndsim.sim_jax import simulate_new, simulate_parametrized, get_size_history
-from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge #, sinkhorn_loss
-from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
+from larndsim.sim_jax import simulate_new, simulate_parametrized, simulate_surrogate, get_size_history
+from larndsim.losses_jax import params_loss, params_loss_parametrized, params_loss_surrogate, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge #, sinkhorn_loss
+from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut, load_surrogate
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
 import logging
@@ -139,6 +139,11 @@ class ParamFitter:
         else:
             self.lut_file = None
 
+        if self.current_mode == 'surrogate':
+            self.surrogate_model_file = config.surrogate_model
+        else:
+            self.surrogate_model_file = None
+
         self.setup_params()
 
         if not self.read_target:
@@ -209,6 +214,9 @@ class ParamFitter:
         
         if self.lut_file is not None:
             self.response, ref_params = load_lut(self.lut_file, ref_params)
+
+        if self.surrogate_model_file is not None:
+            self.surrogate_params, self.surrogate_apply_fn, ref_params = load_surrogate(self.surrogate_model_file, ref_params)
         
         params_to_apply = [
             "diffusion_in_current_sim",
@@ -317,6 +325,19 @@ class ParamFitter:
                     else:
                         rngseed = i+1
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_new(self.target_params, self.response, target, self.tgt_track_fields, rngseed) #Setting a different random seed for each target
+                elif self.current_mode == 'surrogate':
+                    import psutil
+                    import numpy as np
+                    mem_before = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+                    # Filter out padded (zero) entries - padding has dE=0
+                    dE_idx = self.tgt_track_fields.index('dE')
+                    target_np = np.asarray(target)  # Convert to numpy for masking
+                    mask = target_np[:, dE_idx] != 0
+                    target_filtered = target_np[mask]
+                    logger.info(f"[DEBUG] Before simulate_surrogate (target): {mem_before:.1f} MB, filtered {target.shape[0]} -> {target_filtered.shape[0]} segments (dE range: {target_np[:, dE_idx].min():.4f} - {target_np[:, dE_idx].max():.4f})")
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_surrogate(self.target_params, self.surrogate_params, self.surrogate_apply_fn, target_filtered, self.tgt_track_fields)
+                    mem_after = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+                    logger.info(f"[DEBUG] After simulate_surrogate (target): {mem_after:.1f} MB, ref_adcs shape: {ref_adcs.shape}")
                 else:
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_parametrized(self.target_params, target, self.tgt_track_fields, i+1) #Setting a different random seed for each target
 
@@ -384,6 +405,22 @@ class ParamFitter:
                 loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
             elif with_grad:
                 grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+        elif self.current_mode == 'surrogate':
+            import psutil
+            mem_before = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+            # Filter out padded (zero) entries - padding has dE=0
+            dE_idx = self.sim_track_fields.index('dE')
+            mask = tracks[:, dE_idx] != 0
+            tracks_filtered = tracks[mask]
+            logger.info(f"[DEBUG] Before gradient computation: {mem_before:.1f} MB, filtered {tracks.shape[0]} -> {tracks_filtered.shape[0]} segments")
+            if with_loss and with_grad:
+                (loss_val, aux), grads = value_and_grad(params_loss_surrogate, (0), has_aux = True)(self.current_params, self.surrogate_params, self.surrogate_apply_fn, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks_filtered, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+            elif with_loss:
+                loss_val, aux = params_loss_surrogate(self.current_params, self.surrogate_params, self.surrogate_apply_fn, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks_filtered, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+            elif with_grad:
+                grads, aux = grad(params_loss_surrogate, (0), has_aux=True)(self.current_params, self.surrogate_params, self.surrogate_apply_fn, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks_filtered, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+            mem_after = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+            logger.info(f"[DEBUG] After gradient computation: {mem_after:.1f} MB")
         else:
             if with_loss and with_grad:
                 (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)

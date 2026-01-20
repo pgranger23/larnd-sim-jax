@@ -14,3 +14,8 @@ target*/
 logs/
 /src/larndsim/version.py
 /.idea/
+siren_training/
+src/siren/trained_surrogate.npz
+ci_tests/
+benchmark_siren_memory.py
+debug_surrogate_oom.py

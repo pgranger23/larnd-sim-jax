@@ -53,6 +53,9 @@ def main(config):
     if config.lut_file == "" and config.mode == 'lut':
         return 1, 'Error: LUT file is required for mode "lut"'
 
+    if config.surrogate_model is None and config.mode == 'surrogate':
+        return 1, 'Error: surrogate_model is required for mode "surrogate"'
+
     iterations = config.iterations
     max_nbatch = config.max_nbatch
 
@@ -254,11 +257,12 @@ if __name__ == '__main__':
                         help="Explicitly set values of target. Syntax is <param1> <val1> <param2> <val2>...")
     parser.add_argument("--scan_tgt_nom", dest="scan_tgt_nom", default=False, action="store_true",
                         help="Set the gradient and loss scan target to the parameter nominal value, otherwise there will be a target throw.")
-    parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
+    parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized', 'surrogate'], default='lut')
     parser.add_argument('--electron_sampling_resolution', type=float, required=True, help='Electron sampling resolution')
     parser.add_argument('--number_pix_neighbors', type=int, required=True, help='Number of pixel neighbors')
     parser.add_argument('--signal_length', type=int, required=True, help='Signal length')
     parser.add_argument('--lut_file', type=str, required=False, default="src/larndsim/detector_properties/response_44_v2a_full_tick.npz", help='Path to the LUT file')
+    parser.add_argument('--surrogate_model', type=str, required=False, default=None, help='Path to the trained surrogate model file (required for surrogate mode)')
     parser.add_argument('--keep_in_memory', default=False, action="store_true", help='Keep the expected output of each batch in memory')
     parser.add_argument('--compute_target_hessian', default=False, action="store_true", help='Computes the Hessian at the target for every batch')
     parser.add_argument('--non_deterministic', default=False, action="store_true", help='Make the computation slightly non-deterministic for faster computation')

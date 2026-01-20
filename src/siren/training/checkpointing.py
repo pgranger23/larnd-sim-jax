@@ -236,10 +236,14 @@ def load_final_model(path: str) -> Tuple[Dict, Dict, Dict, Dict, Dict]:
     normalization_params = data['normalization_params'].item()
     dataset_stats = data['dataset_stats'].item()
 
+    # Extract values, handling numpy arrays containing None
+    final_train_loss = data['final_train_loss'].item() if hasattr(data['final_train_loss'], 'item') else data['final_train_loss']
+    final_val_loss = data['final_val_loss'].item() if hasattr(data['final_val_loss'], 'item') else data['final_val_loss']
+
     metadata = {
         'final_step': int(data['final_step']),
-        'final_train_loss': float(data['final_train_loss']) if data['final_train_loss'] is not None else None,
-        'final_val_loss': float(data['final_val_loss']) if data['final_val_loss'] is not None else None,
+        'final_train_loss': float(final_train_loss) if final_train_loss is not None else None,
+        'final_val_loss': float(final_val_loss) if final_val_loss is not None else None,
     }
 
     print(f"Loaded model from {path}")
