@@ -389,7 +389,7 @@ def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
             return operand, (
                 jnp.zeros((Npix,), dtype=jnp.float32),
                 jnp.zeros((Npix,), dtype=jnp.float32),
-                jnp.zeros((Npix,), dtype=jnp.float32),
+                jnp.ones((Npix,), dtype=jnp.float32),  # Fixed: no_hit_prob should be 1.0 when inactive
                 jnp.zeros((Npix, Nticks - 1), dtype=jnp.float32)
                 )
 
