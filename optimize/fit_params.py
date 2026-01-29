@@ -7,7 +7,7 @@ import shutil
 import pickle
 import numpy as np
 from .ranges import ranges
-from larndsim.sim_jax import simulate_stochastic, simulate_parametrized, get_size_history
+from larndsim.sim_jax import simulate_stochastic, simulate_parametrized, get_size_history, simulate_wfs
 from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge, nll_loss #, sinkhorn_loss
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.softdtw_jax import SoftDTW
@@ -310,9 +310,10 @@ class ParamFitter:
             #Simulating the reference during the first epoch
             fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
             if regen or not os.path.exists(fname):
+                
                 if self.current_mode == 'lut':
-                    rngseed = i+1
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_stochastic(self.target_params, self.response, target, self.tgt_track_fields, rngseed) #Setting a different random seed for each target
+                    wfs, unique_pixels = simulate_wfs(self.target_params, self.response, target, self.tgt_track_fields)
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_stochastic(self.target_params, wfs, unique_pixels, rngseed=i+1) #Setting a different random seed for each target
                 else:
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_parametrized(self.target_params, target, self.tgt_track_fields, i+1) #Setting a different random seed for each target
 
