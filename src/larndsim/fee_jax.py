@@ -408,5 +408,5 @@ def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
     
     init_loop = (initial_charges, initial_probs, initial_active)
 
-    _, (charge_avg, tick_avg, no_hit_prob, prob_distrib, charge_distrib) = lax.scan(global_scan_fun, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
+    _, (prob_distrib, charge_distrib) = lax.scan(global_scan_fun, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
     return jnp.moveaxis(prob_distrib, 0, 1), jnp.moveaxis(charge_distrib, 0, 1)

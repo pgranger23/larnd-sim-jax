@@ -394,6 +394,36 @@ def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, r
 
     return loss_val, aux
 
+def llhd_loss(ticks_prob_distrib, ticks_mc, no_hit_prob, charge_distrib, charge_mc, sigma=500):
+    """
+    Calculates a log-likelihood loss between predicted and reference hit distributions.
+    Includes a Gaussian prior on the charge centered at the predicted charge with width sigma.
+    """
+    
+    # Gather the predicted probabilities at the reference tick positions
+    predicted_probs_at_mc_ticks = ticks_prob_distrib[jnp.arange(ticks_mc.shape[0]), ticks_mc]
+    predicted_charges_at_mc_ticks = charge_distrib[jnp.arange(ticks_mc.shape[0]), ticks_mc]
+    
+    # Calculate the log-likelihood for tick positions
+    eps = 1e-10  # Small constant to avoid log(0)
+    log_likelihoods_tick = jnp.log(predicted_probs_at_mc_ticks + eps)
+    # Using 1900 as threshold for "no hit" based on user snippet context (likely related to signal_length or padding)
+    log_likelihoods_tick = jnp.where(ticks_mc < 1900, log_likelihoods_tick, jnp.log(no_hit_prob + eps))
+    
+    # Add Gaussian prior on charge: log P(charge_mc | charge_pred, sigma)
+    # log P = -0.5 * ((charge_mc - charge_pred) / sigma)^2 - 0.5 * log(2*pi*sigma^2)
+    charge_diff = charge_mc - predicted_charges_at_mc_ticks
+    log_likelihoods_charge = -0.5 * (charge_diff / sigma) ** 2 - 0.5 * jnp.log(2 * jnp.pi * sigma**2)
+    
+    # Only apply charge prior where we have actual hits (ticks < 1900)
+    log_likelihoods_charge = jnp.where(ticks_mc < 1900, log_likelihoods_charge, 0.0)
+    
+    # Combine tick and charge log-likelihoods
+    total_log_likelihood = log_likelihoods_tick + log_likelihoods_charge
+    llhd = -jnp.sum(total_log_likelihood)
+    
+    return llhd, dict()
+
 
 #Code commented below is unused but I still want to keep it for future reference
 
