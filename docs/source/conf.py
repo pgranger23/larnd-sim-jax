@@ -50,7 +50,7 @@ download_artifact(
     path="debug-plots",
     repo="pgranger23/larnd-sim-jax",
     token=os.environ["GITHUB_TOKEN"],
-    raise_error=True,
+    raise_error=False,
     retries=3,
 )
 
@@ -59,7 +59,7 @@ download_artifact(
     path="scan-lut-plots",
     repo="pgranger23/larnd-sim-jax",
     token=os.environ["GITHUB_TOKEN"],
-    raise_error=True,
+    raise_error=False,
     retries=3,
 )
 
@@ -68,7 +68,7 @@ download_artifact(
     path="scan-nll-lut-plots",
     repo="pgranger23/larnd-sim-jax",
     token=os.environ["GITHUB_TOKEN"],
-    raise_error=True,
+    raise_error=False,
     retries=3,
 )
 
@@ -77,7 +77,7 @@ download_artifact(
     path="fit-plots",
     repo="pgranger23/larnd-sim-jax",
     token=os.environ["GITHUB_TOKEN"],
-    raise_error=True,
+    raise_error=False,
     retries=3,
 )
 
@@ -86,7 +86,7 @@ download_artifact(
     path="fit-lut-plots",
     repo="pgranger23/larnd-sim-jax",
     token=os.environ["GITHUB_TOKEN"],
-    raise_error=True,
+    raise_error=False,
     retries=3,
 )
 
@@ -95,6 +95,6 @@ download_artifact(
     path="fit-nll-plots",
     repo="pgranger23/larnd-sim-jax",
     token=os.environ["GITHUB_TOKEN"],
-    raise_error=True,
+    raise_error=False,
     retries=3,
 )
