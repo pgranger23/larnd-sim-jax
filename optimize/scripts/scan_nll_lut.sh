@@ -68,6 +68,5 @@ python3 -m optimize.example_run \
     --sim_seed_strategy 'same' \
     --scan_tgt_nom \
     --mc_diff \
-    --probabilistic-sim \
-    --probabilistic-target
+    --probabilistic-sim
 "

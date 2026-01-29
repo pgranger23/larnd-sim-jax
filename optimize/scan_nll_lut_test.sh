@@ -65,7 +65,6 @@ python3 -m optimize.example_run \
     $( [ "$GPU" == "FALSE" ] && echo "--cpu_only" ) \
     --scan_tgt_nom \
     --mc_diff \
-    --probabilistic-sim \
-    --probabilistic-target
+    --probabilistic-sim
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
 
