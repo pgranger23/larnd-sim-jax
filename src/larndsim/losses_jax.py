@@ -366,7 +366,7 @@ def adc2charge(dw, params):
     return (dw / params.ADC_COUNTS * (params.V_REF - params.V_CM) + params.V_CM - params.V_PEDESTAL) / params.GAIN *1E-3
 
 def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, rngkey=None, loss_fn=mse_adc, **loss_kwargs):
-    wfs, unique_pixels = simulate_wfs(params, response, tracks, fields, rngseed=rngkey)
+    wfs, unique_pixels = simulate_wfs(params, response, tracks, fields)
     adcs, x, y, z, ticks, hit_prob, event, _ = simulate_stochastic(params, wfs, unique_pixels, rngseed=rngkey)
 
     Q = adc2charge(adcs, params)
