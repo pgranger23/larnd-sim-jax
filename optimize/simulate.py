@@ -135,12 +135,12 @@ def main(config):
         size = pad_size(size, "batch_size", 0.5)
         batch = np.pad(batch, ((0, size - batch.shape[0]), (0, 0)), mode='constant', constant_values=0)
         tracks = jax.device_put(batch)
-
+        rngseed = config.seed if config.seed is not None else 0
         if config.mode == 'lut':
             wfs, unique_pixels = simulate_wfs(ref_params, response, tracks, fields)
-            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_stochastic(ref_params, wfs, unique_pixels, rngseed=config.seed)
+            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_stochastic(ref_params, wfs, unique_pixels, rngseed=rngseed)
         else:
-            rngseed = config.seed if config.seed is not None else 0
+            
             adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_parametrized(ref_params, tracks, fields, rngseed=rngseed)
             wfs = None
         if config.jac:
