@@ -287,6 +287,8 @@ def get_adc_values(params, pixels_signals, noise_rng_key):
 #     # return (charges_new, new_prob), (charge_avg_across, tick_avg, no_hit_prob_across, prob_distrib_across)
 
 
+from jax import vmap, checkpoint
+
 def _find_one_hit_step(q_sum, prev_charges, previous_prob, sigma, threshold, interval, Nvalues):
     """
     Calculates a single hit-finding step for one pixel. This function is designed
@@ -307,22 +309,20 @@ def _find_one_hit_step(q_sum, prev_charges, previous_prob, sigma, threshold, int
     max_future_signal = lax.cummax(q_sum_loc, axis=1, reverse=True)
     guess = 0.5 * jnp.diff(erf_term_signal, axis=-1)
     prob_event = jnp.clip(0.5 * (erf_term[..., shifted_ticks] - erf_term[..., :-1]), 0, guess)
-    esperance_value = q_sum_loc[..., shifted_ticks] + threshold - 0.5 * (q_sum_loc[..., 1:] + q_sum_loc[..., :-1])
+    # esperance_value = q_sum_loc[..., shifted_ticks] + threshold - 0.5 * (q_sum_loc[..., 1:] + q_sum_loc[..., :-1])
+    esperance_value = q_sum[..., shifted_ticks] + threshold - 0.5 * (q_sum[..., 1:] + q_sum[..., :-1])
 
     # Step 3: Aggregate Results
     prob_distrib = prob_event * previous_prob[:, None]
     total_distrib_prob_per_tick = jnp.sum(prob_distrib, axis=0)
-
-    total_hit_prob_per_path = jnp.sum(prob_event, axis=-1) * previous_prob
-    no_hit_prob = 1.0 - jnp.sum(total_hit_prob_per_path)
+    # norm_across = jnp.sum(total_distrib_prob_per_tick)
+    # no_hit_prob = 1.0 - norm_across
+    # safe_norm_across = jnp.maximum(norm_across, 1e-9)
     
-    norm_across = jnp.sum(total_hit_prob_per_path)
-    safe_norm_across = jnp.maximum(norm_across, 1e-9)
+    # tick_avg = jnp.sum(total_distrib_prob_per_tick * tick_indices) / safe_norm_across
     
-    tick_avg = jnp.sum(total_distrib_prob_per_tick * tick_indices) / safe_norm_across
-    
-    charge_avg_paths = jnp.sum(prob_event * esperance_value, axis=-1)
-    charge_avg = jnp.sum(charge_avg_paths * previous_prob) / safe_norm_across
+    # charge_avg_paths = jnp.sum(prob_event * esperance_value, axis=-1)
+    # charge_avg = jnp.sum(charge_avg_paths * previous_prob) / safe_norm_across
     
     # Step 4: Optimized Merging & Selection
     future_hit_earliest_end = jnp.clip(shifted_ticks + interval + 1, 0, Nticks - 1)
@@ -339,7 +339,8 @@ def _find_one_hit_step(q_sum, prev_charges, previous_prob, sigma, threshold, int
     charges_new = q_sum[best_path_next_ticks_indices]
     
     # Return the new state and the outputs for this step for this pixel
-    return (charges_new, new_prob), (charge_avg, tick_avg, no_hit_prob, total_distrib_prob_per_tick)
+    return (charges_new, new_prob), (total_distrib_prob_per_tick, esperance_value)
+    # return (charges_new, new_prob), (charge_avg, tick_avg, no_hit_prob, total_distrib_prob_per_tick, esperance_value)
     # return (charges_new, new_prob), (charge_avg_across, tick_avg, no_hit_prob_across, prob_distrib_across)
 
 @partial(jit, static_argnums=(2))
@@ -375,22 +376,20 @@ def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
             """The expensive vmapped computation, only run when globally active."""
             charges, probs, _ = operand
             # Run one hit-finding step for all pixels in parallel
-            (new_charges, new_probs), (charge_avg, tick_avg, no_hit_prob, prob_dist) = vmapped_step_fun(
+            (new_charges, new_probs), (prob_dist, charge_dist) = vmapped_step_fun(
                 q_sum_all, charges, probs, params.RESET_NOISE_CHARGE, params.DISCRIMINATION_THRESHOLD, interval, 
                 Nvalues
             )
             # Check if ANY pixel is still active for the next iteration
             new_active_flag = jnp.any(jnp.sum(new_probs, axis=1) > stop_threshold)
 
-            return (new_charges, new_probs, new_active_flag), (charge_avg, tick_avg, no_hit_prob, prob_dist)
+            return (new_charges, new_probs, new_active_flag), (prob_dist, charge_dist)
 
         def _inactive_branch(operand):
             """A cheap pass-through, executed when the whole batch is inactive."""
             return operand, (
-                jnp.zeros((Npix,), dtype=jnp.float32),
-                jnp.zeros((Npix,), dtype=jnp.float32),
-                jnp.ones((Npix,), dtype=jnp.float32),  # Fixed: no_hit_prob should be 1.0 when inactive
-                jnp.zeros((Npix, Nticks - 1), dtype=jnp.float32)
+                jnp.zeros((Npix, Nticks - 1), dtype=jnp.float32),
+                jnp.zeros((Npix, Nticks - 1), dtype=jnp.float32),
                 )
 
         # --- Global Conditional Execution ---
@@ -409,18 +408,5 @@ def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
     
     init_loop = (initial_charges, initial_probs, initial_active)
 
-    _, (charge_avg, tick_avg, no_hit_prob, prob_distrib) = lax.scan(global_scan_fun, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
-    # next_loop, (charge_avg_0, tick_avg_0, no_hit_prob_0, prob_distrib_0) = vmapped_step_fun(
-    #             q_sum_all, init_loop[0], init_loop[1], params.RESET_NOISE_CHARGE, params.DISCRIMINATION_THRESHOLD, Nvalues
-    #         )
-    # next_loop, (charge_avg_1, tick_avg_1, no_hit_prob_1, prob_distrib_1) = vmapped_step_fun(
-    #             q_sum_all, next_loop[0], next_loop[1], params.RESET_NOISE_CHARGE, params.DISCRIMINATION_THRESHOLD, Nvalues
-    #         )
-
-    # charge_avg = jnp.stack([charge_avg_0, charge_avg_1], axis=0)
-    # tick_avg = jnp.stack([tick_avg_0, tick_avg_1], axis=0)
-    # no_hit_prob = jnp.stack([no_hit_prob_0, no_hit_prob_1], axis=0)
-    # prob_distrib = jnp.stack([prob_distrib_0, prob_distrib_1], axis=0)
-
-    # Transpose the outputs to match the desired shape (Npix, num_steps, ...)
-    return jnp.moveaxis(charge_avg, 0, 1), jnp.moveaxis(tick_avg, 0, 1), jnp.moveaxis(no_hit_prob, 0, 1), jnp.moveaxis(prob_distrib, 0, 1)
+    _, (charge_avg, tick_avg, no_hit_prob, prob_distrib, charge_distrib) = lax.scan(global_scan_fun, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
+    return jnp.moveaxis(prob_distrib, 0, 1), jnp.moveaxis(charge_distrib, 0, 1)

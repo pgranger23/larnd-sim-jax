@@ -508,27 +508,23 @@ def fee_sim_from_split(params, padded_small_nb, padded_large_nb, wfs, mask_small
     large_rois = wfs.at[large_roi_idx, :].get()
     small_rois = wfs.at[small_roi_idx[:, None], (jnp.arange(params.roi_split_length) + small_roi_start[:, None])].get()
 
-    integral_small, ticks_small, no_hit_prob_small, _ = get_adc_values_average_noise_vmap(params, small_rois)
-    integral_large, ticks_large, no_hit_prob_large, _ = get_adc_values_average_noise_vmap(params, large_rois)
+    ticks_distrib_small, charge_distrib_small = get_adc_values_average_noise_vmap(params, small_rois)
+    ticks_distrib_large, charge_distrib_large = get_adc_values_average_noise_vmap(params, large_rois)
 
-    integral = jnp.zeros((Npix, integral_small.shape[1]))
+    charge_distrib = jnp.zeros((Npix, charge_distrib_small.shape[1], charge_distrib_small.shape[2]))
 
-    integral = integral.at[small_roi_idx, :].set(integral_small[:small_roi_idx.shape[0], :])
-    integral = integral.at[large_roi_idx, :].set(integral_large[:large_roi_idx.shape[0], :])
+    charge_distrib = charge_distrib.at[small_roi_idx, :, :].set(charge_distrib_small[:small_roi_idx.shape[0], :, :])
+    charge_distrib = charge_distrib.at[large_roi_idx, :, :].set(charge_distrib_large[:large_roi_idx.shape[0], :, :])
 
-    ticks = jnp.zeros((Npix, ticks_small.shape[1]))
-    ticks = ticks.at[small_roi_idx, :].set(ticks_small[:small_roi_idx.shape[0], :] + small_roi_start[:, None])
-    ticks = ticks.at[large_roi_idx, :].set(ticks_large[:large_roi_idx.shape[0], :])
-    ticks = jnp.minimum(ticks, max_tick_nb)  # Ensure ticks do not exceed waveform length
 
-    no_prob = jnp.zeros((Npix, no_hit_prob_small.shape[1]))
-    no_prob = no_prob.at[small_roi_idx, :].set(no_hit_prob_small[:small_roi_idx.shape[0], :])
-    no_prob = no_prob.at[large_roi_idx, :].set(no_hit_prob_large[:large_roi_idx.shape[0], :])
-    hit_prob = 1 - no_prob
+    ticks_distrib = jnp.zeros((Npix, ticks_distrib_small.shape[1], ticks_distrib_small.shape[2]))
+    ticks_distrib = ticks_distrib.at[small_roi_idx, :, small_roi_start:small_roi_start + params.roi_split_length].set(ticks_distrib_small[:small_roi_idx.shape[0], :, :])
+    ticks_distrib = ticks_distrib.at[large_roi_idx, :, :].set(ticks_distrib_large[:large_roi_idx.shape[0], :, :])
+    ticks_distrib = jnp.minimum(ticks_distrib, max_tick_nb)  # Ensure ticks do not exceed waveform length
 
-    return integral, ticks, hit_prob
+    return charge_distrib, ticks_distrib
 
-def simulate_new(params, response_template, tracks, fields, rngseed=None, save_wfs=False):
+def simulate_wfs(params, response_template, tracks, fields):
     """
     Simulates the signal from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
     Args:
@@ -536,17 +532,7 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None, save_w
         response (jnp.ndarray): Response function.
         tracks (jnp.ndarray): Tracks of the particles as a JAX array.
         fields (List[str]): List of field names corresponding to the tracks.
-        rngseed (int): Random seed for the simulation.
     Returns:
-        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, int]: 
-            - adcs: ADC values.
-            - pixel_x: X coordinates of the pixels.
-            - pixel_y: Y coordinates of the pixels.
-            - pixel_z: Z coordinates of the pixels.
-            - ticks: Ticks of the signals.
-            - hit_prob: Probability of a hit in the pixel.
-            - event: Event IDs.
-            - unique_pixels: Unique pixels.
 
     """
 
@@ -574,30 +560,30 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None, save_w
 
     wfs = simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh)
 
-    ###############################################
-    ###############################################
 
-    # integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey2)
-   
+    return wfs[:, 1:], unique_pixels
 
-    if rngseed is not None:
-        integral, ticks = get_adc_values(params, wfs[:, 1:], jax.random.key(rngseed))
-        hit_prob = jnp.where(ticks < wfs.shape[1] - 3, 1., 0.)  # Assuming hit probability is based on whether ticks are within the waveform length
-    else:
-        Npix = wfs.shape[0]
-        # ROI selection is a discrete, non-differentiable operation; we explicitly stop
-        # gradients from flowing through select_split_roi to avoid backpropagating through
-        # this indexing/masking logic while still allowing gradients on downstream signals.
-        nb_small_rois, mask_small_rois, roi_start = jax.lax.stop_gradient(select_split_roi(params, wfs[:, 1:]))
-        nb_small_rois = int(nb_small_rois)
-        padded_small_nb = pad_size(nb_small_rois, "wfs_roi", 0.1)
-        padded_large_nb = pad_size(Npix - nb_small_rois, "wfs_roi", 0.1)
-
-        # integral, ticks, hit_prob = fee_sim_from_split(params, padded_small_nb, padded_large_nb, wfs[:, 1:], mask_small_rois, roi_start, wfs.shape[1] - 2)
-        
-        integral, ticks, no_hit_prob, _ = get_adc_values_average_noise_vmap(params, wfs[:, 1:])
-        hit_prob = 1 - no_hit_prob
-
+def simulate_stochastic(params, wfs, unique_pixels, rngseed):
+    """
+    Simulates the signal from the drifted electrons and returns the ADC values, pixel coordinates, ticks, hit probabilities, event numbers, and unique pixel identifiers.
+    Args:
+        params: Parameters of the simulation.
+        wfs (jnp.ndarray): Waveforms as a JAX array.
+        unique_pixels (jnp.ndarray): Unique pixel identifiers.
+        rngseed (int): Random seed for the simulation.
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
+            - adcs: ADC values.
+            - pixel_x: X coordinates of the pixels.
+            - pixel_y: Y coordinates of the pixels.
+            - pixel_z: Z coordinates of the pixels.
+            - ticks: Ticks corresponding to the ADC values.
+            - hit_prob: Hit probabilities.
+            - event: Event numbers.
+            - unique_pixels: Unique pixel identifiers.
+    """
+    integral, ticks = get_adc_values(params, wfs, jax.random.key(rngseed))
+    hit_prob = jnp.where(ticks < wfs.shape[1] - 3, 1., 0.)  # Assuming hit probability is based on whether ticks are within the waveform length
     adcs = digitize(params, integral)
 
     pixel_x, pixel_y, pixel_plane, event = id2pixel(params, unique_pixels)
@@ -608,10 +594,44 @@ def simulate_new(params, response_template, tracks, fields, rngseed=None, save_w
 
     adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, nb_valid = parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
 
-    if save_wfs:
-        return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid], wfs
-    else:
-        return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid]
+    return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid]
+
+def simulate_probabilistic(params, wfs, unique_pixels):
+    """
+    Simulates the signal from the drifted electrons and returns the ADC values, pixel coordinates, ticks, hit probabilities, event numbers, and unique pixel identifiers.
+    Args:
+        params: Parameters of the simulation.
+        wfs (jnp.ndarray): Waveforms as a JAX array.
+        unique_pixels (jnp.ndarray): Unique pixel identifiers.
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
+            - adcs_distrib: ADC values.
+            - pixel_x: X coordinates of the pixels.
+            - pixel_y: Y coordinates of the pixels.
+            - ticks_prob: Ticks corresponding to the ADC values.
+            - event: Event numbers.
+    """
+
+    # Npix = wfs.shape[0]
+    # ROI selection is a discrete, non-differentiable operation; we explicitly stop
+    # gradients from flowing through select_split_roi to avoid backpropagating through
+    # this indexing/masking logic while still allowing gradients on downstream signals.
+    # nb_small_rois, mask_small_rois, roi_start = jax.lax.stop_gradient(select_split_roi(params, wfs))
+    # nb_small_rois = int(nb_small_rois)
+    # padded_small_nb = pad_size(nb_small_rois, "wfs_roi", 0.1)
+    # padded_large_nb = pad_size(Npix - nb_small_rois, "wfs_roi", 0.1)
+
+    # integral, ticks, hit_prob = fee_sim_from_split(params, padded_small_nb, padded_large_nb, wfs[:, 1:], mask_small_rois, roi_start, wfs.shape[1] - 2)
+    
+    ticks_prob, charge_distrib = get_adc_values_average_noise_vmap(params, wfs[:, 1:])
+
+    adcs_distrib = digitize(params, charge_distrib)
+    pixel_x, pixel_y, pixel_plane, event = id2pixel(params, unique_pixels)
+    pixel_coords = get_pixel_coordinates(params, pixel_x, pixel_y, pixel_plane)
+    pixel_x = pixel_coords[:, 0]
+    pixel_y = pixel_coords[:, 1]
+    
+    return adcs_distrib, pixel_x, pixel_y, ticks_prob, event
 
 
 def prepare_tracks(params, tracks_file, invert_xz=True):

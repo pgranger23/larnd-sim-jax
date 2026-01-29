@@ -7,7 +7,7 @@ import shutil
 import pickle
 import numpy as np
 from .ranges import ranges
-from larndsim.sim_jax import simulate_new, simulate_parametrized, get_size_history
+from larndsim.sim_jax import simulate_stochastic, simulate_parametrized, get_size_history
 from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge, nll_loss #, sinkhorn_loss
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.softdtw_jax import SoftDTW
@@ -74,7 +74,6 @@ class ParamFitter:
                  diffusion_in_current_sim=False,
                  mc_diff = False,
                  read_target=False,
-                 probabilistic_target=False,
                  probabilistic_sim=False,
                  sz_mini_bt=1, shuffle_bt=False,
                  config = {}):
@@ -100,7 +99,6 @@ class ParamFitter:
         self.electron_sampling_resolution = config.electron_sampling_resolution
         self.number_pix_neighbors = config.number_pix_neighbors
         self.signal_length = config.signal_length
-        self.probabilistic_target = probabilistic_target
         self.probabilistic_sim = probabilistic_sim
         self.sz_mini_bt = sz_mini_bt
         self.shuffle_bt = shuffle_bt
@@ -313,11 +311,8 @@ class ParamFitter:
             fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
             if regen or not os.path.exists(fname):
                 if self.current_mode == 'lut':
-                    if self.probabilistic_target:
-                        rngseed = None
-                    else:
-                        rngseed = i+1
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_new(self.target_params, self.response, target, self.tgt_track_fields, rngseed) #Setting a different random seed for each target
+                    rngseed = i+1
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_stochastic(self.target_params, self.response, target, self.tgt_track_fields, rngseed) #Setting a different random seed for each target
                 else:
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_parametrized(self.target_params, target, self.tgt_track_fields, i+1) #Setting a different random seed for each target
 

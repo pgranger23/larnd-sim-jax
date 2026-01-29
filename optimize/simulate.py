@@ -13,7 +13,7 @@ if '--gpu' not in sys.argv:
     os.environ['JAX_PLATFORMS'] = 'cpu'
 
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
-from larndsim.sim_jax import prepare_tracks, simulate_new, simulate_parametrized, id2pixel, get_pixel_coordinates
+from larndsim.sim_jax import prepare_tracks, simulate_stochastic, simulate_parametrized, id2pixel, get_pixel_coordinates, simulate_wfs
 from larndsim.losses_jax import get_hits_space_coords
 from pprint import pprint
 import numpy as np
@@ -136,12 +136,9 @@ def main(config):
         batch = np.pad(batch, ((0, size - batch.shape[0]), (0, 0)), mode='constant', constant_values=0)
         tracks = jax.device_put(batch)
 
-        print("config.save_wfs: ", config.save_wfs)
         if config.mode == 'lut':
-            if config.save_wfs:
-                adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, wfs = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
-            else:
-                adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
+            wfs, unique_pixels = simulate_wfs(ref_params, response, tracks, fields)
+            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_stochastic(ref_params, wfs, unique_pixels, rngseed=config.seed)
         else:
             rngseed = config.seed if config.seed is not None else 0
             adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_parametrized(ref_params, tracks, fields, rngseed=rngseed)
