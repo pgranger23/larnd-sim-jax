@@ -193,16 +193,26 @@ class ProbabilisticLossStrategy(LossStrategy):
             - 0.5 * jnp.log(2 * jnp.pi * self.sigma_charge**2)
         )
         
-        # (c) Mask BOTH tick and charge terms when tick probability is too low
-        # When P(tick) < threshold, the hit should not contribute to the loss at all
-        # This prevents spikes from extremely small probability changes (e.g., 1e-9 → 0)
+        # (c) Cap likelihood instead of masking for very small probabilities
+        # When P(tick) is extremely small, cap the penalty instead of setting to 0
+        # This ensures bad predictions are still penalized, preventing loss from artificially decreasing
         tick_prob_threshold = 1e-8
+        max_negative_ll_tick = -jnp.log(tick_prob_threshold + self.eps)  # ≈ 18.4 for 1e-8
+        
+        # Cap the tick likelihood: use actual value if reasonable, otherwise use max penalty
+        capped_log_likelihood_tick = jnp.where(
+            hit_tick_probs > tick_prob_threshold,
+            log_likelihood_tick,
+            -max_negative_ll_tick  # Large negative value (strong penalty)
+        )
+        
+        # For charge: only compute when tick probability is significant
+        # When P(tick) is tiny, the charge term is meaningless, so set to 0
         tick_mask = hit_tick_probs > tick_prob_threshold
-        masked_log_likelihood_tick = jnp.where(tick_mask, log_likelihood_tick, 0.0)
         masked_log_likelihood_charge = jnp.where(tick_mask, log_likelihood_charge, 0.0)
         
         # (d) Combined log-likelihood per hit
-        log_likelihood_per_hit = masked_log_likelihood_tick + masked_log_likelihood_charge
+        log_likelihood_per_hit = capped_log_likelihood_tick + masked_log_likelihood_charge
         
         # Step 6: Handle invalid matches (pixels not in simulation)
         # For invalid matches, assign a very negative log-likelihood (low probability)
@@ -242,7 +252,7 @@ class ProbabilisticLossStrategy(LossStrategy):
             'n_valid_matches': jnp.sum(pixel_match_valid),
             'mean_tick_prob': jnp.mean(hit_tick_probs),
             'mean_charge_diff': jnp.mean(jnp.abs(charge_diff)),
-            'n_masked_hits': jnp.sum(~tick_mask),
+            'n_capped_hits': jnp.sum(~tick_mask),  # Renamed: now counts capped hits, not masked
             'false_positive_penalty': total_false_positive_penalty,
             'n_pred_pixels': pred_pixels.shape[0],
             'n_pixels_with_hits': jnp.sum(pred_pixel_has_hit),
