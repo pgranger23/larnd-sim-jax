@@ -8,7 +8,6 @@ from jax import vmap
 import jax
 from typing import List, Union, Tuple
 from tqdm import tqdm
-from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -161,10 +160,11 @@ class TracksDataset:
         tracks.dtype.names = self.track_fields
 
         # Only load useful tracks
-        # assuming tracks are in orders for trajectories
-        length_load_threshold = max_batch_len * (max_nbatch + 2)
-        loaded_tracks = tracks[np.cumsum(tracks['dx']) < length_load_threshold]
-        tracks = loaded_tracks
+        # assuming tracks are in orders as a unit of trajectory
+        if max_batch_len is not None and max_nbatch is not None:
+            length_load_threshold = max_batch_len * (max_nbatch + 2)
+            loaded_tracks = tracks[np.cumsum(tracks['dx']) < length_load_threshold]
+            tracks = loaded_tracks
         
         if live_selection:
             # flat index for all reasonable track [eventID, trackID] 
@@ -194,7 +194,7 @@ class TracksDataset:
             trk_mask = trk_mask & (np.maximum(abs(tracks_start['z']), abs(tracks_end['z'])) < track_z_bound)
             mask = np.repeat(trk_mask, n_repeat)
 
-            keys = np.ascontiguousarray(selected_tracks[['eventID', 'trackID']])
+            keys = np.ascontiguousarray(selected_tracks[mask][['eventID', 'trackID']])
             all_tracks = jax_from_structured(selected_tracks[mask])
             index, inverse_idx = np.unique(keys, return_inverse=True)
         else:
@@ -203,7 +203,6 @@ class TracksDataset:
             index, inverse_idx = np.unique(keys, return_inverse=True)
 
         # all fit with a sub-set of tracks
-        dict_fit_tracks = defaultdict(list)
         random.seed(seed)
         fit_tracks = []
         if ntrack is None or ntrack >= len(index) or ntrack <= 0:
@@ -212,7 +211,6 @@ class TracksDataset:
                 sorted_tracks = all_tracks[all_tracks[:, self.track_fields.index('file_traj_id')].argsort()]
                 unique_file_traj_id, counts = np.unique(sorted_tracks[:, self.track_fields.index('file_traj_id')], return_counts=True)
                 traj_split = np.cumsum(counts)
-                traj_split = np.append(traj_split, len(sorted_tracks))
                 traj_split = np.insert(traj_split, 0, 0)
                 for i in range(len(traj_split)-1):
                     fit_tracks.append(sorted_tracks[traj_split[i]:traj_split[i+1]])
@@ -222,21 +220,22 @@ class TracksDataset:
                     fit_tracks.append(all_tracks[mask])
         else:
             if random_ntrack:
-                index_idx_pool = np.random.randint(0, len(index), ntrack)
+                index_idx_pool = np.array([random.randint(0, len(index)) for _ in range(ntrack)])
             else:
                 index_idx_pool = np.arange(ntrack)
 
             fit_index = index[index_idx_pool]
-            fit_tracks = []
             for traj_idx in index_idx_pool:
                 mask = inverse_idx == traj_idx
                 fit_tracks.append(all_tracks[mask])
 
         # Exclude [eventID, trackID] == [0, 0] even it's physical due to the pad value
-        idx_0 = np.where((fit_index['eventID'] == 0) & (fit_index['trackID'] == 2))
+        idx_0 = np.where((fit_index['eventID'] == 0) & (fit_index['trackID'] == 0))
         if len(idx_0[0]) > 0:
-            del fit_tracks[idx_0[0][0]]
-            fit_index = np.delete(fit_index, idx_0[0][0])
+            # index changes with element removal, therefore remove elements backwards
+            for i in sorted(idx_0[0], reverse=True):
+                del fit_tracks[i]
+            fit_index = np.delete(fit_index, idx_0[0])
 
         if max_batch_len is not None:
             # Get track length per trajectory
@@ -245,10 +244,11 @@ class TracksDataset:
             remove_traj_index = np.where(traj_len > max_batch_len)
 
             lengths_ft = traj_len.copy()[traj_len <= max_batch_len]
-            fit_tracks_ft = fit_tracks.copy()
+
             if len(remove_traj_index[0]) > 0:
-                for i_remove in remove_traj_index[0]:
-                    del fit_tracks_ft[i_remove]
+                # index changes with element removal, therefore remove elements backwards
+                for i in sorted(remove_traj_index[0], reverse=True):
+                    del fit_tracks[i]
                 fit_index = np.delete(fit_index, remove_traj_index[0])
             
             # Cumulative sum to track segment lengths
@@ -256,18 +256,18 @@ class TracksDataset:
 
             # Find batch boundaries
             split_points = np.where(np.diff(np.floor_divide(cumsum_lengths, max_batch_len)) > 0)[0] + 1
-            split_points = np.append(split_points, len(cumsum_lengths))
             split_points = np.insert(split_points, 0, 0)
 
             # Cap the number of batches if max_nbatch is set
+            # split_points start from 0
             if max_nbatch:
-                split_points = split_points[:max_nbatch]
+                split_points = split_points[:(max_nbatch+1)]
 
             # Create JaX batches
             batches = []
             fit_index_bt = []
             for i in range(len(split_points)-1):
-                batches.append(np.vstack(fit_tracks_ft[split_points[i]:split_points[i+1]]))
+                batches.append(np.vstack(fit_tracks[split_points[i]:split_points[i+1]]))
                 fit_index_bt.append(fit_index[split_points[i]:split_points[i+1]])
             tot_data_length = cumsum_lengths[split_points[-1]-1]
             if chopped:
@@ -337,12 +337,13 @@ class TgtTracksDataset:
         if 'file_traj_id' in self.sim_track_fields and 'file_traj_id' in self.tgt_track_fields:
             for bt in dataloader_sim:
                 load_file_traj = np.unique(bt[:, self.sim_track_fields.index("file_traj_id")])
+                # remove padded value 0 (although a real traj can have id 0, sacrifice traj)
                 index0 = np.where(load_file_traj==0)
                 load_file_traj = np.delete(load_file_traj, index0)
                 mask = np.isin(tracks['file_traj_id'], load_file_traj)
 
                 # Explicitly check that the input tracks are the same for the target and the simulation
-                if not np.allclose(tracks['file_traj_id'][mask], load_file_traj):
+                if not np.array_equal(np.unique(tracks['file_traj_id'][mask]), load_file_traj):
                     raise ValueError("Target and input do not contain the same tracks! Please check.")
 
                 batches.append(np.vstack(jax_from_structured(tracks[mask])))
@@ -352,11 +353,15 @@ class TgtTracksDataset:
                 if np.max(bt[:, self.sim_track_fields.index("trackID")]) > 1E5:
                     raise ValueError("Assumption broke! More than 1E5 trajectories in some event!")
                 load_file_traj = np.unique(bt[:, self.sim_track_fields.index("eventID")]*1E5 + bt[:, self.sim_track_fields.index("trackID")])
+                # remove padded value 0 (although a real traj can have event and track id 0, sacrifice traj)
+                index0 = np.where(load_file_traj == 0)
+                load_file_traj = np.delete(load_file_traj, index0)
+
                 event_track_id = tracks['eventID']*1E5 + tracks['trackID']
                 mask = np.isin(event_track_id, load_file_traj)
  
                 # Explicitly check that the input tracks are the same for the target and the simulation
-                if not np.allclose(event_track_id[mask], load_file_traj):
+                if not np.array_equal(np.unique(event_track_id[mask]), load_file_traj):
                     raise ValueError("Target and input do not contain the same tracks! Please check.")
 
                 batches.append(np.vstack(jax_from_structured(tracks[mask])))
