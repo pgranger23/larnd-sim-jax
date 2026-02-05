@@ -127,7 +127,7 @@ def pad_sequence(sequences: List[jnp.ndarray],
 
 
 class TracksDataset:
-    def __init__(self, filename, ntrack, max_nbatch=None, swap_xz=True, seed=3, random_ntrack=False, track_len_sel=2., 
+    def __init__(self, filename, ntrack, max_nbatch=1, swap_xz=True, seed=3, random_ntrack=False, track_len_sel=2., 
                  max_abs_costheta_sel=0.966, min_abs_segz_sel=15., track_z_bound=28., max_batch_len=None, print_input=False,
                  chopped=True, pad=True, electron_sampling_resolution=0.001, live_selection=False):
 
@@ -220,7 +220,7 @@ class TracksDataset:
                     fit_tracks.append(all_tracks[mask])
         else:
             if random_ntrack:
-                index_idx_pool = np.array([random.randint(0, len(index)) for _ in range(ntrack)])
+                index_idx_pool = np.array([random.randint(0, len(index)-1) for _ in range(ntrack)])
             else:
                 index_idx_pool = np.arange(ntrack)
 
@@ -250,6 +250,9 @@ class TracksDataset:
                 for i in sorted(remove_traj_index[0], reverse=True):
                     del fit_tracks[i]
                 fit_index = np.delete(fit_index, remove_traj_index[0])
+
+            if len(fit_index) == 0:
+                raise ValueError("All tracks are longer than the batch size! Please check.")
             
             # Cumulative sum to track segment lengths
             cumsum_lengths = np.cumsum(lengths_ft)
@@ -269,7 +272,7 @@ class TracksDataset:
             for i in range(len(split_points)-1):
                 batches.append(np.vstack(fit_tracks[split_points[i]:split_points[i+1]]))
                 fit_index_bt.append(fit_index[split_points[i]:split_points[i+1]])
-            tot_data_length = cumsum_lengths[split_points[-1]-1]
+            tot_data_length = cumsum_lengths[split_points[-1]]
             if chopped:
                 fit_tracks = [jnp.array(chop_tracks(batch, self.track_fields, electron_sampling_resolution)) for batch in batches]
             else:
@@ -297,7 +300,7 @@ class TracksDataset:
         return self.track_fields
 
 class TgtTracksDataset:
-    def __init__(self, filename, dataloader_sim, swap_xz=True, chopped=True, pad=True, electron_sampling_resolution=0.001):
+    def __init__(self, filename, dataset_sim, swap_xz=True, chopped=True, pad=True, electron_sampling_resolution=0.001):
 
         with h5py.File(filename, 'r') as f:
             tracks = np.array(f['segments'])
@@ -342,6 +345,10 @@ class TgtTracksDataset:
                 load_file_traj = np.delete(load_file_traj, index0)
                 mask = np.isin(tracks['file_traj_id'], load_file_traj)
 
+                if len(load_file_traj) == 0:
+                    logger.info(f"-- Removing empty batch.")
+                    continue
+
                 # Explicitly check that the input tracks are the same for the target and the simulation
                 if not np.array_equal(np.unique(tracks['file_traj_id'][mask]), load_file_traj):
                     raise ValueError("Target and input do not contain the same tracks! Please check.")
@@ -359,7 +366,11 @@ class TgtTracksDataset:
 
                 event_track_id = tracks['eventID']*1E5 + tracks['trackID']
                 mask = np.isin(event_track_id, load_file_traj)
- 
+
+                if len(load_file_traj) == 0:
+                    logger.info(f"-- Removing empty batch.")
+                    continue
+
                 # Explicitly check that the input tracks are the same for the target and the simulation
                 if not np.array_equal(np.unique(event_track_id[mask]), load_file_traj):
                     raise ValueError("Target and input do not contain the same tracks! Please check.")

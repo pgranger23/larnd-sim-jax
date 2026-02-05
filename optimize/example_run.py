@@ -57,7 +57,7 @@ def main(config):
     max_nbatch = config.max_nbatch
 
     if iterations is not None:
-        if max_nbatch is None or iterations < max_nbatch or max_nbatch < 0:
+        if max_nbatch is None or iterations < max_nbatch or max_nbatch <= 0:
             max_nbatch = iterations
 
     dataset_sim = TracksDataset(filename=config.input_file_sim, ntrack=config.data_sz, max_nbatch=max_nbatch, seed=config.data_seed, random_ntrack=config.random_ntrack, 
@@ -74,7 +74,7 @@ def main(config):
     if not config.read_target:
         # Get the same events for target
 
-        dataset_target = TgtTracksDataset(filename=config.input_file_tgt, dataloader_sim = dataset_sim, electron_sampling_resolution=config.electron_sampling_resolution)
+        dataset_target = TgtTracksDataset(filename=config.input_file_tgt, dataset_sim = dataset_sim, electron_sampling_resolution=config.electron_sampling_resolution)
 
         # check if the track in sim and target are consistent
         if len(dataset_sim) != len(dataset_target):
@@ -237,7 +237,7 @@ if __name__ == '__main__':
                         help="Schedule learning rate, e.g. ExponentialLR")
     parser.add_argument("--lr_kw", dest="lr_kw", default=None, type=json.loads,
                         help="kwargs for learning rate scheduler, as string dict")
-    parser.add_argument("--iterations", dest="iterations", default=None, type=int,
+    parser.add_argument("--iterations", dest="iterations", default=10, type=int,
                         help="Number of iterations to run. Overrides epochs.")
     parser.add_argument("--loss_fn", dest="loss_fn", default=None,
                         help="Loss function to use. Named options are SDTW and space_match.")
@@ -245,7 +245,7 @@ if __name__ == '__main__':
                         help="Loss function keyword arguments.")
     parser.add_argument("--max_batch_len", dest="max_batch_len", default=None, type=float,
                         help="Max dx [cm] per batch. If passed, will add tracks to batch until overflow, splitting where needed")
-    parser.add_argument("--max_nbatch", dest="max_nbatch", default=None, type=int,
+    parser.add_argument("--max_nbatch", dest="max_nbatch", default=1, type=int,
                         help="Upper number of different batches taken from the data, given the max_batch_len. Overrides data_sz.")
     parser.add_argument("--print_input", dest="print_input", default=False, action="store_true",
                         help="print the event and track id per batch.")
