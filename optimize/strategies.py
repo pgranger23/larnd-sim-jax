@@ -176,7 +176,6 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
         
         pred_x = pixel_x[pred_pixel_idx]
         pred_y = pixel_y[pred_pixel_idx]
-        pred_pixels = unique_pixels[pred_pixel_idx]
         
         # Convert ADCs to charge
         pred_Q = adc2charge(pred_adcs, params)
