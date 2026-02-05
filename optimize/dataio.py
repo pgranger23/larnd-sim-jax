@@ -332,13 +332,13 @@ class TgtTracksDataset:
 
         tracks.dtype.names = self.tgt_track_fields
 
-        self.sim_track_fields = dataloader_sim.get_track_fields()
+        self.sim_track_fields = dataset_sim.get_track_fields()
 
         # Only load useful tracks
         batches = []
         tot_data_length = 0
         if 'file_traj_id' in self.sim_track_fields and 'file_traj_id' in self.tgt_track_fields:
-            for bt in dataloader_sim:
+            for bt in dataset_sim:
                 load_file_traj = np.unique(bt[:, self.sim_track_fields.index("file_traj_id")])
                 # remove padded value 0 (although a real traj can have id 0, sacrifice traj)
                 index0 = np.where(load_file_traj==0)
@@ -356,7 +356,7 @@ class TgtTracksDataset:
                 batches.append(np.vstack(jax_from_structured(tracks[mask])))
                 tot_data_length += np.sum(tracks[mask]['dx'])
         else:
-            for bt in dataloader_sim:
+            for bt in dataset_sim:
                 if np.max(bt[:, self.sim_track_fields.index("trackID")]) > 1E5:
                     raise ValueError("Assumption broke! More than 1E5 trajectories in some event!")
                 load_file_traj = np.unique(bt[:, self.sim_track_fields.index("eventID")]*1E5 + bt[:, self.sim_track_fields.index("trackID")])
