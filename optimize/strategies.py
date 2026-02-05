@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from larndsim.sim_jax import simulate_wfs, simulate_stochastic, simulate_parametrized, simulate_probabilistic
 from larndsim.losses_jax import adc2charge
+from larndsim.detsim_jax import id2pixel
 
 class SimulationStrategy:
     def predict(self, params, tracks, fields, rngkey):
@@ -35,7 +36,6 @@ class LUTProbabilisticSimulation(SimulationStrategy):
         self.response = response
 
     def predict(self, params, tracks, fields, rngkey):
-        from larndsim.detsim_jax import id2pixel
         
         wfs, unique_pixels = simulate_wfs(params, self.response, tracks, fields)
         adcs_distrib, pixel_x, pixel_y, ticks_prob, event = simulate_probabilistic(params, wfs, unique_pixels)
