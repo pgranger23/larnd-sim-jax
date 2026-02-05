@@ -298,7 +298,8 @@ def simulate_drift_new(params, tracks, fields):
     #Shifting tracks
     new_tracks = shift_tracks(params, tracks, fields)
     # Quenching and drifting - TODO: parameterize the hard-coded "2"
-    new_tracks = quench(params, new_tracks, params.quench_mode if hasattr(params, 'quench_mode') else 2, fields)
+    quench_mode = getattr(params, "quench_mode", 2)
+    new_tracks = quench(params, new_tracks, quench_mode, fields)
     new_tracks = drift(params, new_tracks, fields)
 
     #Getting the pixels where the electrons are
