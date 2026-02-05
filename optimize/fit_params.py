@@ -330,16 +330,6 @@ class ParamFitter:
                 else:
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_parametrized(self.target_params, target, self.tgt_track_fields, i+1) #Setting a different random seed for each target
 
-                #if self.compute_target_hessian:
-                #    logger.error("Computing target hessian is not implemented yet")
-                #    raise NotImplementedError("Computing target hessian is not implemented yet")
-                #    # logger.info("Computing target hessian")
-                #    # if self.current_mode == 'lut':
-                #    #     hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.target_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
-                #    # else:
-                #    #     hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
-                #    # self.training_history['hessian'].append(format_hessian(hess))
-
                 # embed_target = embed_adc_list(self.sim_target, target, pix_target, ticks_list_targ)
                 #Saving the target for the batch
                 #TODO: See if we have to do this for each event
@@ -941,13 +931,13 @@ class MinuitFitter(ParamFitter):
             pickle.dump(self.training_history, f_history)
 
 
-class CovarianceCalculator(ParamFitter):
+class HessianCalculator(ParamFitter):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         if not len(self.set_init_params) > 0:
             raise ValueError("Remember to set the initial parameter values for Hessian calculation!")
 
-    def fit(self, dataloader_sim, target, iterations=100, **kwargs):
+    def fit(self, dataloader_sim, target, **kwargs):
 
         self.prepare_fit()
 
@@ -956,9 +946,6 @@ class CovarianceCalculator(ParamFitter):
 
         self.ref_params = self.current_params
 
-        H_total = 0.0
-        J_total = 0.0
-        N_total = 0
         self.training_history['n_hit'] = []
         for i in range(len(dataloader_sim)):
             logger.info(f"Batch {i}/{len(target)}")
@@ -984,7 +971,7 @@ class CovarianceCalculator(ParamFitter):
                 self.training_history['hessian'].append(format_hessian(hess))
 
             else:
-                hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.fit_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.sim_track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
+                hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.fit_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, selected_tracks_sim, self.sim_track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
                 self.training_history['hessian'].append(format_hessian(hess))
 
             with open(f'fit_result/{self.test_name}/history_batch{i}_{self.out_label}.pkl', "wb") as f_history:

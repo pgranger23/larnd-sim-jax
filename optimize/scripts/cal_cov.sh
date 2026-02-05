@@ -14,7 +14,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem-per-cpu=16g
 #SBATCH --gpus-per-node=a100:1
-#SBATCH --time=2:00:00
+#SBATCH --time=1:00:00
 #SBATCH --array=2
 
 #BASE DECLARATIONS
@@ -66,7 +66,7 @@ nvidia-smi
 #PARAM=${PARAMS[$SLURM_ARRAY_TASK_ID]}
 #LABEL=${PARAM}_loss_muon_data_closure_target_nom_n_neigh_${N_NEIGH}_bt${BATCH_SIZE}_dtsd${DATA_SEED}_${LOSS}_chamfer_${UUID}
 #LABEL=${PARAM}_loss_muon_edep_no_noise_closure_target_nom_n_neigh_${N_NEIGH}_bt${BATCH_SIZE}_dtsd${DATA_SEED}_${LOSS}_${UUID}
-LABEL=hess_mu_6par_n_neigh${N_NEIGH}_mode_${MODE}_diff_curr_no_noise_e_sampling_${SAMPLING_STEP}cm_seed_strategy_${SEED_STRATEGY}_grad_clip${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_${UUID}
+LABEL=hess_p_6par_n_neigh${N_NEIGH}_mode_${MODE}_diff_curr_no_noise_e_sampling_${SAMPLING_STEP}cm_seed_strategy_${SEED_STRATEGY}_grad_clip${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_${UUID}
 
 
 # singularity exec --bind /sdf,$SCRATCH python-jax.sif python3 -m optimize.example_run \
@@ -99,10 +99,10 @@ python3 -m optimize.example_run \
     --diffusion_in_current_sim \
     --non_deterministic \
     --sim_seed_strategy 'different' \
-    --no-noise \
     --mc_diff \
     --detector_props src/larndsim/detector_properties/module0.yaml \
     --set_init_params Ab 0.8254188985824585 kb 0.04097877711802721 eField 0.5052360675930977 tran_diff 8.251938067587617e-06 long_diff 4.883656642959977e-06 lifetime 1998.2867766113282 \
+    --no-noise \
     #--scan_tgt_nom \
     #--live_selection \
     #--chamfer_match_z

@@ -11,7 +11,7 @@ import json
 import cProfile
 import jax
 
-from .fit_params import GradientDescentFitter, LikelihoodProfiler, MinuitFitter, CovarianceCalculator
+from .fit_params import GradientDescentFitter, LikelihoodProfiler, MinuitFitter, HessianCalculator
 from .dataio import TracksDataset, DataLoader
 
 logger = logging.getLogger(__name__)
@@ -156,7 +156,7 @@ def main(config):
                                 minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits, probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim)
 
     elif config.fit_type == "hess":
-        param_fit = CovarianceCalculator(relevant_params=param_list, set_init_params=config.set_init_params,
+        param_fit = HessianCalculator(relevant_params=param_list, set_init_params=config.set_init_params,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
