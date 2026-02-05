@@ -275,7 +275,7 @@ class ProbabilisticLossStrategy(LossStrategy):
         
         # Step 1: Match target hits to predicted pixel distributions
         target_pixel_ids = target['pixel_id']
-        sim_unique_pixels = prediction['unique_pixels']
+        sim_unique_pixels = prediction['pixel_id']
         
         # Find indices of target pixels in simulation output (unique_pixels is sorted)
         pixel_indices = jnp.searchsorted(sim_unique_pixels, target_pixel_ids)
