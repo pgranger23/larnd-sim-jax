@@ -259,6 +259,7 @@ class TracksDataset:
 
             # Find batch boundaries
             split_points = np.where(np.diff(np.floor_divide(cumsum_lengths, max_batch_len)) > 0)[0] + 1
+            split_points = np.append(split_points, len(cumsum_lengths)) # to include the last batch
             split_points = np.insert(split_points, 0, 0)
 
             # Cap the number of batches if max_nbatch is set
@@ -272,7 +273,9 @@ class TracksDataset:
             for i in range(len(split_points)-1):
                 batches.append(np.vstack(fit_tracks[split_points[i]:split_points[i+1]]))
                 fit_index_bt.append(fit_index[split_points[i]:split_points[i+1]])
-            tot_data_length = cumsum_lengths[split_points[-1]]
+            if split_points[-1] <= 0:
+                raise ValueError(f"The batch split point must be indices > 0")
+            tot_data_length = cumsum_lengths[split_points[-1]-1]
             if chopped:
                 fit_tracks = [jnp.array(chop_tracks(batch, self.track_fields, electron_sampling_resolution)) for batch in batches]
             else:
