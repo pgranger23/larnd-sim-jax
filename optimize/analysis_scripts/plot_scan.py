@@ -167,7 +167,7 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
         unique_vals = np.unique(param_values)
         if len(unique_vals) > 1:
             # Measure variation as (max-min)/mean to get relative spread
-            variation = (param_values.max() - param_values.min()) / np.abs(param_values.mean() + 1e-10)
+            variation = (param_values.max() - param_values.min()) / max(np.abs(param_values.mean()), 1e-10)
             param_variations[p] = (len(unique_vals), variation)
     
     # Sort by number of unique values (primary) and variation (secondary)
