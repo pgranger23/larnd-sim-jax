@@ -63,7 +63,7 @@ def remove_noise_from_params(params):
     return params.replace(**{key: 0. for key in noise_params})
 
 class ParamFitter:
-    def __init__(self, relevant_params, sim_track_fields, tgt_track_fields,
+    def __init__(self, relevant_params, set_init_params, sim_track_fields, tgt_track_fields,
                  detector_props, pixel_layouts,
                  loss_fn=None, loss_fn_kw=None, readout_noise_target=True, readout_noise_guess=False, 
                  out_label="", test_name="this_test",
@@ -133,6 +133,8 @@ class ParamFitter:
                 param_name = set_target_vals[2*i_val]
                 param_val = set_target_vals[2*i_val+1]
                 self.target_val_dict[param_name] = float(param_val)
+
+        self.set_init_params = set_init_params
 
         if self.current_mode == 'lut':
             self.lut_file = config.lut_file
@@ -225,6 +227,14 @@ class ParamFitter:
                 init_val = np.random.uniform(low=ranges[param]['down'], 
                                             high=ranges[param]['up'])
                 initial_params[param] = init_val
+
+        elif len(self.set_init_params) > 0:
+            if len(self.set_init_params) % 2 != 0:
+                raise ValueError("Incorrect format for set_init_params!")
+            for i_val in range(len(self.set_init_params)//2):
+                param_name = self.set_init_params[2*i_val]
+                param_val = self.set_init_params[2*i_val+1]
+                initial_params[param_name] = float(param_val)
 
         self.current_params = ref_params.replace(**initial_params)
 
@@ -319,16 +329,6 @@ class ParamFitter:
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_new(self.target_params, self.response, target, self.tgt_track_fields, rngseed) #Setting a different random seed for each target
                 else:
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_parametrized(self.target_params, target, self.tgt_track_fields, i+1) #Setting a different random seed for each target
-
-                if self.compute_target_hessian:
-                    logger.error("Computing target hessian is not implemented yet")
-                    raise NotImplementedError("Computing target hessian is not implemented yet")
-                    # logger.info("Computing target hessian")
-                    # if self.current_mode == 'lut':
-                    #     hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.target_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
-                    # else:
-                    #     hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
-                    # self.training_history['hessian'].append(format_hessian(hess))
 
                 # embed_target = embed_adc_list(self.sim_target, target, pix_target, ticks_list_targ)
                 #Saving the target for the batch
@@ -931,4 +931,53 @@ class MinuitFitter(ParamFitter):
             pickle.dump(self.training_history, f_history)
 
 
+class HessianCalculator(ParamFitter):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not len(self.set_init_params) > 0:
+            raise ValueError("Remember to set the initial parameter values for Hessian calculation!")
 
+    def fit(self, dataloader_sim, target, **kwargs):
+
+        self.prepare_fit()
+
+        logger.info("Using the fitter for Hessian matrix calculation.")
+        logger.warning(f"Arguments {kwargs} are ignored in this mode.")
+
+        self.ref_params = self.current_params
+
+        self.training_history['n_hit'] = []
+        for i in range(len(dataloader_sim)):
+            logger.info(f"Batch {i}/{len(target)}")
+
+            # sim
+            selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+            selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
+            evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+
+            # target
+            if not self.read_target:
+                selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                this_target = jax.device_put(selected_tracks_bt_tgt)
+            else:
+                this_target = target
+            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
+            n_hit = np.sum(ref_hit_prob)
+            self.training_history['n_hit'].append(n_hit)
+
+            self.fit_params = self.current_params
+            if self.current_mode == 'lut':
+                hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.fit_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, selected_tracks_sim, self.sim_track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                self.training_history['hessian'].append(format_hessian(hess))
+
+            else:
+                hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.fit_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, selected_tracks_sim, self.sim_track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                self.training_history['hessian'].append(format_hessian(hess))
+
+            with open(f'fit_result/{self.test_name}/history_batch{i}_{self.out_label}.pkl', "wb") as f_history:
+                pickle.dump(self.training_history, f_history)
+            if os.path.exists(f'fit_result/{self.test_name}/history_batch{i-1}_{self.out_label}.pkl'):
+                os.remove(f'fit_result/{self.test_name}/history_batch{i-1}_{self.out_label}.pkl')
+
+        if os.path.exists('target_' + self.out_label):
+            shutil.rmtree('target_' + self.out_label, ignore_errors=True)
