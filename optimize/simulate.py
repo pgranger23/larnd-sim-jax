@@ -138,10 +138,10 @@ def main(config):
         rngseed = config.seed if config.seed is not None else 0
         if config.mode == 'lut':
             wfs, unique_pixels = simulate_wfs(ref_params, response, tracks, fields)
-            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_stochastic(ref_params, wfs, unique_pixels, rngseed=rngseed)
+            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, hit_pixels = simulate_stochastic(ref_params, wfs, unique_pixels, rngseed=rngseed)
         else:
             
-            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_parametrized(ref_params, tracks, fields, rngseed=rngseed)
+            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, hit_pixels = simulate_parametrized(ref_params, tracks, fields, rngseed=rngseed)
             wfs = None
         if config.jac:
             jac_res = jax.jacfwd(sim_wrapper)(ref_params, tracks)
@@ -157,7 +157,7 @@ def main(config):
                 group.create_dataset('adc_clean', data=adcs_clean.flatten()[mask])
                 group.create_dataset('adc', data=adcs.flatten()[mask])
                 group.create_dataset('Q', data=Q)
-                group.create_dataset('pixels', data=unique_pixels[mask])
+                group.create_dataset('pixels', data=hit_pixels[mask])
                 group.create_dataset('ticks', data=ticks.flatten()[mask])
                 group.create_dataset('eventID', data=event[mask])
                 group.create_dataset('pix_x', data=pixel_x[mask])

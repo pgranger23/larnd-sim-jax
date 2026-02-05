@@ -179,9 +179,15 @@ class ParamFitter:
         if loss_fn in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']: #Need to setup the sdtw class for the loss function
             self.loss_fn_kw['dstw'] = SoftDTW(**self.loss_fn_kw)
         
+        # Set up loss strategy based on loss function and simulation type
         if loss_fn == 'llhd':
             from .strategies import ProbabilisticLossStrategy
             self.loss_strategy = ProbabilisticLossStrategy(loss_fn=llhd_loss, **self.loss_fn_kw)
+        elif self.probabilistic_sim:
+            # Use CollapsedProbabilisticLossStrategy for probabilistic simulation with deterministic losses
+            from .strategies import CollapsedProbabilisticLossStrategy
+            self.loss_strategy = CollapsedProbabilisticLossStrategy(loss_fn=self.loss_fn, **self.loss_fn_kw)
+            logger.info(f"Using CollapsedProbabilisticLossStrategy with {loss_fn}")
         else:
             self.loss_strategy = GenericLossStrategy(self.loss_fn, **self.loss_fn_kw)
 
@@ -925,7 +931,7 @@ class MinuitFitter(ParamFitter):
                 # Update the current params with the new values
 
                 self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
-                avg_loss = 0
+                tot_loss = 0
                 for i in range(len(dataloader_sim)):
                     # sim
                     selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
@@ -936,15 +942,15 @@ class MinuitFitter(ParamFitter):
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = get_target(self, i, evts_sim, target)
 
                     loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_grad=False, with_loss=True)
-                    avg_loss += loss_val # type: ignore
-                logger.debug(f"Average loss: {avg_loss/len(dataloader_sim)}")
-                return avg_loss/len(dataloader_sim)
+                    tot_loss += loss_val # type: ignore
+                logger.debug(f"Total loss: {tot_loss}")
+                return tot_loss
             
             def grad_wrapper(args):
                 logger.debug(f"Grad wrapper called with args: {args}")
                 # Update the current params with the new values
                 self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
-                avg_grad = [0 for _ in range(len(self.relevant_params_list))]
+                tot_grad = [0 for _ in range(len(self.relevant_params_list))]
                 for i in range(len(dataloader_sim)):
                     # sim
                     selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
@@ -955,9 +961,9 @@ class MinuitFitter(ParamFitter):
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = get_target(self, i, evts_sim, target)
 
                     _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=False)
-                    avg_grad = [getattr(grads, key) + avg_grad[i] for i, key in enumerate(self.relevant_params_list)]
-                logger.debug(f"Average gradient: {[g/len(dataloader_sim) for g in avg_grad]}")
-                return [g/len(dataloader_sim) for g in avg_grad]
+                    tot_grad = [getattr(grads, key) + tot_grad[i] for i, key in enumerate(self.relevant_params_list)]
+                logger.debug(f"Average gradient: {[g/len(dataloader_sim) for g in tot_grad]}")
+                return [g for g in tot_grad]
 
             self.configure_minimizer(loss_wrapper, grad_wrapper)
             result = self.minimizer.migrad()
