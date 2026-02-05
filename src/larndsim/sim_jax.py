@@ -599,18 +599,24 @@ def simulate_stochastic(params, wfs, unique_pixels, rngseed):
 
 def simulate_probabilistic(params, wfs, unique_pixels):
     """
-    Simulates the signal from the drifted electrons and returns the ADC values, pixel coordinates, ticks, hit probabilities, event numbers, and unique pixel identifiers.
+    Simulates the signal from the drifted electrons and returns probabilistic
+    distributions of ADC values and tick times, along with pixel coordinates
+    and event numbers.
+
     Args:
         params: Parameters of the simulation.
         wfs (jnp.ndarray): Waveforms as a JAX array.
-        unique_pixels (jnp.ndarray): Unique pixel identifiers.
+        unique_pixels (jnp.ndarray): Unique pixel identifiers for the input waveforms.
+
     Returns:
-        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
-            - adcs_distrib: ADC values.
-            - pixel_x: X coordinates of the pixels.
-            - pixel_y: Y coordinates of the pixels.
-            - ticks_prob: Ticks corresponding to the ADC values.
-            - event: Event numbers.
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+            - adcs_distrib: Probabilistic distribution of ADC values for each
+              pixel/time bin after adding average noise and digitization.
+            - pixel_x: X coordinates of the pixels corresponding to the waveforms.
+            - pixel_y: Y coordinates of the pixels corresponding to the waveforms.
+            - ticks_prob: Tick indices associated with the probabilistic charge/
+              ADC distributions.
+            - event: Event numbers associated with each pixel.
     """
 
     # Npix = wfs.shape[0]
