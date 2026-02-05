@@ -303,7 +303,7 @@ class TracksDataset:
         return self.track_fields
 
 class TgtTracksDataset:
-    def __init__(self, filename, dataset_sim, swap_xz=True, chopped=True, pad=True, electron_sampling_resolution=0.001):
+    def __init__(self, filename, dataset_sim, swap_xz=True, chopped=True, pad=True, electron_sampling_resolution=0.001, print_input=False):
 
         with h5py.File(filename, 'r') as f:
             tracks = np.array(f['segments'])
@@ -340,6 +340,8 @@ class TgtTracksDataset:
         # Only load useful tracks
         batches = []
         tot_data_length = 0
+        if print_input:
+            all_load_file_traj = []
         if 'file_traj_id' in self.sim_track_fields and 'file_traj_id' in self.tgt_track_fields:
             for bt in dataset_sim:
                 load_file_traj = np.unique(bt[:, self.sim_track_fields.index("file_traj_id")])
@@ -358,6 +360,9 @@ class TgtTracksDataset:
 
                 batches.append(np.vstack(jax_from_structured(tracks[mask])))
                 tot_data_length += np.sum(tracks[mask]['dx'])
+
+                if print_input:
+                    all_load_file_traj.append(load_file_traj)
         else:
             for bt in dataset_sim:
                 if np.max(bt[:, self.sim_track_fields.index("trackID")]) > 1E5:
@@ -380,12 +385,17 @@ class TgtTracksDataset:
 
                 batches.append(np.vstack(jax_from_structured(tracks[mask])))
                 tot_data_length += np.sum(tracks[mask]['dx'])
+
+                if print_input:
+                    all_load_file_traj.append(load_file_traj)
  
         if chopped:
             fit_tracks = [jnp.array(chop_tracks(batch, self.tgt_track_fields, electron_sampling_resolution)) for batch in batches]
         else:
             fit_tracks = [jnp.array(batch) for batch in batches]
 
+        if print_input:
+            logger.info(f"training set: {all_load_file_traj}")
         logger.info(f"-- The used target data includes a total track length of {tot_data_length} cm.")
         logger.info(f"-- The number of target batches is {len(batches)}.")
 

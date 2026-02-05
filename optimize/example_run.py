@@ -74,7 +74,7 @@ def main(config):
     if not config.read_target:
         # Get the same events for target
 
-        dataset_target = TgtTracksDataset(filename=config.input_file_tgt, dataset_sim = dataset_sim, electron_sampling_resolution=config.electron_sampling_resolution)
+        dataset_target = TgtTracksDataset(filename=config.input_file_tgt, dataset_sim = dataset_sim, electron_sampling_resolution=config.electron_sampling_resolution, print_input=config.print_input)
 
         # check if the track in sim and target are consistent
         if len(dataset_sim) != len(dataset_target):

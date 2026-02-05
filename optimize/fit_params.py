@@ -545,8 +545,6 @@ class GradientDescentFitter(ParamFitter):
             if len(dataloader_sim) != len(target):
                 raise Exception("Sim and target inputs do not match in size. Panic.")
 
-        print(f"len(dataloader_sim): {len(dataloader_sim)} | len(target): {len(target)}")
-
         if iterations is not None:
             epochs = iterations // len(dataloader_sim) + 1
 
