@@ -242,7 +242,7 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
                 param_value = raw_param_values.reshape(1, -1)
                 grad = np.array(results[f"{param_from_filename}_grad"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
                 loss = np.array(results["losses_iter"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
-                nbatches = 1
+        
         else:
             raise ValueError(f"Unexpected data layout: {total_data_points} total points, nb_iter={nb_iter}")
         
