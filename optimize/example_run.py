@@ -158,13 +158,22 @@ def main(config):
     else:
         raise Exception(f"Unknown fit type: {config.fit_type}. Supported types are 'chain' and 'scan'.")
 
-    # jax.profiler.start_trace("/tmp/tensorboard")
-
     # with cProfile.Profile() as pr:
+
+    if config.profile:
+        profile_dir = "./profiling/"
+        logger.info(f"Profiling execution. Output in {profile_dir}")
+        jax.profiler.start_trace("profile_dir")
+
     if config.read_target:
         param_fit.fit(tracks_dataloader_sim, config.input_file_tgt, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
     else:
         param_fit.fit(tracks_dataloader_sim, tracks_dataloader_target, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
+
+    
+    if config.profile:
+        logger.info("Ending profiling")
+        jax.profiler.stop_trace()
 
     # pr.dump_stats('prof.prof')
     # jax.profiler.stop_trace()
@@ -279,6 +288,7 @@ if __name__ == '__main__':
     parser.add_argument('--probabilistic-sim', default=False, action="store_true", help='Use probabilistic sim')
     parser.add_argument('--shuffle_bt', default=False, action="store_true", help='shuffle the batch order within an epoch')
     parser.add_argument('--sz_mini_bt', type=int, default=1, help='Number of mini-batch for one update')
+    parser.add_argument('--profile', default=False, action='store_true', help='Should run some xprof execution profiling')
 
 
     try:

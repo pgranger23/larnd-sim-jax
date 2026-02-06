@@ -592,9 +592,9 @@ def simulate_stochastic(params, wfs, unique_pixels, rngseed):
     pixel_y = pixel_coords[:, 1]
     pixel_z  = get_hit_z(params, ticks.flatten(), jnp.repeat(pixel_plane, 10))
 
-    adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, nb_valid = parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
+    adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, hit_pixels, nb_valid = parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
 
-    return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid]
+    return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], hit_pixels[:nb_valid]
 
 def simulate_probabilistic(params, wfs, unique_pixels):
     """

@@ -217,9 +217,7 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
         # Get reference event IDs
         ref_event = target.get('event', jnp.zeros_like(target['ticks'], dtype=jnp.int32))
         
-        # Use 1.0 as hit_prob to match stochastic behavior
-        # (Using λ causes loss differences even when recovering exact hits)
-        pred_hit_prob = jnp.ones_like(pred_lambda)  # Use 1.0 instead of λ
+        pred_hit_prob = pred_lambda 
         ref_hit_prob = target.get('hit_prob', jnp.ones_like(target['ticks']))
         
         # Apply the deterministic loss function

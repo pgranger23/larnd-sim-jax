@@ -37,7 +37,6 @@ def mmd(x, y, px, py, sigma):
               2 * weighted_K_xy / (sum_px * sum_py))
 
     return mmd_sq
-    #return jnp.sqrt(jnp.abs(mmd_sq))
 
 def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     all_pixels = jnp.concatenate([pIDs, pIDs_ref])
@@ -56,10 +55,28 @@ def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     adc_loss = jnp.sum(signals**2)
     return adc_loss, dict()
 
-def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, sigma=1):
-    ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z, ref_Q), axis=-1)
-    stacked = jnp.stack((x + event*1e5, y, z, Q), axis=-1)
-    return mmd(stacked, ref_stacked, hit_prob, ref_hit_prob, sigma), dict()
+def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, sigma=1, lambda_Q=1):
+    weight_ref = ref_Q*ref_hit_prob
+    weight = Q*hit_prob
+    ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z), axis=-1)
+    stacked = jnp.stack((x + event*1e5, y, z), axis=-1)
+    mmd_loss_term = mmd(stacked, ref_stacked, weight, weight_ref, sigma)
+    
+    ref_total_charge = jnp.sum(weight_ref)
+    total_charge = jnp.sum(weight)
+    denom = ref_total_charge + 1e-6
+    
+    # Relative Squared Error
+    charge_loss = ((total_charge - ref_total_charge) / denom)**2
+    aux = {
+        'charge_loss': charge_loss,
+        'mmd_loss_term': mmd_loss_term,
+        'Q': Q,
+        'ref_Q': ref_Q,
+        'ref_hit_prob': ref_hit_prob,
+        'hit_prob': hit_prob,
+    }
+    return mmd_loss_term + lambda_Q * charge_loss, aux
     # return mse_loss(adcs, pixels, ref, pixels_ref)
 
 def mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
