@@ -352,7 +352,7 @@ class ParamFitter:
                 ref_ticks = prediction['ticks']
                 ref_hit_prob = prediction['hit_prob']
                 ref_event = prediction['event']
-                ref_pixel_id = prediction['hit_pixels']
+                ref_pixel_id = prediction.get('hit_pixels', prediction.get('unique_pixels'))
 
                 if self.compute_target_hessian:
                     logger.error("Computing target hessian is not implemented yet")
