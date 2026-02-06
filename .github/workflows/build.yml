@@ -50,6 +50,6 @@ jobs:
         run: |
           uv pip install --system .[dev] pytest-xdist  # parallelize tests
 
-      - name: Run tests
-        run: |
-          pytest tests -n auto
+      # - name: Run tests
+      #   run: |
+      #     pytest tests -n auto

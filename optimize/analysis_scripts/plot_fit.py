@@ -65,6 +65,19 @@ if __name__ == "__main__":
         plt.ylabel(par)
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f"{par}_fit.png"))
+        plt.close()
+
+        if f'{par}_grad' in results:
+            grads = results[f'{par}_grad']
+            plt.figure()
+            plt.plot(np.abs(grads))
+            plt.yscale('log')
+            plt.xlabel('Iteration')
+            plt.ylabel(f'|Gradient| of {par}')
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, f"{par}_grad.png"))
+            plt.close()
+
     plt.figure()
     plt.plot(results['losses_iter'])
     plt.xlabel('Iteration')

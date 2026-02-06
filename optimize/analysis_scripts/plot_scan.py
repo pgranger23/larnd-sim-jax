@@ -44,6 +44,75 @@ def parse_args():
     return parser.parse_args()
 
 
+def plot_time(fname, ax=None, ipar=0):
+    with open(fname, 'rb') as f:
+        results = pickle.load(f)
+    # print_config(results['config'])
+    
+    if 'fit_type' not in results['config']:
+        raise ValueError(f"Expected fit_type in {fname}")
+    
+    if results['config'].fit_type != 'scan':
+        raise ValueError(f"Expected fit_type scan, found {results['config']['fit_type']} in {fname}")
+
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+
+    params = [key.replace('_grad', '') for key in results.keys() if '_grad' in key]
+    
+    if ipar >= len(params):
+        return
+    
+    nparams_in_file = len(params)
+    nb_iter = results['config'].iterations
+    total_data_points = len(results["losses_iter"])
+    
+    # Try to extract parameter name from filename
+    param_from_filename = None
+    basename = os.path.basename(fname)
+    if basename.startswith('history_'):
+        parts = basename.split('_')
+        for i in range(1, len(parts)):
+            potential_param = '_'.join(parts[1:i+1])
+            if potential_param in params:
+                param_from_filename = potential_param
+                break
+    
+    # Detect mode and select appropriate parameter
+    if total_data_points % (nb_iter * nparams_in_file) == 0:
+        # Multi-param file
+        param = params[ipar]
+    elif total_data_points % nb_iter == 0:
+        # Single-param file
+        if param_from_filename is not None:
+            param = param_from_filename
+        else:
+            # Auto-detect by finding parameter with most variation
+            param_variations = {}
+            for p in params:
+                param_values = np.array(results[f"{p}_iter"][1:])
+                unique_vals = np.unique(param_values)
+                if len(unique_vals) > 1:
+                    variation = (param_values.max() - param_values.min()) / max(np.abs(param_values.mean()), 1e-10)
+                    param_variations[p] = (len(unique_vals), variation)
+            
+            if len(param_variations) > 0:
+                sorted_params = sorted(param_variations.items(), key=lambda x: (x[1][0], x[1][1]), reverse=True)
+                param = sorted_params[0][0]
+            else:
+                param = params[0]
+    else:
+        param = params[0]
+
+    title = f"{results['config'].max_batch_len:.0f}cm batches ; Noise: {'on' if not results['config'].no_noise else 'off'} ; Random strategy: {results['config'].sim_seed_strategy} ; Sampling resolution: {results['config'].electron_sampling_resolution*1e4:.0f}um"
+    
+    time = np.array(results["step_time"])
+
+    ax.plot(time, label='Loss')
+    ax.set_ylabel('Time (s)')
+    ax.set_title(f"Time per iteration for {param}")
+    ax.get_figure().suptitle(title)
+
 def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     with open(fname, 'rb') as f:
         results = pickle.load(f)
@@ -63,29 +132,157 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     noise = (not results['config'].no_noise)
     title = f"{batch_size:.0f}cm batches ; Noise: {'on' if noise else 'off'} ; Random strategy: {results['config'].sim_seed_strategy} ; Sampling resolution: {results['config'].electron_sampling_resolution*1e4:.0f}um"
 
-    param = params[ipar]
-    nparams = len(params)
-
+    nparams_in_file = len(params)
     nb_iter = results['config'].iterations
+    total_data_points = len(results["losses_iter"])
+    
+    # Try to extract parameter name from filename (e.g., "history_long_diff_batch1_..." -> "long_diff")
+    param_from_filename = None
+    batch_num = None
+    basename = os.path.basename(fname)
+    if basename.startswith('history_'):
+        parts = basename.split('_')
+        # Try to find which part is a valid parameter name
+        for i in range(1, len(parts)):
+            potential_param = '_'.join(parts[1:i+1])
+            if potential_param in params:
+                param_from_filename = potential_param
+                # Try to extract batch number from remaining parts
+                for j in range(i+1, len(parts)):
+                    if parts[j].startswith('batch'):
+                        try:
+                            batch_num = int(parts[j].replace('batch', ''))
+                        except ValueError:
+                            # Ignore non-integer batch suffixes; absence or malformation of a batch number is allowed.
+                            pass
+                break
+        if param_from_filename:
+            logger.info(f"Detected parameter '{param_from_filename}' and batch {batch_num} from filename: {basename}")
+    
+    # Detect if this is a single-param file or multi-param file
+    # Strategy: identify which parameter(s) were intentionally scanned by measuring variation
+    param_variations = {}
+    for p in params:
+        param_values = np.array(results[f"{p}_iter"][1:])
+        unique_vals = np.unique(param_values)
+        if len(unique_vals) > 1:
+            # Measure variation as (max-min)/mean to get relative spread
+            variation = (param_values.max() - param_values.min()) / max(np.abs(param_values.mean()), 1e-10)
+            param_variations[p] = (len(unique_vals), variation)
+    
+    # Sort by number of unique values (primary) and variation (secondary)
+    sorted_params = sorted(param_variations.items(), key=lambda x: (x[1][0], x[1][1]), reverse=True)
+    
+    logger.info(f"File {fname}: Parameter variations (unique_vals, rel_variation): {sorted_params}")
+    
+    # Check data layout to determine mode
+    # Priority: Use filename detection if available, then check divisibility
+    if param_from_filename is not None:
+        # Filename gives us the parameter - use single-param mode
+        # In LikelihoodProfiler, data accumulates across batches and parameters
+        # For a given parameter, we want to extract data for ALL batches up to the one in filename
+        
+        # Check if data looks like accumulated scans (divisible by nb_iter but not exactly nb_iter)
+        if total_data_points >= nb_iter and total_data_points % nb_iter == 0:
+            # Accumulated scan data
+            n_accumulated_scans = total_data_points // nb_iter
+            
+            # Calculate which scans correspond to this parameter across all batches
+            param_scan_index = params.index(param_from_filename)
+            
+            # Extract data for this parameter from ALL batches (0 to batch_num)
+            if batch_num is not None:
+                num_batches = batch_num + 1  # batches are 0-indexed
+                logger.info(f"Extracting data for parameter {param_from_filename} across {num_batches} batches (0 to {batch_num})")
+                
+                # Collect data from each batch for this parameter
+                param_values_list = []
+                grad_list = []
+                loss_list = []
+                
+                for b in range(num_batches):
+                    # For batch b, this parameter's scan is at position: b * nparams + param_index
+                    scan_idx = b * nparams_in_file + param_scan_index
+                    
+                    if scan_idx >= n_accumulated_scans:
+                        logger.warning(f"Batch {b} scan index {scan_idx} exceeds available scans {n_accumulated_scans}, skipping")
+                        break
+                    
+                    # Extract data for this scan
+                    start_idx = 1 + scan_idx * nb_iter  # +1 for _iter arrays
+                    end_idx = start_idx + nb_iter
+                    start_idx_no_offset = scan_idx * nb_iter  # for grad and loss arrays
+                    end_idx_no_offset = start_idx_no_offset + nb_iter
+                    
+                    param_values_list.append(np.array(results[f"{param_from_filename}_iter"][start_idx:end_idx]))
+                    grad_list.append(np.array(results[f"{param_from_filename}_grad"][start_idx_no_offset:end_idx_no_offset]))
+                    loss_list.append(np.array(results["losses_iter"][start_idx_no_offset:end_idx_no_offset]))
+                
+                # Stack into (nbatches, nb_iter) arrays
+                raw_param_values = np.array(param_values_list[-1])  # Use last batch for logging
+                param_value = np.array(param_values_list)
+                grad = np.array(grad_list)
+                loss = np.array(loss_list)
+                nbatches = len(param_values_list)
+                
+                logger.info(f"Extracted {nbatches} batches for {param_from_filename}")
+            else:
+                # Fallback: extract just the last occurrence
+                logger.warning(f"Could not extract batch number, extracting last scan only")
+                total_scan_index = param_scan_index
+                while total_scan_index + nparams_in_file < n_accumulated_scans:
+                    total_scan_index += nparams_in_file
+                
+                start_idx = 1 + total_scan_index * nb_iter
+                end_idx = start_idx + nb_iter
+                start_idx_no_offset = total_scan_index * nb_iter
+                end_idx_no_offset = start_idx_no_offset + nb_iter
+                
+                raw_param_values = np.array(results[f"{param_from_filename}_iter"][start_idx:end_idx])
+                param_value = raw_param_values.reshape(1, -1)
+                grad = np.array(results[f"{param_from_filename}_grad"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
+                loss = np.array(results["losses_iter"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
+        
+        else:
+            raise ValueError(f"Unexpected data layout: {total_data_points} total points, nb_iter={nb_iter}")
+        
+        param = param_from_filename
+        logger.info(f"Raw param_iter data: len={len(raw_param_values)}, unique values={len(np.unique(raw_param_values))}, range=[{raw_param_values.min():.6e}, {raw_param_values.max():.6e}]")
+        logger.info(f"First 10 values: {raw_param_values[:10]}")
+        
+        logger.info(f"Single-param mode (from filename): using parameter {param}")
+        logger.info(f"Single-param mode: data shape - param_value: {param_value.shape}, grad: {grad.shape}, loss: {loss.shape}")
+        logger.info(f"Single-param mode: param range [{param_value.min():.6e}, {param_value.max():.6e}], loss range [{loss.min():.6e}, {loss.max():.6e}]")
+    elif total_data_points % (nb_iter * nparams_in_file) == 0 and total_data_points % nb_iter != 0:
+        # Data is only divisible by nb_iter*nparams, not by nb_iter alone - must be multi-param
+        param = params[ipar]
+        nbatches = total_data_points // (nb_iter * nparams_in_file)
+        param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
+        grad = np.array(results[f"{param}_grad"]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
+        loss = np.array(results["losses_iter"]).reshape(nbatches, nparams_in_file, -1)[:, ipar, :]
+        logger.info(f"Multi-param mode: using parameter {param}")
+    elif total_data_points % nb_iter == 0:
+        # Single-param file (fallback when no filename detection)
+        if len(sorted_params) > 0:
+            param = sorted_params[0][0]
+            logger.info(f"Single-param mode (auto-detected): using scanned parameter {param}")
+        else:
+            param = params[0]
+            logger.warning(f"Single-param mode: falling back to first parameter {param}")
+        
+        nbatches = total_data_points // nb_iter
+        param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, -1)
+        grad = np.array(results[f"{param}_grad"]).reshape(nbatches, -1)
+        loss = np.array(results["losses_iter"]).reshape(nbatches, -1)
+        logger.info(f"Single-param mode: data shape - param_value: {param_value.shape}, grad: {grad.shape}, loss: {loss.shape}")
+        logger.info(f"Single-param mode: param range [{param_value.min():.6e}, {param_value.max():.6e}], loss range [{loss.min():.6e}, {loss.max():.6e}]")
+    else:
+        raise ValueError(f"Cannot determine data layout: {total_data_points} not divisible by {nb_iter} or {nb_iter}*{nparams_in_file}")
 
     target = results[f"{param}_target"]
-
-    # nbatches = results['config'].max_nbatch
     
     if ax is None:
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-    # max_index = (len(results["losses_iter"])//nbatches)*nbatches
-
-    # param_value = np.average(np.array(results[f"{param}_iter"][1:max_index + 1]).reshape(-1, nbatches), axis=1)
-    param_value = np.sort(np.unique(results[f"{param}_iter"][1:]))
-    nbatches = len(results["losses_iter"])//(nb_iter*nparams)
-    if len(results["losses_iter"]) % (nb_iter*nparams) != 0:
-        raise ValueError(f"Expected losses_iter to be divisible by param_value, found {len(results['losses_iter'])} and {param_value}")
-
-
-    param_value = np.array(results[f"{param}_iter"][1:]).reshape(nbatches, nparams, -1)[:, ipar, :]
-    grad = np.array(results[f"{param}_grad"]).reshape(nbatches, nparams, -1)[:, ipar, :]
-    loss = np.array(results["losses_iter"]).reshape(nbatches, nparams, -1)[:, ipar, :]
 
     if not plot_all:
         grad = np.nanmean(grad, axis=0)
@@ -107,6 +304,7 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
     labs = [l.get_label() for l in lns]
     ax2.legend(lns, labs, loc=0)
     ax.set_xlabel(param)
+    ax.set_title(f"Gradient scan for {param}")
     ax.get_figure().suptitle(title)
     # print(len(results[f"{param}_grad"]))
 
@@ -118,35 +316,73 @@ if __name__ == "__main__":
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
+    # Determine the number of parameters and create file list
     if args.input_file is not None:
         if not os.path.exists(args.input_file):
             raise ValueError(f"Input file {args.input_file} does not exist")
-        list_of_files = [args.input_file] * 9
-        logger.info(f"Using input file {args.input_file}")
+        
+        # Load file to determine number of parameters
+        with open(args.input_file, 'rb') as f:
+            results = pickle.load(f)
+        params = [key.replace('_grad', '') for key in results.keys() if '_grad' in key]
+        nparams = len(params)
+        
+        # Create list with same file repeated for each parameter
+        list_of_files = [args.input_file] * nparams
+        param_indices = list(range(nparams))
+        logger.info(f"Using input file {args.input_file} with {nparams} parameters: {params}")
     else:
         list_of_files = glob.glob(f'{input_dir}/*.pkl')
-        logger.info(f"Found {len(list_of_files)} files in {input_dir}")
+        if not list_of_files:
+            raise ValueError(f"No .pkl files found in {input_dir}")
+        
+        nparams = len(list_of_files)
+        # For directory mode, each file contains a single parameter (ipar=0)
+        param_indices = [0] * nparams
+        logger.info(f"Found {nparams} files in {input_dir}")
 
-    fig, axs = plt.subplots(3, 3, figsize=(20, 15))
+    # Calculate grid dimensions
+    ncols = min(3, nparams)
+    nrows = (nparams + ncols - 1) // ncols  # Ceiling division
+    
+    fig, axs = plt.subplots(nrows, ncols, figsize=(7*ncols, 5*nrows), squeeze=False)
+    fig_time, axs_time = plt.subplots(nrows, ncols, figsize=(7*ncols, 5*nrows), squeeze=False)
 
-    for i, f in enumerate(list_of_files):
-        ax = axs[i//3, i%3]
-        if args.input_file is not None:
-            plot_gradient_scan(f, ax, True, i)
-        else:
-            plot_gradient_scan(f, ax, True, 0)
+    for i, (f, ipar) in enumerate(zip(list_of_files, param_indices)):
+        row, col = i // ncols, i % ncols
+        ax = axs[row, col]
+        ax_time = axs_time[row, col]
+        
+        plot_gradient_scan(f, ax, True, ipar)
+        plot_time(f, ax_time, ipar)
+    
+    # Hide unused subplots
+    for i in range(nparams, nrows * ncols):
+        row, col = i // ncols, i % ncols
+        axs[row, col].axis('off')
+        axs_time[row, col].axis('off')
+    
     fig.tight_layout()
     fig.savefig(f'{output_dir}/gradient_scan.pdf')
     fig.savefig(f'{output_dir}/gradient_scan.png', dpi=300)
 
-    fig, axs = plt.subplots(3, 3, figsize=(20, 15))
+    fig_time.tight_layout()
+    fig_time.savefig(f'{output_dir}/gradient_scan_time.pdf')
+    fig_time.savefig(f'{output_dir}/gradient_scan_time.png', dpi=300)
 
-    for i, f in enumerate(list_of_files):
-        ax = axs[i//3, i%3]
-        if args.input_file is not None:
-            plot_gradient_scan(f, ax, False, i)
-        else:
-            plot_gradient_scan(f, ax, False, 0)
+    # Second figure for averaged plots
+    fig, axs = plt.subplots(nrows, ncols, figsize=(7*ncols, 5*nrows), squeeze=False)
+
+    for i, (f, ipar) in enumerate(zip(list_of_files, param_indices)):
+        row, col = i // ncols, i % ncols
+        ax = axs[row, col]
+        plot_gradient_scan(f, ax, False, ipar)
+    
+    # Hide unused subplots
+    for i in range(nparams, nrows * ncols):
+        row, col = i // ncols, i % ncols
+        axs[row, col].axis('off')
+    
     fig.tight_layout()
     fig.savefig(f'{output_dir}/gradient_scan_avg.pdf')
     fig.savefig(f'{output_dir}/gradient_scan_avg.png', dpi=300)

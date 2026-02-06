@@ -30,10 +30,12 @@ echo "LUT comparison"
 python3 -m optimize.comparison \
     --ref_output output/jax_ref/output_ \
     --output output/output_ \
-    --n_files $((${NFILES}+1))
+    --n_files $((${NFILES}+1)) \
+    --plot_prefix "lut_"
 
 echo "Parametrized comparison"
 python3 -m optimize.comparison \
     --ref_output output/jax_ref/output_parametrized_ \
     --output output/output_parametrized_ \
-    --n_files $((${NFILES}+1))
+    --n_files $((${NFILES}+1)) \
+    --plot_prefix "parametrized_"

@@ -8,7 +8,7 @@ BATCH_SIZE=100
 ITERATIONS=20
 MAX_CLIP_NORM_VAL=1
 DATA_SEED=1
-LOSS=mse_adc
+LOSS=llhd
 
 GPU=FALSE
 
@@ -45,10 +45,9 @@ python3 -m optimize.example_run \
     --max_abs_costheta_sel 0.966 \
     --min_abs_segz_sel 15. \
     --no-noise-target \
-    --no-noise-guess \
     --data_seed ${DATA_SEED} \
-    --out_label scan_test${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target \
-    --test_name fit_noise \
+    --out_label scan_test${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target_prob \
+    --test_name scan_nll \
     --seed ${TARGET_SEED} \
     --random_ntrack \
     --iterations ${ITERATIONS} \
@@ -64,6 +63,8 @@ python3 -m optimize.example_run \
     --fit_type 'scan' \
     --sim_seed_strategy 'same' \
     $( [ "$GPU" == "FALSE" ] && echo "--cpu_only" ) \
-    --scan_tgt_nom
+    --scan_tgt_nom \
+    --mc_diff \
+    --probabilistic-sim
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
 

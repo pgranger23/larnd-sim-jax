@@ -78,12 +78,18 @@ def load_results(fname):
     with h5py.File(fname, 'r') as f:
         if 'pixels' in f.keys():
             pixels = np.array(f['pixels'])
-            adc = np.array(f['adc'])
+            if 'adc_clean' in f.keys():
+                adc = np.array(f['adc_clean'])
+            else:
+                adc = np.array(f['adc'])
             ticks = np.array(f['ticks'])
         else:
             for key in f.keys():
                 pixels = np.array(f[key]['pixels'])
-                adc = np.array(f[key]['adc'])
+                if 'adc_clean' in f[key].keys():
+                    adc = np.array(f[key]['adc_clean'])
+                else:
+                    adc = np.array(f[key]['adc'])
                 ticks = np.array(f[key]['ticks'])
                 break
     return pixels, adc, ticks
@@ -95,7 +101,13 @@ def make_grids(pixels, adcs, ref_params):
     for p in [0, 1]:
         xbins = np.linspace(ref_params.tpc_borders[p][0][0], ref_params.tpc_borders[p][0][1], ref_params.n_pixels_x + 1)
         ybins = np.linspace(ref_params.tpc_borders[p][1][0], ref_params.tpc_borders[p][1][1], ref_params.n_pixels_y + 1)
-        grid, xbins, ybins = np.histogram2d(coords[p == plane][:, 0], coords[p == plane][:, 1], bins=(xbins, ybins), weights=np.sum(adcs - adcs[0, -1], axis=1)[p == plane])
+        
+        if adcs.ndim == 2:
+            w = np.sum(adcs - adcs[0, -1], axis=1)[p == plane]
+        else:
+            w = adcs[p == plane]
+            
+        grid, xbins, ybins = np.histogram2d(coords[p == plane][:, 0], coords[p == plane][:, 1], bins=(xbins, ybins), weights=w)
         grids.append(grid)
     return grids
 
@@ -133,22 +145,23 @@ def compare(config):
     plt.xlabel("ADC difference")
     plt.ylabel("Density")
     plt.tight_layout()
-    plt.savefig("output/diff.png")
+    plt.savefig(f"output/{config.plot_prefix}diff.png")
 
     plt.figure()
     plt.pcolor(grids_ref[0])
     plt.colorbar()
-    plt.savefig("output/ref.png")
+    plt.savefig(f"output/{config.plot_prefix}ref.png")
     plt.figure()
     plt.pcolor(grids_new[0])
     plt.colorbar()
-    plt.savefig("output/new.png")
+    plt.savefig(f"output/{config.plot_prefix}new.png")
     plt.figure()
     plt.pcolor(grids_new[0] - grids_ref[0])
     plt.colorbar()
-    plt.savefig("output/diffff.png")
+    plt.savefig(f"output/{config.plot_prefix}diffff.png")
 
-    # assert(np.mean(all_diffs) < 1e-2) #Have some crash to detect changes in the output
+    if np.abs(np.mean(all_diffs)) > 1e-2:
+        raise ValueError(f"Mean deviation {np.mean(all_diffs)} exceeds threshold 1e-2")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -161,5 +174,6 @@ if __name__ == '__main__':
                         default="src/larndsim/pixel_layouts/multi_tile_layout-2.4.16_v4.yaml",
                         help="Path to pixel layouts YAML file")
     parser.add_argument("--n_files", dest="n_files", type=int, default=1, help="Number of files to compare")
+    parser.add_argument("--plot_prefix", dest="plot_prefix", default="", help="Prefix for output plots")
     args = parser.parse_args()
     compare(args)
