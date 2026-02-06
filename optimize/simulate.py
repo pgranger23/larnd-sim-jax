@@ -13,7 +13,7 @@ if '--gpu' not in sys.argv:
     os.environ['JAX_PLATFORMS'] = 'cpu'
 
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
-from larndsim.sim_jax import prepare_tracks, simulate_stochastic, simulate_parametrized, id2pixel, get_pixel_coordinates, simulate_wfs
+from larndsim.sim_jax import simulate_stochastic, simulate_parametrized, simulate_wfs
 from larndsim.losses_jax import get_hits_space_coords
 from pprint import pprint
 import numpy as np

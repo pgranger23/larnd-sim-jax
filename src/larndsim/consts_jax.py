@@ -313,12 +313,6 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
 
     params_dict['pixel_pitch'] = tile_layout['pixel_pitch'] * mm2cm
 
-    params_dict['tran_diff_bin_edges'] = jnp.linspace(
-        -(params_dict['nb_tran_diff_bins']/2)*params_dict['pixel_pitch']/params_dict['nb_sampling_bins_per_pixel'],
-        (params_dict['nb_tran_diff_bins']/2)*params_dict['pixel_pitch']/params_dict['nb_sampling_bins_per_pixel'],
-        params_dict['nb_tran_diff_bins'] + 1
-    )
-
     chip_channel_to_position = tile_layout['chip_channel_to_position']
     params_dict['pixel_connection_dict'] = {tuple(pix): (chip_channel//1000,chip_channel%1000) for chip_channel, pix in chip_channel_to_position.items()}
     params_dict['tile_chip_to_io'] = tile_layout['tile_chip_to_io']

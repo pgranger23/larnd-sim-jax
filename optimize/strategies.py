@@ -1,8 +1,8 @@
 import jax
 import jax.numpy as jnp
 from larndsim.sim_jax import simulate_wfs, simulate_stochastic, simulate_parametrized, simulate_probabilistic
-from larndsim.losses_jax import mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, nll_loss, adc2charge, llhd_loss
-from larndsim.detsim_jax import pixel2id
+from larndsim.losses_jax import adc2charge
+from larndsim.detsim_jax import id2pixel
 
 class SimulationStrategy:
     def predict(self, params, tracks, fields, rngkey):
@@ -36,7 +36,6 @@ class LUTProbabilisticSimulation(SimulationStrategy):
         self.response = response
 
     def predict(self, params, tracks, fields, rngkey):
-        from larndsim.detsim_jax import id2pixel
         
         wfs, unique_pixels = simulate_wfs(params, self.response, tracks, fields)
         adcs_distrib, pixel_x, pixel_y, ticks_prob, event = simulate_probabilistic(params, wfs, unique_pixels)
@@ -177,7 +176,6 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
         
         pred_x = pixel_x[pred_pixel_idx]
         pred_y = pixel_y[pred_pixel_idx]
-        pred_pixels = unique_pixels[pred_pixel_idx]
         
         # Convert ADCs to charge
         pred_Q = adc2charge(pred_adcs, params)

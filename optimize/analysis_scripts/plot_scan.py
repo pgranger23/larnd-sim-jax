@@ -93,7 +93,7 @@ def plot_time(fname, ax=None, ipar=0):
                 param_values = np.array(results[f"{p}_iter"][1:])
                 unique_vals = np.unique(param_values)
                 if len(unique_vals) > 1:
-                    variation = (param_values.max() - param_values.min()) / np.abs(param_values.mean() + 1e-10)
+                    variation = (param_values.max() - param_values.min()) / max(np.abs(param_values.mean()), 1e-10)
                     param_variations[p] = (len(unique_vals), variation)
             
             if len(param_variations) > 0:
@@ -167,7 +167,7 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
         unique_vals = np.unique(param_values)
         if len(unique_vals) > 1:
             # Measure variation as (max-min)/mean to get relative spread
-            variation = (param_values.max() - param_values.min()) / np.abs(param_values.mean() + 1e-10)
+            variation = (param_values.max() - param_values.min()) / max(np.abs(param_values.mean()), 1e-10)
             param_variations[p] = (len(unique_vals), variation)
     
     # Sort by number of unique values (primary) and variation (secondary)
@@ -242,7 +242,7 @@ def plot_gradient_scan(fname, ax=None, plot_all=False, ipar=0):
                 param_value = raw_param_values.reshape(1, -1)
                 grad = np.array(results[f"{param_from_filename}_grad"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
                 loss = np.array(results["losses_iter"][start_idx_no_offset:end_idx_no_offset]).reshape(1, -1)
-                nbatches = 1
+        
         else:
             raise ValueError(f"Unexpected data layout: {total_data_points} total points, nb_iter={nb_iter}")
         

@@ -298,7 +298,8 @@ def simulate_drift_new(params, tracks, fields):
     #Shifting tracks
     new_tracks = shift_tracks(params, tracks, fields)
     # Quenching and drifting - TODO: parameterize the hard-coded "2"
-    new_tracks = quench(params, new_tracks, params.quench_mode if hasattr(params, 'quench_mode') else 2, fields)
+    quench_mode = getattr(params, "quench_mode", 2)
+    new_tracks = quench(params, new_tracks, quench_mode, fields)
     new_tracks = drift(params, new_tracks, fields)
 
     #Getting the pixels where the electrons are
@@ -526,14 +527,24 @@ def fee_sim_from_split(params, padded_small_nb, padded_large_nb, wfs, mask_small
 
 def simulate_wfs(params, response_template, tracks, fields):
     """
-    Simulates the signal from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
+    Simulates the signal from the drifted electrons and returns waveforms and unique pixel identifiers.
+    
+    This function performs the complete drift simulation pipeline: simulating electron drift,
+    accumulating signals on pixels, and generating the corresponding waveforms.
+    
     Args:
         params (Any): Parameters of the simulation.
-        response (jnp.ndarray): Response function.
+        response_template (jnp.ndarray): Response function template for signal generation.
         tracks (jnp.ndarray): Tracks of the particles as a JAX array.
         fields (List[str]): List of field names corresponding to the tracks.
+    
     Returns:
-
+        Tuple[jnp.ndarray, jnp.ndarray]:
+            - wfs: Waveforms as a 2D JAX array with shape (Npixels, Nticks-1), where Npixels 
+              is the number of unique active pixels and Nticks-1 is the number of time samples 
+              (the first tick is excluded as it serves as a garbage collector).
+            - unique_pixels: 1D JAX array of unique pixel identifiers that were active during 
+              the simulation, with shape (Npixels,).
     """
 
     main_pixels, pixels, nelectrons, t0_after_diff, long_diff, currents_idx, pIDs_neigh, currents_idx_neigh, nelectrons_neigh, t0_neigh = simulate_drift_new(params, tracks, fields)
@@ -598,18 +609,24 @@ def simulate_stochastic(params, wfs, unique_pixels, rngseed):
 
 def simulate_probabilistic(params, wfs, unique_pixels):
     """
-    Simulates the signal from the drifted electrons and returns the ADC values, pixel coordinates, ticks, hit probabilities, event numbers, and unique pixel identifiers.
+    Simulates the signal from the drifted electrons and returns probabilistic
+    distributions of ADC values and tick times, along with pixel coordinates
+    and event numbers.
+
     Args:
         params: Parameters of the simulation.
         wfs (jnp.ndarray): Waveforms as a JAX array.
-        unique_pixels (jnp.ndarray): Unique pixel identifiers.
+        unique_pixels (jnp.ndarray): Unique pixel identifiers for the input waveforms.
+
     Returns:
-        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
-            - adcs_distrib: ADC values.
-            - pixel_x: X coordinates of the pixels.
-            - pixel_y: Y coordinates of the pixels.
-            - ticks_prob: Ticks corresponding to the ADC values.
-            - event: Event numbers.
+        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+            - adcs_distrib: Probabilistic distribution of ADC values for each
+              pixel/time bin after adding average noise and digitization.
+            - pixel_x: X coordinates of the pixels corresponding to the waveforms.
+            - pixel_y: Y coordinates of the pixels corresponding to the waveforms.
+            - ticks_prob: Tick indices associated with the probabilistic charge/
+              ADC distributions.
+            - event: Event numbers associated with each pixel.
     """
 
     # Npix = wfs.shape[0]

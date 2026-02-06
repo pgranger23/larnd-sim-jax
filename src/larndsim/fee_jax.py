@@ -299,7 +299,6 @@ def _find_one_hit_step(q_sum, prev_charges, previous_prob, sigma, threshold, int
     inv_sqrt2_sigma = 1.0 / (jnp.sqrt(2) * sigma)
     shifted_ticks = jnp.arange(Nticks - 1) + interval + 1
     shifted_ticks = jnp.clip(shifted_ticks, 0, Nticks - 1)
-    tick_indices = jnp.arange(Nticks - 1)
 
     q_sum_loc = q_sum - prev_charges[..., None]
 
