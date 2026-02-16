@@ -4,11 +4,16 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 import os
-import argparse
 import sys
+import argparse
 import traceback
+
+# Enforce CPU if --gpu is not specified
+if '--gpu' not in sys.argv:
+    os.environ['JAX_PLATFORMS'] = 'cpu'
+
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
-from larndsim.sim_jax import prepare_tracks, simulate_new, simulate_parametrized, id2pixel, get_pixel_coordinates
+from larndsim.sim_jax import simulate_stochastic, simulate_parametrized, simulate_wfs
 from larndsim.losses_jax import get_hits_space_coords
 from pprint import pprint
 import numpy as np
@@ -78,8 +83,13 @@ logger.setLevel(logging.INFO)
 
 
 def main(config):
-    if os.path.isfile(config.output_file):
-        os.remove(config.output_file)
+    output_filename = config.output_file
+    if not config.out_np:
+        if not output_filename.endswith('.h5'):
+            output_filename += '.h5'
+
+    if os.path.isfile(output_filename):
+        os.remove(output_filename)
     if config.lut_file == "" and config.mode == 'lut':
         return 1, 'Error: LUT file is required for mode "lut"'
     
@@ -95,7 +105,7 @@ def main(config):
     Params = build_params_class(pars)
     ref_params = load_detector_properties(Params, config.detector_props, config.pixel_layouts)
 
-    if args.mode == 'lut':
+    if config.mode == 'lut':
         response, ref_params = load_lut(config.lut_file, ref_params)
     
     
@@ -125,15 +135,14 @@ def main(config):
         size = pad_size(size, "batch_size", 0.5)
         batch = np.pad(batch, ((0, size - batch.shape[0]), (0, 0)), mode='constant', constant_values=0)
         tracks = jax.device_put(batch)
-
-        print("config.save_wfs: ", config.save_wfs)
-        if args.mode == 'lut':
-            if config.save_wfs:
-                adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, wfs = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
-            else:
-                adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels = simulate_new(ref_params, response, tracks, fields, rngseed=config.seed, save_wfs=config.save_wfs)
+        rngseed = config.seed if config.seed is not None else 0
+        if config.mode == 'lut':
+            wfs, unique_pixels = simulate_wfs(ref_params, response, tracks, fields)
+            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, hit_pixels = simulate_stochastic(ref_params, wfs, unique_pixels, rngseed=rngseed)
         else:
-            adcs, pixel_x, pixel_y, pixel_z, ticks, event, unique_pixels, pix_renumbering, electrons, wfs = simulate_parametrized(ref_params, tracks, fields, rngseed=config.seed)
+            
+            adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, hit_pixels = simulate_parametrized(ref_params, tracks, fields, rngseed=rngseed)
+            wfs = None
         if config.jac:
             jac_res = jax.jacfwd(sim_wrapper)(ref_params, tracks)
 
@@ -143,12 +152,12 @@ def main(config):
         Q = adc2charge(adcs.flatten()[mask], ref_params)
 
         if not config.out_np:
-            with h5py.File(config.output_file+".h5", 'a') as f:
+            with h5py.File(output_filename, 'a') as f:
                 group = f.create_group(f"batch_{ibatch}")
                 group.create_dataset('adc_clean', data=adcs_clean.flatten()[mask])
                 group.create_dataset('adc', data=adcs.flatten()[mask])
                 group.create_dataset('Q', data=Q)
-                group.create_dataset('pixels', data=unique_pixels[mask])
+                group.create_dataset('pixels', data=hit_pixels[mask])
                 group.create_dataset('ticks', data=ticks.flatten()[mask])
                 group.create_dataset('eventID', data=event[mask])
                 group.create_dataset('pix_x', data=pixel_x[mask])

@@ -1,0 +1,113 @@
+variables:
+  GIT_DEPTH: 0
+  # Use the OFFICIAL Nvidia image with CUDA 12.3 (Matches JAX 0.5.x requirements)
+  # "devel" is required to get the compiler tools (nvcc) needed for some JAX builds
+  GENERIC_IMAGE: "nvidia/cuda:12.3.2-devel-ubuntu22.04"
+  # --- ADD THESE 3 LINES ---
+  # 1. Stop JAX from grabbing 90% of RAM at startup
+  XLA_PYTHON_CLIENT_PREALLOCATE: "false"
+  
+  # 2. Use the new CUDA async allocator (Fixes the specific fragmentation error in your logs)
+  TF_GPU_ALLOCATOR: "cuda_malloc_async"
+  
+  # 3. Force JAX to be strict about memory limits (Optional but good for MIG)
+  XLA_PYTHON_CLIENT_ALLOCATOR: "platform"
+
+default:
+  interruptible: true
+
+stages:
+  - gpu-tests
+  - sync-artifacts
+
+.gpu_template:
+  stage: gpu-tests
+  image: $GENERIC_IMAGE
+  tags:
+    - k8s-gpu
+  before_script:
+    # 1. Install Python and Pip (Generic images don't have them)
+    - apt-get update && apt-get install -y python3 python3-pip git
+    
+    # 2. Install JAX with CUDA 12 support explicitly
+    - pip install --upgrade "jax[cuda12]"
+    
+    # 3. Install your package and dependencies
+    - pip install .[dev] pytest-xdist
+
+    - nvidia-smi
+
+  artifacts:
+    paths:
+      - output/*.png
+      - fit_result/**/*.pkl
+    expire_in: 1 week
+
+# --- Jobs ---
+
+test-sim:
+  extends: .gpu_template
+  script:
+    - ./optimize/simulate_test.sh
+    - python3 tests/test_simulation_consistency.py --ref_file output/jax_ref/output_0.h5 --test_file output/output_0.h5
+    - python3 tests/test_simulation_consistency.py --ref_file output/jax_ref/output_parametrized_0.h5 --test_file output/output_parametrized_0.h5
+
+test-fit:
+  extends: .gpu_template
+  script:
+    - ./optimize/fit_test.sh
+    - python3 ./optimize/analysis_scripts/plot_fit.py --input_file fit_result/**/*.pkl --output_dir output
+    - python3 tests/test_fit_convergence.py --input_file fit_result/**/*.pkl --strict
+
+test-fit-lut:
+  extends: .gpu_template
+  script:
+    - ./optimize/fit_test.sh --lut
+    - python3 ./optimize/analysis_scripts/plot_fit.py --input_file fit_result/**/*.pkl --output_dir output
+    - python3 tests/test_fit_convergence.py --input_file fit_result/**/*.pkl --strict
+
+test-fit-nll:
+  extends: .gpu_template
+  script:
+    - ./optimize/fit_nll_test.sh
+    - python3 ./optimize/analysis_scripts/plot_fit.py --input_file fit_result/**/*.pkl --output_dir output
+    - python3 tests/test_fit_convergence.py --input_file fit_result/**/*.pkl --strict
+
+test-scan:
+  extends: .gpu_template
+  script:
+    - ./optimize/scan_test.sh
+    - python3 ./optimize/analysis_scripts/plot_scan.py --input_dir fit_result/fit_noise --output_dir output
+
+test-scan-lut:
+  extends: .gpu_template
+  script:
+    - ./optimize/scan_lut_test.sh --gpu
+    - python3 ./optimize/analysis_scripts/plot_scan.py --input_dir fit_result/fit_noise --output_dir output
+
+test-scan-nll-lut:
+  extends: .gpu_template
+  script:
+    - ./optimize/scan_nll_lut_test.sh --gpu
+    - python3 ./optimize/analysis_scripts/plot_scan.py --input_dir fit_result/scan_nll --output_dir output
+
+test-minuit:
+  extends: .gpu_template
+  script:
+    - ./optimize/minuit_test.sh
+
+# --- Sync Job ---
+
+push-plots-back:
+  stage: sync-artifacts
+  image: alpine/git
+  needs: [test-fit, test-fit-lut, test-scan, test-scan-lut, test-sim, test-fit-nll, test-scan-nll-lut]
+  script:
+    - git config --global user.email "gitlab-ci@cern.ch"
+    - git config --global user.name "CERN GPU Runner"
+    - git remote set-url origin https://oauth2:${GITHUB_TOKEN}@github.com/pgranger23/larnd-sim-jax.git
+    - git checkout main
+    - git pull origin main --rebase
+    - git add output/*.png
+    - git commit -m "Update simulation plots from CERN GPU [skip ci]" || echo "No changes to commit"
+    - git push origin main

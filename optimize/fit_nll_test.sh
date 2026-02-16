@@ -8,7 +8,7 @@ BATCH_SIZE=200
 ITERATIONS=200
 MAX_CLIP_NORM_VAL=1
 DATA_SEED=1
-LOSS=mse_adc
+LOSS=nll
 
 ### proton 5000 events
 INPUT_FILE_TGT=prepared_data/input_1.h5
@@ -46,7 +46,7 @@ if [ "$LUT" = TRUE ]; then
         --min_abs_segz_sel 15. \
         --data_seed ${DATA_SEED} \
         --out_label fit_test_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target \
-        --test_name fit_noise \
+        --test_name fit_nll \
         --seed ${TARGET_SEED} \
         --optimizer_fn Adam \
         --random_ntrack \
@@ -81,7 +81,7 @@ else
         --no-noise-target \
         --data_seed ${DATA_SEED} \
         --out_label fit_test_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target \
-        --test_name fit_noise \
+        --test_name fit_nll \
         --seed ${TARGET_SEED} \
         --optimizer_fn Adam \
         --random_ntrack \

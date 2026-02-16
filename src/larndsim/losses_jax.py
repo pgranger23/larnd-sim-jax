@@ -3,7 +3,7 @@ from jax import jit, vmap
 import jax
 from jax.nn import softmax
 from functools import partial
-from larndsim.sim_jax import pad_size, simulate_new, simulate_parametrized
+from larndsim.sim_jax import pad_size, simulate_parametrized, simulate_wfs, simulate_stochastic
 from larndsim.fee_jax import digitize
 from larndsim.detsim_jax import id2pixel, get_pixel_coordinates, get_hit_z
 #from ott.geometry import pointcloud
@@ -37,7 +37,6 @@ def mmd(x, y, px, py, sigma):
               2 * weighted_K_xy / (sum_px * sum_py))
 
     return mmd_sq
-    #return jnp.sqrt(jnp.abs(mmd_sq))
 
 def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     all_pixels = jnp.concatenate([pIDs, pIDs_ref])
@@ -56,10 +55,28 @@ def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     adc_loss = jnp.sum(signals**2)
     return adc_loss, dict()
 
-def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event):
-    ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z, ref_Q), axis=-1)
-    stacked = jnp.stack((x + event*1e5, y, z, Q), axis=-1)
-    return mmd(stacked, ref_stacked, hit_prob, ref_hit_prob, 1), dict()
+def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, sigma=1, lambda_Q=1):
+    weight_ref = ref_Q*ref_hit_prob
+    weight = Q*hit_prob
+    ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z), axis=-1)
+    stacked = jnp.stack((x + event*1e5, y, z), axis=-1)
+    mmd_loss_term = mmd(stacked, ref_stacked, weight, weight_ref, sigma)
+    
+    ref_total_charge = jnp.sum(weight_ref)
+    total_charge = jnp.sum(weight)
+    denom = ref_total_charge + 1e-6
+    
+    # Relative Squared Error
+    charge_loss = ((total_charge - ref_total_charge) / denom)**2
+    aux = {
+        'charge_loss': charge_loss,
+        'mmd_loss_term': mmd_loss_term,
+        'Q': Q,
+        'ref_Q': ref_Q,
+        'ref_hit_prob': ref_hit_prob,
+        'hit_prob': hit_prob,
+    }
+    return mmd_loss_term + lambda_Q * charge_loss, aux
     # return mse_loss(adcs, pixels, ref, pixels_ref)
 
 def mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
@@ -309,6 +326,38 @@ def sdtw_time_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw,
     loss_time, _ = sdtw_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, dstw)
     return alpha * loss_adc + (1 - alpha) * loss_time, dict()
 
+def nll_loss(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, adc_norm=10., sigma=1., match_z=False):
+    ref_all = jnp.stack((ref_x + ref_event*1e9, ref_y, ref_z, ref_Q/adc_norm), axis=-1)
+    current_all = jnp.stack((x + event*1e9, y, z, Q/adc_norm), axis=-1)
+    
+    new_ref_size, new_cur_size = pad_size((ref_all.shape[0], current_all.shape[0]), "nll_loss")
+    
+    ref_all = jnp.pad(ref_all, ((0, new_ref_size - ref_all.shape[0]), (0, 0)), mode='constant', constant_values=-1e9)
+    current_all = jnp.pad(current_all, ((0, new_cur_size - current_all.shape[0]), (0, 0)), mode='constant', constant_values=-1e9)
+    
+    hit_prob = jnp.pad(hit_prob, (0, new_cur_size - hit_prob.shape[0]), mode='constant', constant_values=0)
+    ref_hit_prob = jnp.pad(ref_hit_prob, (0, new_ref_size - ref_hit_prob.shape[0]), mode='constant', constant_values=0)
+
+    # Compute pairwise distances
+    dists_sq = jnp.sum((current_all[:, None, :] - ref_all[None, :, :])**2, axis=-1)
+    
+    # Gaussian Kernel
+    K = jnp.exp(-dists_sq / (2 * sigma**2))
+    
+    # Intensity at each reference point
+    lambda_j = jnp.sum(hit_prob[:, None] * K, axis=0)
+    
+    # Term 1: Log-likelihood of observing reference points
+    epsilon = 1e-10
+    term1 = jnp.sum(jnp.log(lambda_j + epsilon) * (ref_hit_prob > 0.5))
+    
+    # Term 2: Integral of intensity (expected number of points)
+    term2 = jnp.sum(hit_prob)
+    
+    loss = term2 - term1
+    
+    return loss, dict()
+
 @jit
 @jax.named_scope("get_hits_space_coords")
 def get_hits_space_coords(params, pIDs, ticks):
@@ -334,7 +383,8 @@ def adc2charge(dw, params):
     return (dw / params.ADC_COUNTS * (params.V_REF - params.V_CM) + params.V_CM - params.V_PEDESTAL) / params.GAIN *1E-3
 
 def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, rngkey=None, loss_fn=mse_adc, **loss_kwargs):
-    adcs, x, y, z, ticks, hit_prob, event, _ = simulate_new(params, response, tracks, fields, rngseed=rngkey)
+    wfs, unique_pixels = simulate_wfs(params, response, tracks, fields)
+    adcs, x, y, z, ticks, hit_prob, event, _ = simulate_stochastic(params, wfs, unique_pixels, rngseed=rngkey)
 
     Q = adc2charge(adcs, params)
     ref_Q = adc2charge(ref_adcs, params)
@@ -360,6 +410,35 @@ def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, r
         loss_val, aux = loss_fn(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event , **loss_kwargs)
 
     return loss_val, aux
+
+def llhd_loss(ticks_prob_distrib, ticks_mc, no_hit_prob, charge_distrib, charge_mc, sigma=500):
+    """
+    Calculates a log-likelihood loss between predicted and reference hit distributions.
+    Includes a Gaussian prior on the charge centered at the predicted charge with width sigma.
+    """
+    
+    # Gather the predicted probabilities at the reference tick positions
+    predicted_probs_at_mc_ticks = ticks_prob_distrib[jnp.arange(ticks_mc.shape[0]), ticks_mc]
+    predicted_charges_at_mc_ticks = charge_distrib[jnp.arange(ticks_mc.shape[0]), ticks_mc]
+    
+    # Calculate the log-likelihood for tick positions
+    eps = 1e-10  # Small constant to avoid log(0)
+    log_likelihoods_tick = jnp.log(predicted_probs_at_mc_ticks + eps)
+
+    log_likelihoods_tick = jnp.where(ticks_mc < ticks_prob_distrib.shape[1] - 3, log_likelihoods_tick, jnp.log(no_hit_prob + eps))
+    
+    # Add Gaussian prior on charge: log P(charge_mc | charge_pred, sigma)
+    # log P = -0.5 * ((charge_mc - charge_pred) / sigma)^2 - 0.5 * log(2*pi*sigma^2)
+    charge_diff = charge_mc - predicted_charges_at_mc_ticks
+    log_likelihoods_charge = -0.5 * (charge_diff / sigma) ** 2 - 0.5 * jnp.log(2 * jnp.pi * sigma**2)
+    
+    log_likelihoods_charge = jnp.where(ticks_mc < ticks_prob_distrib.shape[1] - 3, log_likelihoods_charge, 0.0)
+    
+    # Combine tick and charge log-likelihoods
+    total_log_likelihood = log_likelihoods_tick + log_likelihoods_charge
+    llhd = -jnp.sum(total_log_likelihood)
+    
+    return llhd, dict()
 
 
 #Code commented below is unused but I still want to keep it for future reference
