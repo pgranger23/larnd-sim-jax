@@ -1,9 +1,49 @@
 import jax
 import jax.numpy as jnp
-from larndsim.sim_jax import simulate_wfs, simulate_stochastic, simulate_parametrized, simulate_probabilistic
+from larndsim.sim_jax import simulate_wfs, simulate_stochastic, simulate_parametrized, simulate_probabilistic, pad_size
 from larndsim.losses_jax import adc2charge
 from larndsim.detsim_jax import id2pixel, get_hit_z
 from larndsim.fee_jax import get_average_hit_values
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+def pad_to_closest_multiple(x, dims_to_pad=None, multiple=128, pad_value=0):
+    """
+    Efficiently pads array x to the closest multiple of a given value using update-in-place syntax.
+    Works with arrays of any number of dimensions.
+    
+    Args:
+        x: Input array to pad
+        dims_to_pad: List of dimension indices to pad (default: all dimensions)
+        multiple: The multiple to pad to (default: 128)
+        pad_value: Value to use for padding (default: 0)
+    
+    Returns:
+        Padded array with shape target_shape
+    """
+
+    # Compute target shape by padding each dimension to the closest multiple
+    if dims_to_pad is None:
+        dims_to_pad = range(x.ndim)
+    target_shape = list(x.shape)
+    for dim in dims_to_pad:
+        target_shape[dim] = ((x.shape[dim] + multiple - 1) // multiple) * multiple
+    target_shape = tuple(target_shape)
+
+    logger.info(f"Padding from shape {x.shape} to target shape {target_shape} with pad value {pad_value}")
+
+
+    # 1. Create a buffer of the target static shape (allocates memory)
+    buffer = jnp.full(target_shape, pad_value, dtype=x.dtype)
+    
+    # 2. Copy 'x' into the start of the buffer
+    # Create slice tuple for all dimensions: [:x.shape[0], :x.shape[1], ...]
+    slices = tuple(slice(0, dim_size) for dim_size in x.shape)
+    padded_x = buffer.at[slices].set(x)
+    
+    return padded_x
 
 class SimulationStrategy:
     def predict(self, params, tracks, fields, rngkey):
@@ -39,6 +79,10 @@ class LUTProbabilisticSimulation(SimulationStrategy):
     def predict(self, params, tracks, fields, rngkey):
         
         wfs, unique_pixels = simulate_wfs(params, self.response, tracks, fields)
+
+        unique_pixels = pad_to_closest_multiple(unique_pixels, multiple=128, pad_value=-1)
+        wfs = pad_to_closest_multiple(wfs, dims_to_pad=(0,), multiple=128, pad_value=0.0)
+
         adcs_distrib, pixel_x, pixel_y, ticks_prob, event = simulate_probabilistic(params, wfs, unique_pixels)
         
         # Extract pixel plane for z-coordinate calculation
@@ -124,25 +168,25 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
         self.hit_threshold = hit_threshold
         self.collapsed = collapsed
 
-    def _generate_pseudo_hits(self, ticks_prob, adcs_distrib):
-        Npix, Nhits, Nticks = ticks_prob.shape
-        expected_ticks_per_hit, expected_adcs_per_hit, lambda_per_hit = get_average_hit_values(ticks_prob, adcs_distrib)
-        # Filter out hits with negligible probability
-        has_hit_mask = lambda_per_hit > self.hit_threshold  # (Npix, Nhits)
+    # def _generate_pseudo_hits(self, ticks_prob, adcs_distrib):
+    #     Npix, Nhits, Nticks = ticks_prob.shape
+    #     expected_ticks_per_hit, expected_adcs_per_hit, lambda_per_hit = get_average_hit_values(ticks_prob, adcs_distrib)
+    #     # Filter out hits with negligible probability
+    #     has_hit_mask = lambda_per_hit > self.hit_threshold  # (Npix, Nhits)
         
-        # Flatten to create list of pseudo-hits
-        # We need to replicate pixel coordinates for each hit
-        pred_ticks = expected_ticks_per_hit[has_hit_mask]  # (N_total_hits,)
-        pred_adcs = expected_adcs_per_hit[has_hit_mask]  # (N_total_hits,)
-        pred_lambda = lambda_per_hit[has_hit_mask]  # (N_total_hits,)
+    #     # Flatten to create list of pseudo-hits
+    #     # We need to replicate pixel coordinates for each hit
+    #     pred_ticks = expected_ticks_per_hit[has_hit_mask]  # (N_total_hits,)
+    #     pred_adcs = expected_adcs_per_hit[has_hit_mask]  # (N_total_hits,)
+    #     pred_lambda = lambda_per_hit[has_hit_mask]  # (N_total_hits,)
         
-        # For pixel coordinates, we need to replicate them for each hit
-        # Create indices for which pixel each hit belongs to
-        pixel_indices = jnp.arange(Npix)[:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32)  # (Npix, Nhits)
-        pred_pixel_idx = pixel_indices[has_hit_mask]  # (N_total_hits,)
+    #     # For pixel coordinates, we need to replicate them for each hit
+    #     # Create indices for which pixel each hit belongs to
+    #     pixel_indices = jnp.arange(Npix)[:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32)  # (Npix, Nhits)
+    #     pred_pixel_idx = pixel_indices[has_hit_mask]  # (N_total_hits,)
         
         
-        return pred_ticks, pred_adcs, pred_lambda, pred_pixel_idx
+    #     return pred_ticks, pred_adcs, pred_lambda, pred_pixel_idx
 
     def _generate_distribution_hits(self, ticks_prob, adcs_distrib):
         Npix, Nhits, Nticks = ticks_prob.shape
@@ -183,12 +227,12 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
         pixel_y = prediction['pixel_y']
         
         if self.collapsed:
-            pred_ticks, pred_adcs, pred_lambda, pred_pixel_idx = self._generate_pseudo_hits(ticks_prob, adcs_distrib)  # Each shape: (Npix, Nhits)
+            # pred_ticks, pred_adcs, pred_lambda, pred_pixel_idx = self._generate_pseudo_hits(ticks_prob, adcs_distrib)  # Each shape: (Npix, Nhits)
+            pred_ticks, pred_adcs, pred_lambda = get_average_hit_values(ticks_prob, adcs_distrib)
+            Npix, Nhits, Nticks = ticks_prob.shape
         else:
-            pred_ticks, pred_adcs, pred_lambda, pred_pixel_idx = self._generate_distribution_hits(ticks_prob, adcs_distrib)  # Each shape: (Npix, Nhits, Nticks)
-        
-        pred_x = pixel_x[pred_pixel_idx]
-        pred_y = pixel_y[pred_pixel_idx]
+            raise NotImplementedError("Non-collapsed distribution hits not implemented yet")
+            # pred_ticks, pred_adcs, pred_lambda, pred_pixel_idx = self._generate_distribution_hits(ticks_prob, adcs_distrib)  # Each shape: (Npix, Nhits, Nticks)
         
         # Convert ADCs to charge
         pred_Q = adc2charge(pred_adcs, params)
@@ -198,21 +242,22 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
         # If not available, compute from drift time or use same default as target
         if 'pixel_z' in prediction:
             # If prediction has pixel_z (from stochastic simulation), replicate for each hit
-            pred_z = prediction['pixel_z'][pred_pixel_idx]
+            pred_z = prediction['pixel_z']
         else:
             # For probabilistic predictions without z, compute from drift time
             # z = v_drift * t_drift (same approach as in simulate_stochastic)
             # Get pixel plane for z calculation
             pixel_plane = prediction.get('pixel_plane')
-            pred_z = get_hit_z(params, pred_ticks, pixel_plane[pred_pixel_idx])
+            pred_z = get_hit_z(params, pred_ticks, pixel_plane[:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32))
 
         
         # Get reference z-coordinates using same logic
         ref_z = target['pixel_z']
         
         # Event is per-pixel, replicate for each hit
-        pred_event_per_pixel = prediction['event']  # (Npix,)
-        pred_event = pred_event_per_pixel[pred_pixel_idx]
+        pred_event_per_pixel = prediction['event'][:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32)  # (Npix, Nhits)
+        pixel_x_per_event = pixel_x[:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32)
+        pixel_y_per_event = pixel_y[:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32)
 
         
         # Get reference event IDs
@@ -224,7 +269,7 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
         # Apply the deterministic loss function
         loss_val, aux = self.loss_fn(
             params,
-            pred_Q, pred_x, pred_y, pred_z, pred_ticks, pred_hit_prob, pred_event,
+            pred_Q.flatten(), pixel_x_per_event.flatten(), pixel_y_per_event.flatten(), pred_z.flatten(), pred_ticks.flatten(), pred_hit_prob.flatten(), pred_event_per_pixel.flatten(),
             ref_Q, target['pixel_x'], target['pixel_y'], ref_z, target['ticks'], ref_hit_prob, ref_event,
             **self.kwargs
         )

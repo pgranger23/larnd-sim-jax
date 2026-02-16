@@ -366,7 +366,7 @@ def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
         # Apply jax.checkpoint to the expensive branch of the computation.
         # This tells JAX not to store intermediate values from this function,
         # saving memory at the cost of some re-computation.
-        @checkpoint
+        # @checkpoint
         def _active_branch(operand):
             """The expensive vmapped computation, only run when globally active."""
             charges, probs, _ = operand

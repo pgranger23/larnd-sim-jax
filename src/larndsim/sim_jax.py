@@ -607,6 +607,7 @@ def simulate_stochastic(params, wfs, unique_pixels, rngseed):
 
     return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], hit_pixels[:nb_valid]
 
+@jit
 def simulate_probabilistic(params, wfs, unique_pixels):
     """
     Simulates the signal from the drifted electrons and returns probabilistic

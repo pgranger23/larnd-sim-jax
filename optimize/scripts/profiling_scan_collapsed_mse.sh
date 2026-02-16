@@ -1,6 +1,7 @@
 #!/bin/bash
 
 #SBATCH --partition=ampere
+##SBATCH --account=neutrino:dune-ml
 #SBATCH --account=mli:cider-ml
 #SBATCH --job-name=scan_collapsed_mse
 #SBATCH --output=logs/scan/job_collapsed_mse_%j.out
@@ -20,7 +21,7 @@ fi
 TARGET_SEED=$SLURM_ARRAY_TASK_ID
 # PARAMS=optimize/scripts/param_list.yaml
 BATCH_SIZE=200
-ITERATIONS=1
+ITERATIONS=10
 DATA_SEED=1
 LOSS=mse_adc
 MAX_CLIP_NORM_VAL=1
@@ -40,7 +41,8 @@ LABEL=scan_collapsed_mse_sigma10_${PARAM}_${UUID}
 apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} /bin/bash -c "
 pip install .
 pip install tensorflow tensorboard xprof
-python3 -m optimize.example_run \
+pip install "nvidia-cuda-cupti-cu12==12.2.*" "nvidia-cudnn-cu12==8.9.*" "nvidia-cublas-cu12==12.2.*" "nvidia-cufft-cu12==11.0.*"
+JAX_EXPLAIN_CACHE_MISSES=1 python3 -m optimize.example_run \
     --data_sz -1 \
     --max_nbatch 1 \
     --params ${PARAM} \

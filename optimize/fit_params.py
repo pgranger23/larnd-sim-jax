@@ -451,6 +451,7 @@ class ParamFitter:
             self.training_history[param+"_iter"] = []
         self.training_history['step_time'] = []
         self.training_history['losses_iter'] = []
+        self.training_history['aux_iter'] = []
 
         # Include initial value in training history (if haven't loaded a checkpoint)
         for param in self.relevant_params_list:
@@ -623,7 +624,7 @@ class GradientDescentFitter(ParamFitter):
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
                     # loss
-                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, epoch=epoch, with_loss=True, with_grad=True)
+                    loss_val, grads, aux = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, epoch=epoch, with_loss=True, with_grad=True)
 
                     # split the code, ugly, but no additional operation if there's no averaging
                     if self.sz_mini_bt > 1:
@@ -647,6 +648,7 @@ class GradientDescentFitter(ParamFitter):
                             self.training_history['step_time'].append(stop_time - start_time)
 
                             self.training_history['losses_iter'].append(avg_loss) # type: ignore
+                            self.training_history['aux_iter'].append(aux) # type: ignore
                             for param in self.relevant_params_list:
                                 #TODO: Need to check why this is not consistent
                                 if type(getattr(self.current_params, param)) == float:
@@ -677,6 +679,7 @@ class GradientDescentFitter(ParamFitter):
                         self.training_history['step_time'].append(stop_time - start_time)
 
                         self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
+                        self.training_history['aux_iter'].append(aux) # type: ignore
                         for param in self.relevant_params_list:
                             #TODO: Need to check why this is not consistent
                             if type(getattr(self.current_params, param)) == float:
@@ -796,7 +799,7 @@ class LikelihoodProfiler(ParamFitter):
                     #     # libcudart.cudaProfilerStop()
                     new_param_values = {param: lower + iter*param_step}
                     self.current_params = self.ref_params.replace(**new_param_values)
-                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True)
+                    loss_val, grads, aux = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True)
 
                     stop_time = time()
 
@@ -805,6 +808,7 @@ class LikelihoodProfiler(ParamFitter):
                     self.training_history['step_time'].append(stop_time - start_time)
 
                     self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
+                    self.training_history['aux_iter'].append(aux) # type: ignore
                     for par in self.relevant_params_list:
                         #TODO: Need to check why this is not consistent
                         if type(getattr(self.current_params, par)) == float:
