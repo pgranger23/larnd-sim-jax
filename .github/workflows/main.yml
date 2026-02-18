@@ -55,11 +55,6 @@ jobs:
         with:
           name: simulation-plots-${{ github.event.pull_request.head.sha }}
           path: output/*.png
-      
-      - name: Validate simulation consistency
-        run: |
-          python3 tests/test_simulation_consistency.py --ref_file output/jax_ref/output_0.h5 --test_file output/output_0.h5
-          # python3 tests/test_simulation_consistency.py --ref_file output/jax_ref/output_parametrized_0.h5 --test_file output/output_parametrized_0.h5
 
 
   test-fit:

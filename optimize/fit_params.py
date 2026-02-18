@@ -30,6 +30,52 @@ from ctypes import cdll
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+def value_and_grad_fwd(f, argnums=0, has_aux=False):
+    """
+    Computes the primal value and the gradient using forward-mode autodiff,
+    with full support for auxiliary data.
+    """
+    def wrapper(*args, **kwargs):
+        out = f(*args, **kwargs)
+        if has_aux:
+            y, aux = out
+            # Return 'y' for jacfwd to differentiate, and (y, aux) to pass through
+            return y, (y, aux)
+        else:
+            y = out
+            # Return 'y' for jacfwd, and a copy of 'y' to pass through
+            return y, y
+
+    # We use jacfwd with has_aux=True so it captures our injected auxiliary data
+    fwd_fn = jax.jacfwd(wrapper, argnums=argnums, has_aux=True)
+
+    def val_and_grad_fn(*args, **kwargs):
+        grad, aux_out = fwd_fn(*args, **kwargs)
+        if has_aux:
+            y, aux = aux_out
+            return (y, aux), grad
+        else:
+            y = aux_out
+            return y, grad
+            
+    return val_and_grad_fn
+
+def serialize_value(v):
+    if hasattr(v, 'shape'):
+        # Check if it's a scalar (0-dimensional) or multi-dimensional
+        if len(v.shape) == 0 or (len(v.shape) == 1 and v.shape[0] == 1):
+            # Scalar JAX array -> Python float
+            return float(v)
+        else:
+            # Multi-dimensional JAX array -> numpy array
+            return np.array(v)
+    elif hasattr(v, 'item'):
+        # Fallback for other array-like objects with item()
+        return float(v)
+    else:
+        # Already Python type
+        return v
+
 
 def normalize_param(param_val, param_name, scheme="divide", undo_norm=False):
     if scheme == "divide":
@@ -648,7 +694,8 @@ class GradientDescentFitter(ParamFitter):
                             self.training_history['step_time'].append(stop_time - start_time)
 
                             self.training_history['losses_iter'].append(avg_loss) # type: ignore
-                            self.training_history['aux_iter'].append(aux) # type: ignore
+                            aux_serializable = {k: serialize_value(v) for k, v in aux.items()} if aux is not None else {}
+                            self.training_history['aux_iter'].append(aux_serializable) # type: ignore
                             for param in self.relevant_params_list:
                                 #TODO: Need to check why this is not consistent
                                 if type(getattr(self.current_params, param)) == float:
@@ -679,7 +726,7 @@ class GradientDescentFitter(ParamFitter):
                         self.training_history['step_time'].append(stop_time - start_time)
 
                         self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
-                        self.training_history['aux_iter'].append(aux) # type: ignore
+                        aux_serializable = {k: serialize_value(v) for k, v in aux.items()} if aux is not None else {}
                         for param in self.relevant_params_list:
                             #TODO: Need to check why this is not consistent
                             if type(getattr(self.current_params, param)) == float:
@@ -808,7 +855,8 @@ class LikelihoodProfiler(ParamFitter):
                     self.training_history['step_time'].append(stop_time - start_time)
 
                     self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
-                    self.training_history['aux_iter'].append(aux) # type: ignore
+                    aux_serializable = {k: serialize_value(v) for k, v in aux.items()} if aux is not None else {}
+                    self.training_history['aux_iter'].append(aux_serializable) # type: ignore
                     for par in self.relevant_params_list:
                         #TODO: Need to check why this is not consistent
                         if type(getattr(self.current_params, par)) == float:
