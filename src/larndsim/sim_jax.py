@@ -138,64 +138,95 @@ def simulate_drift(params, tracks, fields, rngkey):
 
     return electrons, pIDs
 
-@partial(jit, static_argnames=['fields'])
-def simulate_signals(params, electrons, mask_indices, pix_renumbering, unique_pixels, response, rngkey, fields):
-    """
-    Simulates the signals from the drifted electrons and returns the ADC values, unique pixels, ticks, renumbering of the pixels, electrons and start ticks.
-    Args:
-        params (Any): Parameters of the simulation.
-        electrons (jnp.ndarray): Drifted electrons as a JAX array.
-        mask_indices (jnp.ndarray): Mask indices for the pixels.
-        pix_renumbering (jnp.ndarray): Renumbering of the pixels.
-        unique_pixels (jnp.ndarray): Unique pixel identifiers.
-        response (jnp.ndarray): Response function for the simulation.
-        rngkey (jax.random.PRNGKey): Random key for the simulation.
-        fields (List[str]): List of field names corresponding to the electrons.
-    Returns:
-        Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]: 
-            - adcs: ADC values.
-            - pixel_x: X coordinates of the pixels.
-            - pixel_y: Y coordinates of the pixels.
-            - pixel_z: Z coordinates of the pixels.
-            - ticks: Ticks corresponding to the ADC values.
-            - hit_prob: Hit probabilities.
-            - event: Event numbers.
-            - unique_pixels: Unique pixel identifiers.
-    """
+@jit
+def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template, 
+                             nelectrons, long_diff, currents_idx, nelectrons_neigh, 
+                             pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
+    
+    Npixels = unique_pixels.shape[0]
+    Nticks = int(params.time_interval[1] / params.t_sampling) + 1
+    Ntemplates, Nx, Ny, Nt = response_template.shape
+    sig_len = params.signal_length
 
+    # --- 1. PREPARE MAIN PIXEL DATA ---
+    pix_renum = jnp.searchsorted(unique_pixels, pixels.ravel(), method='sort')
+    cathode_ticks = (t0_after_diff / params.t_sampling).astype(int)
+    
+    # Quadratic Interpolation setup
+    template_vals = params.long_diff_template
+    idx = jnp.clip(jnp.searchsorted(template_vals, long_diff), 1, template_vals.shape[0] - 2)
+    
+    x0, x1, x2 = template_vals[idx - 1], template_vals[idx], template_vals[idx + 1]
+    a = (long_diff - x1) * (long_diff - x2) / ((x0 - x1) * (x0 - x2))
+    b = (long_diff - x0) * (long_diff - x2) / ((x1 - x0) * (x1 - x2))
+    c = (long_diff - x0) * (long_diff - x1) / ((x2 - x0) * (x2 - x1))
 
-    pix_renumbering = jnp.take(pix_renumbering, mask_indices, mode='fill', fill_value=0) # should we fill with 0? it's a valid index
-    npix = (2*params.number_pix_neighbors + 1)**2
-    elec_ids = mask_indices//npix
-    electrons_renumbered = jnp.take(electrons, elec_ids, mode='fill', fill_value=0, axis=0)
+    # Signal Indices (Main)
+    start_ticks = Nt - sig_len - cathode_ticks
+    time_ticks = start_ticks[..., None] + jnp.arange(sig_len)
+    time_ticks = jnp.where((time_ticks <= 0) | (time_ticks >= Nticks - 1), 0, time_ticks + 1)
+    main_flat_indices = (pix_renum[:, None] * Nticks + time_ticks).ravel()
 
-    #Getting the pixel coordinates
-    xpitch, ypitch, plane, event = id2pixel(params, unique_pixels)
-    pixels_coord = get_pixel_coordinates(params, xpitch, ypitch, plane)
+    # Signal Values (Interpolated Main)
+    local_t = jnp.arange(Nt - sig_len, Nt)
+    # Using 'take' on a flattened 4D array: [temp, x, y, t]
+    base_idx = (currents_idx[:, 0, None] * Ny + currents_idx[:, 1, None]) * Nt + local_t
+    main_vals = (
+        response_template.take(idx[:, None] * Nx * Ny * Nt + base_idx) * b[:, None] +
+        response_template.take((idx - 1)[:, None] * Nx * Ny * Nt + base_idx) * a[:, None] +
+        response_template.take((idx + 1)[:, None] * Nx * Ny * Nt + base_idx) * c[:, None]
+    ) * nelectrons[:, None]
+    main_vals = main_vals.ravel()
 
-    #Getting the right indices for the currents
-    t0, currents_idx = current_lut(params, response, electrons_renumbered, pixels_coord[pix_renumbering], fields)
-    npixels = unique_pixels.shape[0]
-    nticks_wf = int(params.time_interval[1]/params.t_sampling) + 1 #Adding one first element to serve as a garbage collector
-    wfs = jnp.zeros((npixels, nticks_wf))
+    # --- 2. PREPARE NEIGHBOR DATA ---
+    npix_neigh = (2 * params.number_pix_neighbors + 1)**2
+    # Use repeat for clean broadcasting of electron-level properties
+    elec_ids_neigh = jnp.repeat(jnp.arange(nelectrons_neigh.shape[0]), npix_neigh)
+    
+    neigh_charge = jnp.take(nelectrons_neigh, elec_ids_neigh)
+    neigh_t0 = jnp.take(t0_neigh, elec_ids_neigh)
+    neigh_cathode_ticks = (neigh_t0 / params.t_sampling).astype(int)
+    
+    neigh_start_ticks = Nt - sig_len - neigh_cathode_ticks
+    neigh_time_ticks = neigh_start_ticks[..., None] + jnp.arange(sig_len)
+    neigh_time_ticks = jnp.where((neigh_time_ticks <= 0) | (neigh_time_ticks >= Nticks - 1), 0, neigh_time_ticks + 1)
+    neigh_flat_indices = (pix_renumbering_neigh[:, None] * Nticks + neigh_time_ticks).ravel()
+    
+    # Neighbor Values (Assumes Template 0, no diffusion)
+    neigh_base_idx = (currents_idx_neigh[:, 0, None] * Ny + currents_idx_neigh[:, 1, None]) * Nt + local_t
+    neigh_vals = (response_template[0].take(neigh_base_idx) * neigh_charge[:, None]).ravel()
 
-    # start_ticks = response.shape[-1] - (t0/params.t_sampling).astype(int) - params.signal_length #Start tick from distance to the end of the cathode
-    cathode_ticks = (t0/params.t_sampling).astype(int) #Start tick from distance to the end of the cathode
-    response_cum = jnp.cumsum(response, axis=-1)
-    wfs = accumulate_signals(wfs, currents_idx, electrons_renumbered[:, fields.index("n_electrons")], response, response_cum, pix_renumbering, cathode_ticks, params.signal_length)
-    # The first time tick of wfs has the signal which would be out of range, but still have the response. It is meant to be discarded.
-    integral, ticks = get_adc_values(params, wfs[:, 1:], rngkey)
+    # --- 3. BOUNDARY CORRECTIONS (CUMSUMS) ---
+    response_cum = jnp.cumsum(response_template, axis=-1)
+    
+    # Main Corrections
+    base_curr = (currents_idx[:, 0] * Ny + currents_idx[:, 1]) * Nt
+    diff_main = (response_cum.take(idx * Nx * Ny * Nt + base_curr + Nt - sig_len) - 
+                 response_cum.take(idx * Nx * Ny * Nt + base_curr + cathode_ticks)) * nelectrons
+    idx_corr_main = jnp.where((start_ticks <= 0) | (start_ticks >= Nticks - 1), 0, start_ticks) + pix_renum * Nticks
 
-    pixel_x = pixels_coord[:, 0]
-    pixel_y = pixels_coord[:, 1]
-    pixel_z  = get_hit_z(params, ticks.flatten(), jnp.repeat(plane, 10))
+    # Neighbor Corrections
+    base_curr_neigh = (currents_idx_neigh[:, 0] * Ny + currents_idx_neigh[:, 1]) * Nt
+    diff_neigh = (response_cum[0].take(base_curr_neigh + Nt - sig_len) - 
+                  response_cum[0].take(base_curr_neigh + neigh_cathode_ticks)) * neigh_charge
+    idx_corr_neigh = jnp.where((neigh_start_ticks <= 0) | (neigh_start_ticks >= Nticks - 1), 0, neigh_start_ticks) + pix_renumbering_neigh * Nticks
 
-    adcs = digitize(params, integral)
-    hit_prob = jnp.where(ticks < wfs.shape[1] - 3, 1., 0.)  # Assuming hit probability is based on whether ticks are within the waveform length
+    # --- 4. UNIFIED SEGMENT SUM ---
+    all_indices = jnp.concatenate([main_flat_indices, neigh_flat_indices, idx_corr_main, idx_corr_neigh])
+    all_values = jnp.concatenate([main_vals, neigh_vals, diff_main, diff_neigh])
 
-    adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels, nb_valid = parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
+    # Key Optimization: Sort indices to ensure high-performance reduction
+    # Note: If memory is tight, you can skip the sort and use jax.ops.segment_sum directly, 
+    # but sorting usually yields the best GPU reduction kernels.
+    # sort_idx = jnp.argsort(all_indices)
+    wfs_flat = jax.ops.segment_sum(
+        all_values, 
+        all_indices, 
+        num_segments=Npixels * Nticks,
+        indices_are_sorted=False  # Crucial!
+    )
 
-    return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], unique_pixels[:nb_valid]
+    return wfs_flat.reshape(Npixels, Nticks)
 
 
 @partial(jit, static_argnames=['fields'])
@@ -366,6 +397,79 @@ def simulate_drift_new(params, tracks, fields):
 
 @jit
 def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
+    """
+    Simulates electronic signals on detector pixels using LUT-based current response templates.
+    
+    This function accumulates charge signals from electrons drifting to detector pixels, applying:
+    - Longitudinal diffusion interpolation using quadratic interpolation between templates
+    - Transverse diffusion via binned current response lookup
+    - Neighbor pixel contributions from charge sharing
+    - Time-dependent signal shape based on drift time
+    
+    The function uses a flattened pixel indexing scheme for efficient parallel updates and handles
+    both main pixel contributions and neighbor pixel contributions separately.
+    
+    Args:
+        params: Simulation parameters containing:
+            - time_interval: Tuple of (t_start, t_end) in microseconds
+            - t_sampling: Time sampling interval in microseconds
+            - signal_length: Number of time samples in the signal template
+            - number_pix_neighbors: Number of neighbor pixels in each direction
+            - long_diff_template: Array of longitudinal diffusion values for template indexing
+        unique_pixels (jnp.ndarray): 1D array of unique pixel IDs that received charge.
+            Shape: (Npixels,). May contain padding with -1 values.
+        pixels (jnp.ndarray): 2D array of pixel IDs for all electron bins after transverse diffusion.
+            Shape: (Nelectrons, nb_tran_diff_bins, nb_tran_diff_bins).
+        t0_after_diff (jnp.ndarray): 1D array of drift times from cathode to anode for each electron bin.
+            Shape: (Nelectrons * nb_tran_diff_bins^2,) in microseconds.
+        response_template (jnp.ndarray): 4D lookup table of current response templates.
+            Shape: (Ntemplates, Nx, Ny, Nt) where:
+                - Ntemplates: Number of longitudinal diffusion templates
+                - Nx, Ny: Spatial bins for transverse position (typically nb_sampling_bins_per_pixel)
+                - Nt: Time samples in template
+        nelectrons (jnp.ndarray): 1D array of number of electrons in each transverse diffusion bin.
+            Shape: (Nelectrons * nb_tran_diff_bins^2,).
+        long_diff (jnp.ndarray): 1D array of longitudinal diffusion values (in time ticks) for each bin.
+            Shape: (Nelectrons * nb_tran_diff_bins^2,).
+        currents_idx (jnp.ndarray): 2D array of spatial bin indices (x, y) for current response lookup.
+            Shape: (Nelectrons * nb_tran_diff_bins^2, 2).
+        nelectrons_neigh (jnp.ndarray): 1D array of total electrons per original electron deposition
+            that contribute to neighbor pixels. Shape: (Nelectrons,).
+        pix_renumbering_neigh (jnp.ndarray): 1D array mapping neighbor pixel positions to indices 
+            in unique_pixels. Shape: (Nelectrons * (2*number_pix_neighbors+1)^2,).
+        t0_neigh (jnp.ndarray): 1D array of drift times for neighbor contributions.
+            Shape: (Nelectrons,) in microseconds.
+        currents_idx_neigh (jnp.ndarray): 2D array of spatial bin indices for neighbor pixel lookups.
+            Shape: (Nelectrons * (2*number_pix_neighbors+1)^2, 2).
+    
+    Returns:
+        jnp.ndarray: Simulated waveforms for each pixel.
+            Shape: (Npixels, Nticks) where Nticks = time_interval[1]/t_sampling + 1.
+            The first time tick (index 0) serves as a "garbage collector" for out-of-range signals
+            and should typically be discarded in downstream processing.
+    
+    Algorithm:
+        1. Flatten waveform array for efficient scatter operations
+        2. For main pixel contributions:
+           a. Compute time placement: start_ticks based on cathode distance
+           b. Interpolate longitudinal diffusion using quadratic interpolation between 3 templates
+           c. Extract response template values using currents_idx for spatial bins
+           d. Accumulate weighted signals: template * charge * interpolation_weights
+           e. Correct for signals that started before trigger (using cumulative sum)
+        3. For neighbor pixel contributions:
+           a. Expand electron counts to all neighbor positions
+           b. Use first template (no diffusion) for neighbors
+           c. Accumulate similar to main pixels but without diffusion interpolation
+           d. Apply cumulative sum correction
+        4. Reshape flattened waveform back to (Npixels, Nticks)
+    
+    Notes:
+        - Time tick 0 is used as a "garbage bin" for out-of-range signals and should be excluded
+        - Invalid pixel IDs (-1) are mapped to index 0 (the garbage pixel)
+        - The function assumes response_template[0] has no longitudinal diffusion for neighbors
+        - Signal accumulation uses JAX's .at[].add() for automatic gradient support
+        - Quadratic interpolation provides smooth transitions between diffusion templates
+    """
     pix_renumbering = jnp.searchsorted(unique_pixels, pixels.ravel(), method='sort')
     #Getting the right indices for the currents
    
@@ -569,7 +673,7 @@ def simulate_wfs(params, response_template, tracks, fields):
     ###############################################
     ###############################################
 
-    wfs = simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh)
+    wfs = simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh)
 
 
     return wfs[:, 1:], unique_pixels

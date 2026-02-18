@@ -163,7 +163,9 @@ def main(config):
     if config.profile:
         profile_dir = "./profiling/"
         logger.info(f"Profiling execution. Output in {profile_dir}")
-        jax.profiler.start_trace(profile_dir)
+        options = jax.profiler.ProfileOptions()
+        options.host_tracer_level = 2
+        jax.profiler.start_trace(profile_dir, profiler_options=options)
 
     if config.read_target:
         param_fit.fit(tracks_dataloader_sim, config.input_file_tgt, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
