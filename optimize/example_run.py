@@ -11,7 +11,7 @@ import json
 import cProfile
 import jax
 
-from .fit_params import GradientDescentFitter, LikelihoodProfiler, MinuitFitter
+from .fit_params import GradientDescentFitter, LikelihoodProfiler, MinuitFitter, HessianCalculator
 from .dataio import TracksDataset, DataLoader
 
 logger = logging.getLogger(__name__)
@@ -106,7 +106,7 @@ def main(config):
     logger.info(f"Param list: {param_list}")
 
     if config.fit_type == "chain":
-        param_fit = GradientDescentFitter(relevant_params=param_list,
+        param_fit = GradientDescentFitter(relevant_params=param_list, set_init_params=config.set_init_params,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 lr=config.lr, readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
@@ -125,7 +125,7 @@ def main(config):
                                 probabilistic_sim=config.probabilistic_sim,
                                 sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt)
     elif config.fit_type == "scan":
-        param_fit = LikelihoodProfiler(relevant_params=param_list,
+        param_fit = LikelihoodProfiler(relevant_params=param_list, set_init_params=config.set_init_params,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
@@ -140,7 +140,7 @@ def main(config):
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 scan_tgt_nom=config.scan_tgt_nom, probabilistic_sim=config.probabilistic_sim)
     elif config.fit_type == "minuit":
-        param_fit = MinuitFitter(relevant_params=param_list,
+        param_fit = MinuitFitter(relevant_params=param_list, set_init_params=config.set_init_params,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
                                 detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
                                 readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
@@ -155,8 +155,25 @@ def main(config):
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits, probabilistic_sim=config.probabilistic_sim)
 
+    elif config.fit_type == "hess":
+        param_fit = HessianCalculator(relevant_params=param_list, set_init_params=config.set_init_params,
+                                sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
+                                detector_props=config.detector_props, pixel_layouts=config.pixel_layouts,
+                                readout_noise_target=(not config.no_noise) and (not config.no_noise_target),
+                                readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
+                                out_label=config.out_label, test_name=config.test_name,
+                                loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
+                                set_target_vals=config.set_target_vals, vary_init=config.vary_init,
+                                config = config, keep_in_memory=config.keep_in_memory,
+                                diffusion_in_current_sim=config.diffusion_in_current_sim,
+                                mc_diff=config.mc_diff,
+                                adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
+                                sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
+                                probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim,
+                                compute_target_hessian=True)
+
     else:
-        raise Exception(f"Unknown fit type: {config.fit_type}. Supported types are 'chain' and 'scan'.")
+        raise Exception(f"Unknown fit type: {config.fit_type}. Supported types are 'chain', 'scan', 'minuit', and 'hess'.")
 
     # with cProfile.Profile() as pr:
 
@@ -263,6 +280,8 @@ if __name__ == '__main__':
                         help="Set of params to shift in target sim without fitting them (robustness/separability check).")
     parser.add_argument("--set-target-vals", dest="set_target_vals", default=[], nargs="+", 
                         help="Explicitly set values of target. Syntax is <param1> <val1> <param2> <val2>...")
+    parser.add_argument("--set_init_params", dest="set_init_params", default=[], nargs="+",
+                        help="Init parameter values. Syntax is <param1> <val1> <param2> <val2>...")
     parser.add_argument("--scan_tgt_nom", dest="scan_tgt_nom", default=False, action="store_true",
                         help="Set the gradient and loss scan target to the parameter nominal value, otherwise there will be a target throw.")
     parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
@@ -275,7 +294,7 @@ if __name__ == '__main__':
     parser.add_argument('--non_deterministic', default=False, action="store_true", help='Make the computation slightly non-deterministic for faster computation')
     parser.add_argument('--debug_nans', default=False, action="store_true", help='Debug NaNs (much slower)')
     parser.add_argument('--cpu_only', default=False, action="store_true", help='Run on CPU only')
-    parser.add_argument('--fit_type', type=str, choices=['chain', 'scan', 'minuit'], required=True)
+    parser.add_argument('--fit_type', type=str, choices=['chain', 'scan', 'minuit','hess'], required=True)
     parser.add_argument('--minimizer_strategy', type=int, choices=[0, 1, 2], default=1, help='Minimizer strategy for Minuit')
     parser.add_argument('--minimizer_tol', type=float, default=1e-4, help='Minimizer tolerance for Minuit')
     parser.add_argument('--separate_fits', default=False, action="store_true", help='Separate fits for each batch')
