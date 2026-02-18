@@ -142,6 +142,108 @@ def simulate_drift(params, tracks, fields, rngkey):
 def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template, 
                              nelectrons, long_diff, currents_idx, nelectrons_neigh, 
                              pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
+    """
+    Simulate induced current signals on detector pixels from drifted electrons.
+
+    This function is a JAX-jitted implementation of the signal simulation step.
+    It takes as input the drifted electron cloud, maps electrons to pixels, and
+    convolves them with a precomputed current-response template to obtain
+    time-sampled waveforms for each pixel and, optionally, its neighbours.
+
+    Parameters
+    ----------
+    params :
+        Configuration object containing detector and simulation parameters.
+        It must at least provide:
+
+        * ``time_interval``: tuple-like, global time window in ns.
+        * ``t_sampling``: float, sampling period in ns.
+        * ``signal_length``: int, number of time samples stored per pixel.
+        * ``long_diff_template``: 1D array of longitudinal-diffusion values
+          used for interpolation of the current-response templates.
+
+    unique_pixels : jax.numpy.ndarray
+        1D sorted array of unique pixel identifiers present in this event or
+        chunk. Shape is ``(Npixels,)``.
+
+    pixels : jax.numpy.ndarray
+        Array of pixel identifiers for each contributing electron. This is
+        typically the output of ``get_pixels`` or a similar routine. Its
+        leading dimension matches the electron-level quantities such as
+        ``t0_after_diff`` and ``nelectrons``.
+
+    t0_after_diff : jax.numpy.ndarray
+        Drift arrival times of electrons at the readout plane **after**
+        applying diffusion, in the same units as ``params.t_sampling`` (e.g.
+        ns). This is used to convert to discrete tick indices.
+
+    response_template : jax.numpy.ndarray
+        Lookup table of current response templates.
+        Shape is ``(Ntemplates, Nx, Ny, Nt)`` where
+
+        * ``Ntemplates`` is the number of longitudinal-diffusion bins,
+        * ``Nx``, ``Ny`` describe the transverse pixel offset grid,
+        * ``Nt`` is the number of time samples per template.
+
+    nelectrons : jax.numpy.ndarray
+        Number of electrons contributing to each entry in ``pixels`` /
+        ``t0_after_diff``. Used as weights when accumulating current.
+
+    long_diff : jax.numpy.ndarray
+        Longitudinal diffusion values per contributing electron (same
+        leading shape as ``pixels``). These are used to select and
+        quadratically interpolate between entries of
+        ``params.long_diff_template`` so that the response template matches
+        the actual diffusion.
+
+    currents_idx : jax.numpy.ndarray
+        Integer indices into the time dimension of ``response_template``
+        (or a flattened current-response lookup) for the *main* pixel
+        contribution of each electron.
+
+    nelectrons_neigh : jax.numpy.ndarray
+        Number of electrons contributing to *neighbour* pixels, typically
+        with an additional neighbour dimension. Its leading dimensions are
+        aligned with ``pix_renumbering_neigh`` and ``t0_neigh``.
+
+    pix_renumbering_neigh : jax.numpy.ndarray
+        Integer mapping from neighbour pixels to the index space of
+        ``unique_pixels``. This allows reusing the same waveform container
+        for both main and neighbour pixels.
+
+    t0_neigh : jax.numpy.ndarray
+        Drift arrival times (after diffusion) for neighbour contributions,
+        in the same units as ``t0_after_diff``. Used to compute discrete
+        tick indices for neighbour-induced currents.
+
+    currents_idx_neigh : jax.numpy.ndarray
+        Integer indices into the current-response lookup for neighbour
+        contributions, analogous to ``currents_idx`` but with a neighbour
+        dimension.
+
+    Returns
+    -------
+    tuple
+        A tuple of JAX arrays containing the accumulated waveforms for the
+        main pixels and, where applicable, their neighbours. The exact
+        structure (number of arrays and shapes) mirrors the implementation
+        of :func:`simulate_signals_new` and the expectations of the
+        downstream digitisation stage, and typically includes a per-pixel
+        waveform array of shape ``(Npixels, Nticks)`` plus any auxiliary
+        bookkeeping arrays required by later steps.
+
+    Notes
+    -----
+    * Time is discretised in units of ``params.t_sampling``. Internally,
+      continuous arrival times are converted to integer "ticks" using
+      floor/``astype(int)``.
+    * The first time bin (tick 0) is conventionally treated as a
+      padding/garbage-collector bin in some calling code and does not
+      necessarily correspond to a physical sampling instant.
+    * The function is JIT-compiled with JAX, so all array arguments must
+      be JAX arrays with shapes that are consistent across calls for
+      efficient compilation and execution.
+    """
     
     Npixels = unique_pixels.shape[0]
     Nticks = int(params.time_interval[1] / params.t_sampling) + 1
@@ -164,6 +266,8 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     # Signal Indices (Main)
     start_ticks = Nt - sig_len - cathode_ticks
     time_ticks = start_ticks[..., None] + jnp.arange(sig_len)
+    # it should be start_ticks +1 in theory but we cheat by putting the cumsum in the garbage too
+    # when starting at 0 to mimic the expected behavior
     time_ticks = jnp.where((time_ticks <= 0) | (time_ticks >= Nticks - 1), 0, time_ticks + 1)
     main_flat_indices = (pix_renum[:, None] * Nticks + time_ticks).ravel()
 
@@ -215,15 +319,18 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     all_indices = jnp.concatenate([main_flat_indices, neigh_flat_indices, idx_corr_main, idx_corr_neigh])
     all_values = jnp.concatenate([main_vals, neigh_vals, diff_main, diff_neigh])
 
-    # Key Optimization: Sort indices to ensure high-performance reduction
-    # Note: If memory is tight, you can skip the sort and use jax.ops.segment_sum directly, 
-    # but sorting usually yields the best GPU reduction kernels.
+    # We currently rely on jax.ops.segment_sum with *unsorted* indices.
+    # Setting indices_are_sorted=False is required to tell JAX that all_indices is not sorted.
+    # If profiling shows that sorting improves performance on a given backend, you can
+    # enable the following and pass the sorted indices/values instead:
     # sort_idx = jnp.argsort(all_indices)
+    # all_indices = all_indices[sort_idx]
+    # all_values = all_values[sort_idx]
     wfs_flat = jax.ops.segment_sum(
         all_values, 
         all_indices, 
         num_segments=Npixels * Nticks,
-        indices_are_sorted=False  # Crucial!
+        indices_are_sorted=False
     )
 
     return wfs_flat.reshape(Npixels, Nticks)
