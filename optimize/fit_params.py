@@ -7,8 +7,8 @@ import shutil
 import pickle
 import numpy as np
 from .ranges import ranges
-from larndsim.sim_jax import simulate_new, simulate_parametrized, get_size_history
-from larndsim.losses_jax import params_loss, params_loss_parametrized, mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge #, sinkhorn_loss
+from larndsim.sim_jax import get_size_history
+from larndsim.losses_jax import mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge, nll_loss, llhd_loss #, sinkhorn_loss
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
@@ -22,11 +22,59 @@ import iminuit
 
 from tqdm import tqdm
 
+from .strategies import LUTSimulation, LUTProbabilisticSimulation, ParametrizedSimulation, GenericLossStrategy
+
 from ctypes import cdll
 # libcudart = cdll.LoadLibrary('libcudart.so')
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+
+def value_and_grad_fwd(f, argnums=0, has_aux=False):
+    """
+    Computes the primal value and the gradient using forward-mode autodiff,
+    with full support for auxiliary data.
+    """
+    def wrapper(*args, **kwargs):
+        out = f(*args, **kwargs)
+        if has_aux:
+            y, aux = out
+            # Return 'y' for jacfwd to differentiate, and (y, aux) to pass through
+            return y, (y, aux)
+        else:
+            y = out
+            # Return 'y' for jacfwd, and a copy of 'y' to pass through
+            return y, y
+
+    # We use jacfwd with has_aux=True so it captures our injected auxiliary data
+    fwd_fn = jax.jacfwd(wrapper, argnums=argnums, has_aux=True)
+
+    def val_and_grad_fn(*args, **kwargs):
+        grad, aux_out = fwd_fn(*args, **kwargs)
+        if has_aux:
+            y, aux = aux_out
+            return (y, aux), grad
+        else:
+            y = aux_out
+            return y, grad
+            
+    return val_and_grad_fn
+
+def serialize_value(v):
+    if hasattr(v, 'shape'):
+        # Check if it's a scalar (0-dimensional) or multi-dimensional
+        if len(v.shape) == 0 or (len(v.shape) == 1 and v.shape[0] == 1):
+            # Scalar JAX array -> Python float
+            return float(v)
+        else:
+            # Multi-dimensional JAX array -> numpy array
+            return np.array(v)
+    elif hasattr(v, 'item'):
+        # Fallback for other array-like objects with item()
+        return float(v)
+    else:
+        # Already Python type
+        return v
 
 
 def normalize_param(param_val, param_name, scheme="divide", undo_norm=False):
@@ -63,7 +111,7 @@ def remove_noise_from_params(params):
     return params.replace(**{key: 0. for key in noise_params})
 
 class ParamFitter:
-    def __init__(self, relevant_params, sim_track_fields, tgt_track_fields,
+    def __init__(self, relevant_params, set_init_params, sim_track_fields, tgt_track_fields,
                  detector_props, pixel_layouts,
                  loss_fn=None, loss_fn_kw=None, readout_noise_target=True, readout_noise_guess=False, 
                  out_label="", test_name="this_test",
@@ -74,7 +122,6 @@ class ParamFitter:
                  diffusion_in_current_sim=False,
                  mc_diff = False,
                  read_target=False,
-                 probabilistic_target=False,
                  probabilistic_sim=False,
                  sz_mini_bt=1, shuffle_bt=False,
                  config = {}):
@@ -100,7 +147,6 @@ class ParamFitter:
         self.electron_sampling_resolution = config.electron_sampling_resolution
         self.number_pix_neighbors = config.number_pix_neighbors
         self.signal_length = config.signal_length
-        self.probabilistic_target = probabilistic_target
         self.probabilistic_sim = probabilistic_sim
         self.sz_mini_bt = sz_mini_bt
         self.shuffle_bt = shuffle_bt
@@ -134,6 +180,8 @@ class ParamFitter:
                 param_val = set_target_vals[2*i_val+1]
                 self.target_val_dict[param_name] = float(param_val)
 
+        self.set_init_params = set_init_params
+
         if self.current_mode == 'lut':
             self.lut_file = config.lut_file
         else:
@@ -152,6 +200,8 @@ class ParamFitter:
             "sdtw_adc": (sdtw_adc, {'gamma': 1.}),
             "sdtw_time": (sdtw_time, {'gamma': 1.}),
             "sdtw_time_adc": (sdtw_time_adc, {'gamma': 1., 'alpha': 0.5}),
+            "nll": (nll_loss, {'adc_norm': adc_norm, 'sigma': 1.0}),
+            "llhd": (llhd_loss, {}),
             #"sinkhorn_loss": (sinkhorn_loss, {})
         }
 
@@ -176,6 +226,18 @@ class ParamFitter:
 
         if loss_fn in ['sdtw_adc', 'sdtw_time', 'sdtw_time_adc']: #Need to setup the sdtw class for the loss function
             self.loss_fn_kw['dstw'] = SoftDTW(**self.loss_fn_kw)
+        
+        # Set up loss strategy based on loss function and simulation type
+        if loss_fn == 'llhd':
+            from .strategies import ProbabilisticLossStrategy
+            self.loss_strategy = ProbabilisticLossStrategy(loss_fn=llhd_loss, **self.loss_fn_kw)
+        elif self.probabilistic_sim:
+            # Use CollapsedProbabilisticLossStrategy for probabilistic simulation with deterministic losses
+            from .strategies import CollapsedProbabilisticLossStrategy
+            self.loss_strategy = CollapsedProbabilisticLossStrategy(loss_fn=self.loss_fn, **self.loss_fn_kw)
+            logger.info(f"Using CollapsedProbabilisticLossStrategy with {loss_fn}")
+        else:
+            self.loss_strategy = GenericLossStrategy(self.loss_fn, **self.loss_fn_kw)
 
         self.training_history = {}
         for param in self.relevant_params_list:
@@ -217,6 +279,17 @@ class ParamFitter:
 
         ref_params = ref_params.replace(**{key: getattr(self, key) for key in params_to_apply})
 
+        # Initialize Simulation Strategy
+        if self.current_mode == 'lut':
+            if self.probabilistic_sim:
+                self.sim_strategy = LUTProbabilisticSimulation(self.response)
+            else:
+                self.sim_strategy = LUTSimulation(self.response)
+        elif self.current_mode == 'parametrized':
+            self.sim_strategy = ParametrizedSimulation()
+        else:
+             raise ValueError(f"Unknown mode {self.current_mode}")
+
         initial_params = {}
 
         if self.vary_init:
@@ -225,6 +298,14 @@ class ParamFitter:
                 init_val = np.random.uniform(low=ranges[param]['down'], 
                                             high=ranges[param]['up'])
                 initial_params[param] = init_val
+
+        elif len(self.set_init_params) > 0:
+            if len(self.set_init_params) % 2 != 0:
+                raise ValueError("Incorrect format for set_init_params!")
+            for i_val in range(len(self.set_init_params)//2):
+                param_name = self.set_init_params[2*i_val]
+                param_val = self.set_init_params[2*i_val+1]
+                initial_params[param_name] = float(param_val)
 
         self.current_params = ref_params.replace(**initial_params)
 
@@ -311,38 +392,37 @@ class ParamFitter:
             #Simulating the reference during the first epoch
             fname = 'target_' + self.out_label + '/batch' + str(i) + '_target.npz'
             if regen or not os.path.exists(fname):
-                if self.current_mode == 'lut':
-                    if self.probabilistic_target:
-                        rngseed = None
-                    else:
-                        rngseed = i+1
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_new(self.target_params, self.response, target, self.tgt_track_fields, rngseed) #Setting a different random seed for each target
-                else:
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, _ = simulate_parametrized(self.target_params, target, self.tgt_track_fields, i+1) #Setting a different random seed for each target
-
-                if self.compute_target_hessian:
-                    logger.error("Computing target hessian is not implemented yet")
-                    raise NotImplementedError("Computing target hessian is not implemented yet")
-                    # logger.info("Computing target hessian")
-                    # if self.current_mode == 'lut':
-                    #     hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.target_params, self.response, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
-                    # else:
-                    #     hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.target_params, ref_adcs, ref_unique_pixels, ref_ticks, selected_tracks_tgt, self.track_fields, rngkey=i, loss_fn=self.loss_fn, diffusion_in_current_sim=self.diffusion_in_current_sim, **self.loss_fn_kw)
-                    # self.training_history['hessian'].append(format_hessian(hess))
+                
+                # Target generation should always produce "hits" (stochastic),
+                # even if the fitting strategy is probabilistic.
+                target_strategy = self.sim_strategy
+                if isinstance(self.sim_strategy, LUTProbabilisticSimulation):
+                    target_strategy = LUTSimulation(self.response)
+                
+                prediction = target_strategy.predict(self.target_params, target, self.tgt_track_fields, rngkey=i+1)
+                
+                ref_adcs = prediction['adcs']
+                ref_pixel_x = prediction['pixel_x']
+                ref_pixel_y = prediction['pixel_y']
+                ref_pixel_z = prediction['pixel_z']
+                ref_ticks = prediction['ticks']
+                ref_hit_prob = prediction['hit_prob']
+                ref_event = prediction['event']
+                ref_pixel_id = prediction.get('hit_pixels', prediction.get('unique_pixels'))
 
                 # embed_target = embed_adc_list(self.sim_target, target, pix_target, ticks_list_targ)
                 #Saving the target for the batch
                 #TODO: See if we have to do this for each event
                 
                 with open(fname, 'wb') as f:
-                    jnp.savez(f, adcs=ref_adcs, pixel_x=ref_pixel_x, pixel_y=ref_pixel_y, pixel_z=ref_pixel_z, ticks=ref_ticks, hit_prob=ref_hit_prob, event=ref_event)
+                    jnp.savez(f, adcs=ref_adcs, pixel_x=ref_pixel_x, pixel_y=ref_pixel_y, pixel_z=ref_pixel_z, ticks=ref_ticks, hit_prob=ref_hit_prob, event=ref_event, pixel_id=ref_pixel_id)
                     if self.keep_in_memory:
-                        self.targets[i] = (ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event)
+                        self.targets[i] = (ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id)
 
             else:
                 #Loading the target
                 if self.keep_in_memory:
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.targets[i]
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = self.targets[i]
                 else:
                     with open(fname, 'rb') as f:
                         loaded = jnp.load(f)
@@ -353,10 +433,11 @@ class ParamFitter:
                         ref_ticks = loaded['ticks']
                         ref_event = loaded['event']
                         ref_hit_prob = loaded['hit_prob']
+                        ref_pixel_id = loaded['pixel_id'] if 'pixel_id' in loaded else jnp.zeros_like(ref_adcs, dtype=int) # Fallback
 
-        return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event
+        return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id
 
-    def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=True, with_grad=True, epoch=0):
+    def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True, epoch=0):
         if self.probabilistic_sim:
             rngkey = None
         else:
@@ -376,21 +457,28 @@ class ParamFitter:
         assert(with_loss or with_grad)
         loss_val, grads, aux = None, None, None
 
+        target_data = {
+            'adcs': ref_adcs,
+            'pixel_x': ref_pixel_x,
+            'pixel_y': ref_pixel_y,
+            'pixel_z': ref_pixel_z,
+            'ticks': ref_ticks,
+            'hit_prob': ref_hit_prob,
+            'event': ref_event,
+            'pixel_id': ref_pixel_id
+        }
+
+        def loss_wrapper(params):
+            prediction = self.sim_strategy.predict(params, tracks, self.sim_track_fields, rngkey)
+            return self.loss_strategy.compute(params, prediction, target_data)
+
         # Simulate and get output
-        if self.current_mode == 'lut':
-            if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(params_loss, (0), has_aux = True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
-            elif with_loss:
-                loss_val, aux = params_loss(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
-            elif with_grad:
-                grads, aux = grad(params_loss, (0), has_aux=True)(self.current_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
-        else:
-            if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(params_loss_parametrized, (0), has_aux = True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
-            elif with_loss:
-                loss_val, aux = params_loss_parametrized(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
-            elif with_grad:
-                grads, aux = grad(params_loss_parametrized, (0), has_aux=True)(self.current_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, tracks, self.sim_track_fields, rngkey=rngkey, loss_fn=self.loss_fn, **self.loss_fn_kw)
+        if with_loss and with_grad:
+            (loss_val, aux), grads = value_and_grad(loss_wrapper, has_aux = True)(self.current_params)
+        elif with_loss:
+            loss_val, aux = loss_wrapper(self.current_params)
+        elif with_grad:
+            grads, aux = grad(loss_wrapper, has_aux=True)(self.current_params)
         return loss_val, grads, aux
     
     def prepare_fit(self):
@@ -409,6 +497,7 @@ class ParamFitter:
             self.training_history[param+"_iter"] = []
         self.training_history['step_time'] = []
         self.training_history['losses_iter'] = []
+        self.training_history['aux_iter'] = []
 
         # Include initial value in training history (if haven't loaded a checkpoint)
         for param in self.relevant_params_list:
@@ -577,10 +666,10 @@ class GradientDescentFitter(ParamFitter):
                         this_target = jax.device_put(selected_tracks_bt_tgt)
                     else:
                         this_target = target
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
                     # loss
-                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, epoch=epoch, with_loss=True, with_grad=True)
+                    loss_val, grads, aux = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, epoch=epoch, with_loss=True, with_grad=True)
 
                     # split the code, ugly, but no additional operation if there's no averaging
                     if self.sz_mini_bt > 1:
@@ -604,6 +693,8 @@ class GradientDescentFitter(ParamFitter):
                             self.training_history['step_time'].append(stop_time - start_time)
 
                             self.training_history['losses_iter'].append(avg_loss) # type: ignore
+                            aux_serializable = {k: serialize_value(v) for k, v in aux.items()} if aux is not None else {}
+                            self.training_history['aux_iter'].append(aux_serializable) # type: ignore
                             for param in self.relevant_params_list:
                                 #TODO: Need to check why this is not consistent
                                 if type(getattr(self.current_params, param)) == float:
@@ -634,6 +725,7 @@ class GradientDescentFitter(ParamFitter):
                         self.training_history['step_time'].append(stop_time - start_time)
 
                         self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
+                        aux_serializable = {k: serialize_value(v) for k, v in aux.items()} if aux is not None else {}
                         for param in self.relevant_params_list:
                             #TODO: Need to check why this is not consistent
                             if type(getattr(self.current_params, param)) == float:
@@ -734,7 +826,7 @@ class LikelihoodProfiler(ParamFitter):
                 this_target = jax.device_put(selected_tracks_bt_tgt)
             else:
                 this_target = target
-            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
+            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
             for param in self.relevant_params_list:
                 lower = ranges[param]['down']
@@ -753,7 +845,7 @@ class LikelihoodProfiler(ParamFitter):
                     #     # libcudart.cudaProfilerStop()
                     new_param_values = {param: lower + iter*param_step}
                     self.current_params = self.ref_params.replace(**new_param_values)
-                    loss_val, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=True, with_grad=True)
+                    loss_val, grads, aux = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True)
 
                     stop_time = time()
 
@@ -762,6 +854,8 @@ class LikelihoodProfiler(ParamFitter):
                     self.training_history['step_time'].append(stop_time - start_time)
 
                     self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
+                    aux_serializable = {k: serialize_value(v) for k, v in aux.items()} if aux is not None else {}
+                    self.training_history['aux_iter'].append(aux_serializable) # type: ignore
                     for par in self.relevant_params_list:
                         #TODO: Need to check why this is not consistent
                         if type(getattr(self.current_params, par)) == float:
@@ -841,8 +935,8 @@ class MinuitFitter(ParamFitter):
                 this_target = jax.device_put(selected_tracks_bt_tgt)
             else:
                 this_target = target
-            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
-            return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event
+            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = self.get_simulated_target(this_target, i, evts_sim, regen=False)
+            return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id
 
         if self.separate_fits:
             for i in range(len(dataloader_sim)):
@@ -860,18 +954,18 @@ class MinuitFitter(ParamFitter):
                     this_target = jax.device_put(selected_tracks_bt_tgt)
                 else:
                     this_target = target
-                ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
+                ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
                 def loss_wrapper(args): # type: ignore
                     # Update the current params with the new values
                     self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
-                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_grad=False)
+                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_grad=False)
                     return loss_val
 
                 def grad_wrapper(args): # type: ignore
                     # Update the current params with the new values
                     self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
-                    _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=False)
+                    _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=False)
                     return [getattr(grads, key) for key in self.relevant_params_list]
 
                 self.configure_minimizer(loss_wrapper, grad_wrapper)
@@ -888,7 +982,7 @@ class MinuitFitter(ParamFitter):
                 # Update the current params with the new values
 
                 self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
-                avg_loss = 0
+                tot_loss = 0
                 for i in range(len(dataloader_sim)):
                     # sim
                     selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
@@ -896,18 +990,18 @@ class MinuitFitter(ParamFitter):
                     evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
 
                     # target
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = get_target(self, i, evts_sim, target)
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = get_target(self, i, evts_sim, target)
 
-                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_grad=False, with_loss=True)
-                    avg_loss += loss_val # type: ignore
-                logger.debug(f"Average loss: {avg_loss/len(dataloader_sim)}")
-                return avg_loss/len(dataloader_sim)
+                    loss_val, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_grad=False, with_loss=True)
+                    tot_loss += loss_val # type: ignore
+                logger.debug(f"Total loss: {tot_loss}")
+                return tot_loss
             
             def grad_wrapper(args):
                 logger.debug(f"Grad wrapper called with args: {args}")
                 # Update the current params with the new values
                 self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
-                avg_grad = [0 for _ in range(len(self.relevant_params_list))]
+                tot_grad = [0 for _ in range(len(self.relevant_params_list))]
                 for i in range(len(dataloader_sim)):
                     # sim
                     selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
@@ -915,12 +1009,12 @@ class MinuitFitter(ParamFitter):
                     evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
 
                     # target
-                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = get_target(self, i, evts_sim, target)
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = get_target(self, i, evts_sim, target)
 
-                    _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, with_loss=False)
-                    avg_grad = [getattr(grads, key) + avg_grad[i] for i, key in enumerate(self.relevant_params_list)]
-                logger.debug(f"Average gradient: {[g/len(dataloader_sim) for g in avg_grad]}")
-                return [g/len(dataloader_sim) for g in avg_grad]
+                    _, grads, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=False)
+                    tot_grad = [getattr(grads, key) + tot_grad[i] for i, key in enumerate(self.relevant_params_list)]
+                logger.debug(f"Average gradient: {[g/len(dataloader_sim) for g in tot_grad]}")
+                return [g for g in tot_grad]
 
             self.configure_minimizer(loss_wrapper, grad_wrapper)
             result = self.minimizer.migrad()
@@ -930,4 +1024,53 @@ class MinuitFitter(ParamFitter):
             pickle.dump(self.training_history, f_history)
 
 
+class HessianCalculator(ParamFitter):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not len(self.set_init_params) > 0:
+            raise ValueError("Remember to set the initial parameter values for Hessian calculation!")
 
+    def fit(self, dataloader_sim, target, **kwargs):
+
+        self.prepare_fit()
+
+        logger.info("Using the fitter for Hessian matrix calculation.")
+        logger.warning(f"Arguments {kwargs} are ignored in this mode.")
+
+        self.ref_params = self.current_params
+
+        self.training_history['n_hit'] = []
+        for i in range(len(dataloader_sim)):
+            logger.info(f"Batch {i}/{len(target)}")
+
+            # sim
+            selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+            selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
+            evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+
+            # target
+            if not self.read_target:
+                selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                this_target = jax.device_put(selected_tracks_bt_tgt)
+            else:
+                this_target = target
+            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event = self.get_simulated_target(this_target, i, evts_sim, regen=False)
+            n_hit = np.sum(ref_hit_prob)
+            self.training_history['n_hit'].append(n_hit)
+
+            self.fit_params = self.current_params
+            if self.current_mode == 'lut':
+                hess, aux = jax.jacfwd(jax.jacrev(params_loss, (0), has_aux=True), has_aux=True)(self.fit_params, self.response, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, selected_tracks_sim, self.sim_track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                self.training_history['hessian'].append(format_hessian(hess))
+
+            else:
+                hess, aux = jax.jacfwd(jax.jacrev(params_loss_parametrized, (0), has_aux=True), has_aux=True)(self.fit_params, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, selected_tracks_sim, self.sim_track_fields, rngkey=i, loss_fn=self.loss_fn, **self.loss_fn_kw)
+                self.training_history['hessian'].append(format_hessian(hess))
+
+            with open(f'fit_result/{self.test_name}/history_batch{i}_{self.out_label}.pkl', "wb") as f_history:
+                pickle.dump(self.training_history, f_history)
+            if os.path.exists(f'fit_result/{self.test_name}/history_batch{i-1}_{self.out_label}.pkl'):
+                os.remove(f'fit_result/{self.test_name}/history_batch{i-1}_{self.out_label}.pkl')
+
+        if os.path.exists('target_' + self.out_label):
+            shutil.rmtree('target_' + self.out_label, ignore_errors=True)

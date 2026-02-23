@@ -4,7 +4,7 @@ Module that simulates the front-end electronics (triggering, ADC)
 
 import jax.numpy as jnp
 from jax.profiler import annotate_function
-from jax import jit, vmap, lax, random, debug
+from jax import jit, vmap, lax, random, checkpoint
 from jax.scipy.special import erf
 from functools import partial
 
@@ -105,6 +105,8 @@ def get_adc_values_average_noise(params, pixels_signals):
 
     init_loop = (q_sum_multi, previous_prob, pixid)  # Initialize previous_prob
     _, (charge_avg, tick_avg, no_hit_prob) = lax.scan(find_hit, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
+    # new_loop, (charge_avg, tick_avg, no_hit_prob) = find_hit(init_loop, 0)
+    # _, (charge_avg, tick_avg, no_hit_prob) = find_hit(new_loop, 1)
 
     return (charge_avg.T, tick_avg.T, no_hit_prob.T)
 
@@ -231,3 +233,195 @@ def get_adc_values(params, pixels_signals, noise_rng_key):
     # full_ticks = jnp.repeat(full_ticks[:, jnp.newaxis], params.MAX_ADC_VALUES, axis=1).T
 
     return full_adc.T, full_ticks.T
+
+# def _find_one_hit_step(q_sum, prev_charges, previous_prob, sigma, threshold, Nvalues):
+#     """
+#     Calculates a single hit-finding step for one pixel. This function is designed
+#     to be vmapped across all pixels.
+#     """
+#     # This function contains the logic from the previous `_active_branch`.
+#     Nticks = q_sum.shape[0]
+#     inv_sqrt2_sigma = 1.0 / (jnp.sqrt(2) * sigma)
+#     eps = 1e-9 # Using a small internal epsilon
+#     interval = 18
+#     shifted_ticks = jnp.arange(Nticks - 1) + interval + 1
+#     shifted_ticks = jnp.clip(shifted_ticks, 0, Nticks - 1)
+#     tick_indices = jnp.arange(Nticks - 1)
+
+#     q_sum_loc = q_sum - prev_charges[..., None]
+
+#     # Steps 1-2: Calculate Event Probabilities
+#     erf_term = erf((q_sum_loc - threshold) * inv_sqrt2_sigma)
+#     erf_term_signal = lax.cummax(erf_term, axis=1)
+#     max_future_signal = lax.cummax(q_sum_loc, axis=1, reverse=True)
+#     guess = 0.5 * jnp.diff(erf_term_signal, axis=-1)
+#     prob_event = jnp.clip(0.5 * (erf_term[..., shifted_ticks] - erf_term[..., :-1]), 0, guess)
+#     esperance_value = q_sum_loc[..., shifted_ticks] + threshold - 0.5 * (q_sum_loc[..., 1:] + q_sum_loc[..., :-1])
+
+#     # Step 3: Aggregate Results
+#     prob_distrib = prob_event * previous_prob[:, None]
+#     total_hit_prob_per_path = jnp.sum(prob_event, axis=-1) * previous_prob
+#     no_hit_prob = 1.0 - jnp.sum(total_hit_prob_per_path)
+#     total_distrib_prob_per_tick = jnp.sum(prob_distrib, axis=0)
+#     norm_across = jnp.sum(total_hit_prob_per_path)
+#     safe_norm_across = jnp.maximum(norm_across, eps)
+#     tick_avg = jnp.sum(total_distrib_prob_per_tick * tick_indices) / safe_norm_across
+#     charge_avg_paths = jnp.sum(prob_event * esperance_value, axis=-1)
+#     charge_avg = jnp.sum(charge_avg_paths * previous_prob) / safe_norm_across
+    
+#     # Step 4: Optimized Merging & Selection
+#     future_hit_earliest_end = jnp.clip(shifted_ticks + interval + 1, 0, Nticks - 1)
+#     next_q_sum = q_sum_loc[:, jnp.clip(shifted_ticks + 1, 0, Nticks - 1)]
+#     future_hit_prob = 0.5 * (1 + erf((max_future_signal[:, future_hit_earliest_end] - next_q_sum - threshold) * inv_sqrt2_sigma))
+#     path_selection_prob = prob_distrib * future_hit_prob
+#     total_prob_per_tick = jnp.sum(path_selection_prob, axis=0)
+#     _, top_k_ticks = lax.top_k(total_prob_per_tick, k=Nvalues)
+    
+#     # Step 5: Construct the State for the Next Iteration
+#     new_prob = total_distrib_prob_per_tick[top_k_ticks]
+#     best_path_next_ticks_indices = jnp.clip(shifted_ticks[top_k_ticks] + 1, 0, Nticks - 1)
+#     charges_new = q_sum[best_path_next_ticks_indices]
+    
+#     # Return the new state and the outputs for this step for this pixel
+#     return (charges_new, new_prob), (charge_avg, tick_avg, no_hit_prob, total_distrib_prob_per_tick)
+#     # return (charges_new, new_prob), (charge_avg_across, tick_avg, no_hit_prob_across, prob_distrib_across)
+
+
+def _find_one_hit_step(q_sum, prev_charges, previous_prob, sigma, threshold, interval, Nvalues):
+    """
+    Calculates a single hit-finding step for one pixel. This function is designed
+    to be vmapped across all pixels.
+    """
+    # This function contains the logic from the previous `_active_branch`.
+    Nticks = q_sum.shape[0]
+    inv_sqrt2_sigma = 1.0 / (jnp.sqrt(2) * sigma)
+    inv_sqrt2_sigma_uncor = 1.0 / (jnp.sqrt(2) * 250)
+    shifted_ticks = jnp.arange(Nticks - 1) + interval + 1
+    shifted_ticks = jnp.clip(shifted_ticks, 0, Nticks - 1)
+
+    q_sum_loc = q_sum - prev_charges[..., None]
+
+    # Steps 1-2: Calculate Event Probabilities
+    erf_term = erf((q_sum_loc - threshold) * inv_sqrt2_sigma)
+    erf_term_signal = lax.cummax(erf_term, axis=1)
+    max_future_signal = lax.cummax(q_sum_loc, axis=1, reverse=True)
+    guess = 0.5 * jnp.diff(erf_term_signal, axis=-1)
+    prob_event = jnp.clip(0.5 * (erf((q_sum_loc - threshold) * inv_sqrt2_sigma)[..., shifted_ticks] - erf_term[..., :-1]), 0, guess)
+
+    # prob_event = jnp.clip(0.5 * (erf_term[..., shifted_ticks] - erf_term[..., :-1]), 0, guess)
+    # prob_event = jnp.clip(0.5*(1 + erf_term[..., shifted_ticks])*guess, 0, guess)
+    prob_ghost = jnp.clip(guess - 0.5 * (erf_term[..., shifted_ticks] - erf_term[..., :-1]), 0, guess) 
+    # esperance_value = q_sum_loc[..., shifted_ticks] + threshold - 0.5 * (q_sum_loc[..., 1:] + q_sum_loc[..., :-1])
+    esperance_value = q_sum[..., shifted_ticks] + threshold - 0.5 * (q_sum[..., 1:] + q_sum[..., :-1])
+
+    prob_event = jnp.where(esperance_value < threshold, 0, prob_event)  # Thresholding small probabilities to zero for numerical stability
+
+    # Step 3: Aggregate Results
+    prob_distrib = prob_event * previous_prob[:, None]
+    total_hit_distrib_prob_per_tick = jnp.sum(prob_distrib, axis=0)
+    total_distrib_prob_per_tick = jnp.sum(guess * previous_prob[:, None], axis=0) 
+    
+    # Step 4: Optimized Merging & Selection
+    future_hit_earliest_end = jnp.clip(shifted_ticks + interval + 1, 0, Nticks - 1)
+    next_q_sum = q_sum_loc[:, jnp.clip(shifted_ticks + 1, 0, Nticks - 1)]
+    future_hit_prob = 0.5 * (1 + erf((max_future_signal[:, future_hit_earliest_end] - next_q_sum - threshold) * inv_sqrt2_sigma))
+    # path_selection_prob = prob_distrib * future_hit_prob
+    path_selection_prob = guess * future_hit_prob * previous_prob[:, None]  #All the kind of hits should count here
+    total_prob_per_tick = jnp.sum(path_selection_prob, axis=0)
+
+    # Step 5: Construct the State for the Next Iteration
+    _, top_k_ticks = lax.top_k(total_prob_per_tick, k=Nvalues)
+    new_prob = total_distrib_prob_per_tick[top_k_ticks]
+    best_path_next_ticks_indices = jnp.clip(shifted_ticks[top_k_ticks] + 1, 0, Nticks - 1)
+    charges_new = q_sum[best_path_next_ticks_indices]
+    
+    # Return the new state and the outputs for this step for this pixel
+    return (charges_new, new_prob), (total_hit_distrib_prob_per_tick, esperance_value)
+
+@partial(jit, static_argnums=(2))
+def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
+    """
+    A globally-stopped, vmap-based implementation of the beam search. This is a highly optimized pattern for parallel hardware.
+    """
+
+    Npix, Nticks = wfs.shape
+    Nvalues = params.fee_paths_scaling
+    interval = round((3 * params.CLOCK_CYCLE + params.ADC_HOLD_DELAY * params.CLOCK_CYCLE) / params.t_sampling)
+    
+    # --- Vectorize the single-step function ---
+    vmapped_step_fun = vmap(
+        _find_one_hit_step,
+        in_axes=(0, 0, 0, None, None, None, None) # Map over q_sum, charges, probs
+    )
+
+    # --- Pre-calculate q_sum for all pixels ---
+    q = wfs * params.t_sampling
+    q_sum_all = q.cumsum(axis=-1)
+    
+
+    def global_scan_fun(carry, _):
+        """The main scan function with a global conditional stop."""
+        prev_charges_all, prev_probs_all, is_active_global = carry
+
+        # Apply jax.checkpoint to the expensive branch of the computation.
+        # This tells JAX not to store intermediate values from this function,
+        # saving memory at the cost of some re-computation.
+        # @checkpoint
+        def _active_branch(operand):
+            """The expensive vmapped computation, only run when globally active."""
+            charges, probs, _ = operand
+            # Run one hit-finding step for all pixels in parallel
+            (new_charges, new_probs), (prob_dist, charge_dist) = vmapped_step_fun(
+                q_sum_all, charges, probs, params.RESET_NOISE_CHARGE, params.DISCRIMINATION_THRESHOLD, interval, 
+                Nvalues
+            )
+            # Check if ANY pixel is still active for the next iteration
+            new_active_flag = jnp.any(jnp.sum(new_probs, axis=1) > stop_threshold)
+
+            return (new_charges, new_probs, new_active_flag), (prob_dist, charge_dist)
+
+        def _inactive_branch(operand):
+            """A cheap pass-through, executed when the whole batch is inactive."""
+            return operand, (
+                jnp.zeros((Npix, Nticks - 1), dtype=jnp.float32),
+                jnp.zeros((Npix, Nticks - 1), dtype=jnp.float32),
+                )
+
+        # --- Global Conditional Execution ---
+        final_carry, final_outputs = lax.cond(
+            is_active_global,
+            _active_branch,
+            _inactive_branch,
+            carry
+        )
+        return final_carry, final_outputs
+
+    # --- Setup and Execute the Global Scan ---
+    initial_charges = jnp.zeros((Npix, Nvalues), dtype=jnp.float32)
+    initial_probs = jnp.zeros((Npix, Nvalues), dtype=jnp.float32).at[:, 0].set(1.0)
+    initial_active = jnp.array(True)
+    
+    init_loop = (initial_charges, initial_probs, initial_active)
+
+    _, (prob_distrib, charge_distrib) = lax.scan(global_scan_fun, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
+    return jnp.moveaxis(prob_distrib, 0, 1), jnp.moveaxis(charge_distrib, 0, 1)
+
+@jit
+def get_average_hit_values(ticks_prob, adcs_distrib):
+    Npix, Nhits, Nticks = ticks_prob.shape
+    # For each (pixel, hit_index), compute λ = Σ_t P(tick | pixel, hit_index)
+    # This represents the expected probability of this particular hit existing
+    lambda_per_hit = jnp.sum(ticks_prob, axis=2)  # (Npix, Nhits)
+    # For each (pixel, hit_index), compute expected tick
+    # E[tick | pixel, hit_index] = Σ_t t * P(tick | pixel, hit_index) / λ
+    tick_range = jnp.arange(Nticks)  # (Nticks,)
+    expected_ticks_per_hit = jnp.sum(
+            tick_range[None, None, :] * ticks_prob, axis=2
+        ) / jnp.maximum(lambda_per_hit, 1e-10)  # (Npix, Nhits)
+    # For each (pixel, hit_index), compute expected ADC
+    # E[ADC | pixel, hit_index] = Σ_t ADC(hit_index, tick) * P(tick | pixel, hit_index) / λ
+    expected_adcs_per_hit = jnp.sum(
+        adcs_distrib * ticks_prob, axis=2
+    ) / jnp.maximum(lambda_per_hit, 1e-10)  # (Npix, Nhits)
+
+    return expected_ticks_per_hit, expected_adcs_per_hit, lambda_per_hit

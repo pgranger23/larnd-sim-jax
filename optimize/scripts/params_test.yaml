@@ -1,9 +1,9 @@
-# Ab: 2e-2
-# kb: 2e-2
-# lifetime: 2e-2
-# tran_diff: 2e-2
-# long_diff: 2e-2
+Ab: 2e-2
+kb: 2e-2
+lifetime: 2e-2
+tran_diff: 2e-2
+long_diff: 2e-2
 eField: 2e-2
-# shift_x: 2e-2
-# shift_y: 2e-2
-# shift_z: 2e-2
+shift_x: 2e-2
+shift_y: 2e-2
+shift_z: 2e-2

@@ -21,40 +21,40 @@ on:
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # test-sim:
-  #   # Steps represent a sequence of tasks that will be executed as part of the job
-  #   runs-on: ubuntu-latest
+  test-sim:
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    runs-on: ubuntu-latest
 
-  #   steps:
-  #     # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-  #     - uses: actions/checkout@v4.2.2
-  #     - name: Install uv
-  #       uses: astral-sh/setup-uv@v5
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
-  #     - name: Set up Python 3.13
-  #       uses: actions/setup-python@v5
-  #       with:
-  #         python-version: 3.13
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
 
-  #     - name: Install dependencies
-  #       run: |
-  #         uv pip install --system .[dev] pytest-xdist  # parallelize tests
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
 
-  #     - name: Check simulation
-  #       run: |
-  #         ./optimize/simulate_test.sh
+      - name: Check simulation
+        run: |
+          ./optimize/simulate_test.sh
 
-  #     - uses: actions/upload-artifact@v4
-  #       if: github.event_name != 'pull_request'
-  #       with:
-  #         name: simulation-plots-${{ github.sha }}
-  #         path: output/*.png
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: simulation-plots-${{ github.sha }}
+          path: output/*.png
 
-  #     - uses: actions/upload-artifact@v4
-  #       if: github.event_name == 'pull_request'
-  #       with:
-  #         name: simulation-plots-${{ github.event.pull_request.head.sha }}
-  #         path: output/*.png
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: simulation-plots-${{ github.event.pull_request.head.sha }}
+          path: output/*.png
 
 
   test-fit:
@@ -100,6 +100,10 @@ jobs:
           name: fit-result
           path: fit_result/**/*.pkl
           if-no-files-found: error
+      
+      - name: Validate fit convergence
+        run: |
+          python3 tests/test_fit_convergence.py --input_file fit_result/**/*.pkl --strict
 
   test-fit-lut:
     runs-on: ubuntu-latest
@@ -145,6 +149,60 @@ jobs:
           path: fit_result/**/*.pkl
           if-no-files-found: error
 
+      - name: Validate fit convergence
+        run: |
+          python3 tests/test_fit_convergence.py --input_file fit_result/**/*.pkl --strict
+
+
+  test-fit-nll:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
+      - name: Check fit
+        run: |
+          ./optimize/fit_nll_test.sh
+
+      - name: Make fit plots
+        run: |
+          ./optimize/analysis_scripts/plot_fit.py --input_file fit_result/**/*.pkl --output_dir output
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: fit-nll-plots-${{ github.sha }}
+          path: output/*.png
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: fit-nll-plots-${{ github.event.pull_request.head.sha }}
+          path: output/*.png
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fit-nll-result
+          path: fit_result/**/*.pkl
+          if-no-files-found: error
+
+      - name: Validate fit convergence
+        run: |
+          python3 tests/test_fit_convergence.py --input_file fit_result/**/*.pkl --strict
+
+
   test-scan:
     runs-on: ubuntu-latest
 
@@ -167,9 +225,21 @@ jobs:
         run: |
           ./optimize/scan_test.sh
 
+      - name: Validate scan input directory
+        run: |
+          if [ ! -d "fit_result/fit_noise" ]; then
+            echo "Error: input_dir 'fit_result/fit_noise' does not exist."
+            exit 1
+          fi
+          shopt -s nullglob
+          files=(fit_result/fit_noise/*.pkl)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "Error: no .pkl files found in 'fit_result/fit_noise'."
+            exit 1
+          fi
       - name: Make scan plots
         run: |
-          ./optimize/analysis_scripts/plot_scan.py --input_file fit_result/**/*.pkl --output_dir output
+          ./optimize/analysis_scripts/plot_scan.py --input_dir fit_result/fit_noise/ --output_dir output
 
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
@@ -214,7 +284,7 @@ jobs:
 
       - name: Make scan plots
         run: |
-          ./optimize/analysis_scripts/plot_scan.py --input_file fit_result/**/*.pkl --output_dir output
+          ./optimize/analysis_scripts/plot_scan.py --input_dir fit_result/fit_noise/ --output_dir output
 
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
@@ -232,6 +302,52 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: scan-lut-result
+          path: fit_result/**/*.pkl
+          if-no-files-found: error
+
+
+  test-scan-nll-lut:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4.2.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system .[dev] pytest-xdist  # parallelize tests
+
+      - name: Check fit
+        run: |
+          ./optimize/scan_nll_lut_test.sh
+
+      - name: Make scan plots
+        run: |
+          ./optimize/analysis_scripts/plot_scan.py --input_dir fit_result/scan_nll/ --output_dir output
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: scan-nll-lut-plots-${{ github.sha }}
+          path: output/*.png
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: scan-nll-lut-plots-${{ github.event.pull_request.head.sha }}
+          path: output/*.png
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-nll-lut-result
           path: fit_result/**/*.pkl
           if-no-files-found: error
 
@@ -266,7 +382,8 @@ jobs:
 
   rtd:
     runs-on: ubuntu-latest
-    needs: [test-scan, test-scan-lut, test-fit, test-fit-lut]
+    # needs: [test-scan, test-scan-lut, test-fit, test-fit-lut, test-fit-nll, test-scan-nll-lut]
+    needs: [test-scan, test-scan-lut, test-fit, test-fit-lut, test-fit-nll, test-scan-nll-lut]
 
     steps:
       - name: Trigger RTDs build
