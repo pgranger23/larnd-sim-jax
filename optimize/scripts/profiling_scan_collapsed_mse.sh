@@ -20,7 +20,7 @@ fi
 
 TARGET_SEED=$SLURM_ARRAY_TASK_ID
 # PARAMS=optimize/scripts/param_list.yaml
-BATCH_SIZE=200
+BATCH_SIZE=100
 ITERATIONS=10
 DATA_SEED=1
 LOSS=mse_adc
@@ -72,6 +72,6 @@ JAX_EXPLAIN_CACHE_MISSES=1 python3 -m optimize.example_run \
     --scan_tgt_nom \
     --mc_diff \
     --probabilistic-sim \
-    --loss_fn_kw '{\"sigma\": 10}' \
+    --loss_fn_kw '{\"sigma\": 10, \"collapsed\": false}' \
     --profile
 "

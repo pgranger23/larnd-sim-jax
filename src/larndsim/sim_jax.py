@@ -142,119 +142,21 @@ def simulate_drift(params, tracks, fields, rngkey):
 def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template, 
                              nelectrons, long_diff, currents_idx, nelectrons_neigh, 
                              pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
-    """
-    Simulate induced current signals on detector pixels from drifted electrons.
-
-    This function is a JAX-jitted implementation of the signal simulation step.
-    It takes as input the drifted electron cloud, maps electrons to pixels, and
-    convolves them with a precomputed current-response template to obtain
-    time-sampled waveforms for each pixel and, optionally, its neighbours.
-
-    Parameters
-    ----------
-    params :
-        Configuration object containing detector and simulation parameters.
-        It must at least provide:
-
-        * ``time_interval``: tuple-like, global time window in ns.
-        * ``t_sampling``: float, sampling period in ns.
-        * ``signal_length``: int, number of time samples stored per pixel.
-        * ``long_diff_template``: 1D array of longitudinal-diffusion values
-          used for interpolation of the current-response templates.
-
-    unique_pixels : jax.numpy.ndarray
-        1D sorted array of unique pixel identifiers present in this event or
-        chunk. Shape is ``(Npixels,)``.
-
-    pixels : jax.numpy.ndarray
-        Array of pixel identifiers for each contributing electron. This is
-        typically the output of ``get_pixels`` or a similar routine. Its
-        leading dimension matches the electron-level quantities such as
-        ``t0_after_diff`` and ``nelectrons``.
-
-    t0_after_diff : jax.numpy.ndarray
-        Drift arrival times of electrons at the readout plane **after**
-        applying diffusion, in the same units as ``params.t_sampling`` (e.g.
-        ns). This is used to convert to discrete tick indices.
-
-    response_template : jax.numpy.ndarray
-        Lookup table of current response templates.
-        Shape is ``(Ntemplates, Nx, Ny, Nt)`` where
-
-        * ``Ntemplates`` is the number of longitudinal-diffusion bins,
-        * ``Nx``, ``Ny`` describe the transverse pixel offset grid,
-        * ``Nt`` is the number of time samples per template.
-
-    nelectrons : jax.numpy.ndarray
-        Number of electrons contributing to each entry in ``pixels`` /
-        ``t0_after_diff``. Used as weights when accumulating current.
-
-    long_diff : jax.numpy.ndarray
-        Longitudinal diffusion values per contributing electron (same
-        leading shape as ``pixels``). These are used to select and
-        quadratically interpolate between entries of
-        ``params.long_diff_template`` so that the response template matches
-        the actual diffusion.
-
-    currents_idx : jax.numpy.ndarray
-        Integer indices into the time dimension of ``response_template``
-        (or a flattened current-response lookup) for the *main* pixel
-        contribution of each electron.
-
-    nelectrons_neigh : jax.numpy.ndarray
-        Number of electrons contributing to *neighbour* pixels, typically
-        with an additional neighbour dimension. Its leading dimensions are
-        aligned with ``pix_renumbering_neigh`` and ``t0_neigh``.
-
-    pix_renumbering_neigh : jax.numpy.ndarray
-        Integer mapping from neighbour pixels to the index space of
-        ``unique_pixels``. This allows reusing the same waveform container
-        for both main and neighbour pixels.
-
-    t0_neigh : jax.numpy.ndarray
-        Drift arrival times (after diffusion) for neighbour contributions,
-        in the same units as ``t0_after_diff``. Used to compute discrete
-        tick indices for neighbour-induced currents.
-
-    currents_idx_neigh : jax.numpy.ndarray
-        Integer indices into the current-response lookup for neighbour
-        contributions, analogous to ``currents_idx`` but with a neighbour
-        dimension.
-
-    Returns
-    -------
-    tuple
-        A tuple of JAX arrays containing the accumulated waveforms for the
-        main pixels and, where applicable, their neighbours. The exact
-        structure (number of arrays and shapes) mirrors the implementation
-        of :func:`simulate_signals_new` and the expectations of the
-        downstream digitisation stage, and typically includes a per-pixel
-        waveform array of shape ``(Npixels, Nticks)`` plus any auxiliary
-        bookkeeping arrays required by later steps.
-
-    Notes
-    -----
-    * Time is discretised in units of ``params.t_sampling``. Internally,
-      continuous arrival times are converted to integer "ticks" using
-      floor/``astype(int)``.
-    * The first time bin (tick 0) is conventionally treated as a
-      padding/garbage-collector bin in some calling code and does not
-      necessarily correspond to a physical sampling instant.
-    * The function is JIT-compiled with JAX, so all array arguments must
-      be JAX arrays with shapes that are consistent across calls for
-      efficient compilation and execution.
-    """
     
     Npixels = unique_pixels.shape[0]
     Nticks = int(params.time_interval[1] / params.t_sampling) + 1
     Ntemplates, Nx, Ny, Nt = response_template.shape
     sig_len = params.signal_length
 
-    # --- 1. PREPARE MAIN PIXEL DATA ---
+    # --- 1. PREPARE MAIN PIXEL DATA (DIFFERENTIABLE TIME SHIFT) ---
     pix_renum = jnp.searchsorted(unique_pixels, pixels.ravel(), method='sort')
-    cathode_ticks = (t0_after_diff / params.t_sampling).astype(int)
     
-    # Quadratic Interpolation setup
+    # Extract continuous tick and fractional remainder for the gradient
+    float_ticks_main = t0_after_diff / params.t_sampling
+    cathode_ticks_main = jnp.clip(jnp.floor(float_ticks_main).astype(int), 0, Nt - 1)
+    frac_main = float_ticks_main - cathode_ticks_main  # The gradient flows through here!
+    
+    # Quadratic Interpolation setup (remains the same)
     template_vals = params.long_diff_template
     idx = jnp.clip(jnp.searchsorted(template_vals, long_diff), 1, template_vals.shape[0] - 2)
     
@@ -263,69 +165,111 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     b = (long_diff - x0) * (long_diff - x2) / ((x1 - x0) * (x1 - x2))
     c = (long_diff - x0) * (long_diff - x1) / ((x2 - x0) * (x2 - x1))
 
-    # Signal Indices (Main)
-    start_ticks = Nt - sig_len - cathode_ticks
-    time_ticks = start_ticks[..., None] + jnp.arange(sig_len)
-    # it should be start_ticks +1 in theory but we cheat by putting the cumsum in the garbage too
-    # when starting at 0 to mimic the expected behavior
-    time_ticks = jnp.where((time_ticks <= 0) | (time_ticks >= Nticks - 1), 0, time_ticks + 1)
-    main_flat_indices = (pix_renum[:, None] * Nticks + time_ticks).ravel()
+    # Signal Indices (Main) - Split across adjacent ticks
+    start_ticks_0 = Nt - sig_len - cathode_ticks_main
+    start_ticks_1 = start_ticks_0 - 1  # The adjacent shift
+
+    time_ticks_0 = start_ticks_0[..., None] + jnp.arange(sig_len)
+    time_ticks_1 = start_ticks_1[..., None] + jnp.arange(sig_len)
+    
+    time_ticks_0 = jnp.where((time_ticks_0 <= 0) | (time_ticks_0 >= Nticks - 1), 0, time_ticks_0 + 1)
+    time_ticks_1 = jnp.where((time_ticks_1 <= 0) | (time_ticks_1 >= Nticks - 1), 0, time_ticks_1 + 1)
+    
+    main_flat_indices_0 = (pix_renum[:, None] * Nticks + time_ticks_0).ravel()
+    main_flat_indices_1 = (pix_renum[:, None] * Nticks + time_ticks_1).ravel()
 
     # Signal Values (Interpolated Main)
     local_t = jnp.arange(Nt - sig_len, Nt)
-    # Using 'take' on a flattened 4D array: [temp, x, y, t]
     base_idx = (currents_idx[:, 0, None] * Ny + currents_idx[:, 1, None]) * Nt + local_t
-    main_vals = (
+    main_vals_2d = (
         response_template.take(idx[:, None] * Nx * Ny * Nt + base_idx) * b[:, None] +
         response_template.take((idx - 1)[:, None] * Nx * Ny * Nt + base_idx) * a[:, None] +
         response_template.take((idx + 1)[:, None] * Nx * Ny * Nt + base_idx) * c[:, None]
     ) * nelectrons[:, None]
-    main_vals = main_vals.ravel()
+    
+    # Weight the values by the sub-tick fraction
+    main_vals_0 = (main_vals_2d * (1.0 - frac_main[:, None])).ravel()
+    main_vals_1 = (main_vals_2d * frac_main[:, None]).ravel()
 
-    # --- 2. PREPARE NEIGHBOR DATA ---
+    # --- 2. PREPARE NEIGHBOR DATA (DIFFERENTIABLE TIME SHIFT) ---
     npix_neigh = (2 * params.number_pix_neighbors + 1)**2
-    # Use repeat for clean broadcasting of electron-level properties
     elec_ids_neigh = jnp.repeat(jnp.arange(nelectrons_neigh.shape[0]), npix_neigh)
     
     neigh_charge = jnp.take(nelectrons_neigh, elec_ids_neigh)
     neigh_t0 = jnp.take(t0_neigh, elec_ids_neigh)
-    neigh_cathode_ticks = (neigh_t0 / params.t_sampling).astype(int)
     
-    neigh_start_ticks = Nt - sig_len - neigh_cathode_ticks
-    neigh_time_ticks = neigh_start_ticks[..., None] + jnp.arange(sig_len)
-    neigh_time_ticks = jnp.where((neigh_time_ticks <= 0) | (neigh_time_ticks >= Nticks - 1), 0, neigh_time_ticks + 1)
-    neigh_flat_indices = (pix_renumbering_neigh[:, None] * Nticks + neigh_time_ticks).ravel()
+    # Extract continuous tick and fractional remainder for neighbors
+    float_ticks_neigh = neigh_t0 / params.t_sampling
+    cathode_ticks_neigh = jnp.clip(jnp.floor(float_ticks_neigh).astype(int), 0, Nt - 1)
+    frac_neigh = float_ticks_neigh - cathode_ticks_neigh
+    
+    neigh_start_ticks_0 = Nt - sig_len - cathode_ticks_neigh
+    neigh_start_ticks_1 = neigh_start_ticks_0 - 1
+    
+    neigh_time_ticks_0 = neigh_start_ticks_0[..., None] + jnp.arange(sig_len)
+    neigh_time_ticks_1 = neigh_start_ticks_1[..., None] + jnp.arange(sig_len)
+    
+    neigh_time_ticks_0 = jnp.where((neigh_time_ticks_0 <= 0) | (neigh_time_ticks_0 >= Nticks - 1), 0, neigh_time_ticks_0 + 1)
+    neigh_time_ticks_1 = jnp.where((neigh_time_ticks_1 <= 0) | (neigh_time_ticks_1 >= Nticks - 1), 0, neigh_time_ticks_1 + 1)
+    
+    neigh_flat_indices_0 = (pix_renumbering_neigh[:, None] * Nticks + neigh_time_ticks_0).ravel()
+    neigh_flat_indices_1 = (pix_renumbering_neigh[:, None] * Nticks + neigh_time_ticks_1).ravel()
     
     # Neighbor Values (Assumes Template 0, no diffusion)
     neigh_base_idx = (currents_idx_neigh[:, 0, None] * Ny + currents_idx_neigh[:, 1, None]) * Nt + local_t
-    neigh_vals = (response_template[0].take(neigh_base_idx) * neigh_charge[:, None]).ravel()
+    neigh_vals_2d = response_template[0].take(neigh_base_idx) * neigh_charge[:, None]
+    
+    neigh_vals_0 = (neigh_vals_2d * (1.0 - frac_neigh[:, None])).ravel()
+    neigh_vals_1 = (neigh_vals_2d * frac_neigh[:, None]).ravel()
 
     # --- 3. BOUNDARY CORRECTIONS (CUMSUMS) ---
     response_cum = jnp.cumsum(response_template, axis=-1)
     
-    # Main Corrections
+    # Main Corrections - Linearly interpolate the continuous boundary integral
     base_curr = (currents_idx[:, 0] * Ny + currents_idx[:, 1]) * Nt
-    diff_main = (response_cum.take(idx * Nx * Ny * Nt + base_curr + Nt - sig_len) - 
-                 response_cum.take(idx * Nx * Ny * Nt + base_curr + cathode_ticks)) * nelectrons
-    idx_corr_main = jnp.where((start_ticks <= 0) | (start_ticks >= Nticks - 1), 0, start_ticks) + pix_renum * Nticks
+    val_cum_0 = response_cum.take(idx * Nx * Ny * Nt + base_curr + cathode_ticks_main)
+    # Use jnp.clip for safety on the +1 wrap boundary
+    val_cum_1 = response_cum.take(idx * Nx * Ny * Nt + base_curr + jnp.clip(cathode_ticks_main + 1, 0, Nt - 1))
+    interp_cum = val_cum_0 * (1.0 - frac_main) + val_cum_1 * frac_main
+    
+    diff_main_interp = (response_cum.take(idx * Nx * Ny * Nt + base_curr + Nt - sig_len) - interp_cum) * nelectrons
+    
+    idx_corr_main_0 = jnp.where((start_ticks_0 <= 0) | (start_ticks_0 >= Nticks - 1), 0, start_ticks_0) + pix_renum * Nticks
+    idx_corr_main_1 = jnp.where((start_ticks_1 <= 0) | (start_ticks_1 >= Nticks - 1), 0, start_ticks_1) + pix_renum * Nticks
+    
+    diff_main_0 = diff_main_interp * (1.0 - frac_main)
+    diff_main_1 = diff_main_interp * frac_main
 
     # Neighbor Corrections
     base_curr_neigh = (currents_idx_neigh[:, 0] * Ny + currents_idx_neigh[:, 1]) * Nt
-    diff_neigh = (response_cum[0].take(base_curr_neigh + Nt - sig_len) - 
-                  response_cum[0].take(base_curr_neigh + neigh_cathode_ticks)) * neigh_charge
-    idx_corr_neigh = jnp.where((neigh_start_ticks <= 0) | (neigh_start_ticks >= Nticks - 1), 0, neigh_start_ticks) + pix_renumbering_neigh * Nticks
+    val_cum_neigh_0 = response_cum[0].take(base_curr_neigh + cathode_ticks_neigh)
+    val_cum_neigh_1 = response_cum[0].take(base_curr_neigh + jnp.clip(cathode_ticks_neigh + 1, 0, Nt - 1))
+    interp_cum_neigh = val_cum_neigh_0 * (1.0 - frac_neigh) + val_cum_neigh_1 * frac_neigh
+    
+    diff_neigh_interp = (response_cum[0].take(base_curr_neigh + Nt - sig_len) - interp_cum_neigh) * neigh_charge
+    
+    idx_corr_neigh_0 = jnp.where((neigh_start_ticks_0 <= 0) | (neigh_start_ticks_0 >= Nticks - 1), 0, neigh_start_ticks_0) + pix_renumbering_neigh * Nticks
+    idx_corr_neigh_1 = jnp.where((neigh_start_ticks_1 <= 0) | (neigh_start_ticks_1 >= Nticks - 1), 0, neigh_start_ticks_1) + pix_renumbering_neigh * Nticks
+    
+    diff_neigh_0 = diff_neigh_interp * (1.0 - frac_neigh)
+    diff_neigh_1 = diff_neigh_interp * frac_neigh
 
     # --- 4. UNIFIED SEGMENT SUM ---
-    all_indices = jnp.concatenate([main_flat_indices, neigh_flat_indices, idx_corr_main, idx_corr_neigh])
-    all_values = jnp.concatenate([main_vals, neigh_vals, diff_main, diff_neigh])
+    # We now concatenate the _0 and _1 variants to smoothly accumulate both
+    all_indices = jnp.concatenate([
+        main_flat_indices_0, main_flat_indices_1, 
+        neigh_flat_indices_0, neigh_flat_indices_1, 
+        idx_corr_main_0, idx_corr_main_1, 
+        idx_corr_neigh_0, idx_corr_neigh_1
+    ])
+    
+    all_values = jnp.concatenate([
+        main_vals_0, main_vals_1, 
+        neigh_vals_0, neigh_vals_1, 
+        diff_main_0, diff_main_1, 
+        diff_neigh_0, diff_neigh_1
+    ])
 
-    # We currently rely on jax.ops.segment_sum with *unsorted* indices.
-    # Setting indices_are_sorted=False is required to tell JAX that all_indices is not sorted.
-    # If profiling shows that sorting improves performance on a given backend, you can
-    # enable the following and pass the sorted indices/values instead:
-    # sort_idx = jnp.argsort(all_indices)
-    # all_indices = all_indices[sort_idx]
-    # all_values = all_values[sort_idx]
     wfs_flat = jax.ops.segment_sum(
         all_values, 
         all_indices, 

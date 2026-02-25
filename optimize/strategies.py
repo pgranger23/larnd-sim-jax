@@ -7,9 +7,43 @@ from larndsim.fee_jax import get_average_hit_values
 import logging
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.WARNING)
 
-def pad_to_closest_multiple(x, dims_to_pad=None, multiple=128, pad_value=0):
+@jax.jit
+def compute_occurrence_indices(ids):
+    """
+    Compute occurrence index (0, 1, 2, ...) for each ID in the array.
+    
+    For sorted IDs, this counts how many times each ID has appeared so far.
+    Example: [100, 100, 100, 200, 200, 300] -> [0, 1, 2, 0, 1, 0]
+    
+    Args:
+        ids: Array of IDs (should be sorted for meaningful results)
+    
+    Returns:
+        occurrence_indices: Array where each element is its occurrence count within its ID group
+    """
+    # Detect where ID changes (boundaries between groups)
+    id_changes = jnp.concatenate([
+        jnp.array([True]),  # First element is always a new group
+        ids[1:] != ids[:-1]  # Compare consecutive elements
+    ])
+    
+    # Cumulative sum creates increasing counter: [1, 2, 3, 4, 5, ...]
+    cumsum = jnp.cumsum(jnp.ones_like(ids, dtype=jnp.int32))
+    
+    # At each ID boundary, record the cumsum value to use as reset point
+    reset_values = jnp.where(id_changes, cumsum, 0)
+    
+    # Propagate the reset values forward (each group gets its starting cumsum)
+    reset_at_boundary = jnp.maximum.accumulate(reset_values)
+    
+    # Subtract to get 0-based index within each group
+    occurrence_indices = cumsum - reset_at_boundary
+    
+    return occurrence_indices
+
+def pad_to_closest_multiple(x, dims_to_pad=None, multiple=128, pad_value=0, pad_front=False):
     """
     Efficiently pads array x to the closest multiple of a given value using update-in-place syntax.
     Works with arrays of any number of dimensions.
@@ -40,7 +74,10 @@ def pad_to_closest_multiple(x, dims_to_pad=None, multiple=128, pad_value=0):
     
     # 2. Copy 'x' into the start of the buffer
     # Create slice tuple for all dimensions: [:x.shape[0], :x.shape[1], ...]
-    slices = tuple(slice(0, dim_size) for dim_size in x.shape)
+    if pad_front:
+        slices = tuple(slice(target_shape[idim] - dim_size, None) for idim, dim_size in enumerate(x.shape))
+    else:
+        slices = tuple(slice(0, dim_size) for dim_size in x.shape)
     padded_x = buffer.at[slices].set(x)
     
     return padded_x
@@ -80,8 +117,8 @@ class LUTProbabilisticSimulation(SimulationStrategy):
         
         wfs, unique_pixels = simulate_wfs(params, self.response, tracks, fields)
 
-        unique_pixels = pad_to_closest_multiple(unique_pixels, multiple=128, pad_value=-1)
-        wfs = pad_to_closest_multiple(wfs, dims_to_pad=(0,), multiple=128, pad_value=0.0)
+        unique_pixels = pad_to_closest_multiple(unique_pixels, multiple=128, pad_value=-1, pad_front=True)
+        wfs = pad_to_closest_multiple(wfs, dims_to_pad=(0,), multiple=128, pad_value=0.0, pad_front=True)
 
         adcs_distrib, pixel_x, pixel_y, ticks_prob, event = simulate_probabilistic(params, wfs, unique_pixels)
         
@@ -148,7 +185,7 @@ class GenericLossStrategy(LossStrategy):
         )
 
 class CollapsedProbabilisticLossStrategy(LossStrategy):
-    def __init__(self, loss_fn, hit_threshold=1e-8, collapsed=True, **kwargs):
+    def __init__(self, loss_fn, hit_threshold=1e-8, collapsed=True, prob_target=False, **kwargs):
         """
         Collapses probabilistic distributions into expected values and applies a deterministic loss.
         
@@ -167,7 +204,7 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
         self.loss_fn = loss_fn
         self.hit_threshold = hit_threshold
         self.collapsed = collapsed
-
+        self.prob_target = prob_target
     # def _generate_pseudo_hits(self, ticks_prob, adcs_distrib):
     #     Npix, Nhits, Nticks = ticks_prob.shape
     #     expected_ticks_per_hit, expected_adcs_per_hit, lambda_per_hit = get_average_hit_values(ticks_prob, adcs_distrib)
@@ -188,26 +225,79 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
         
     #     return pred_ticks, pred_adcs, pred_lambda, pred_pixel_idx
 
-    def _generate_distribution_hits(self, ticks_prob, adcs_distrib):
+    def _generate_distribution_hits(self, params, output):
+        # This function can be used to prepare the probabilistic output for loss computation
+        # For example, it can compute expected values or filter out low-probability hits
+        ticks_prob = output['ticks_prob']
+        adcs_distrib = output['adcs_distrib']
+        pixel_x = output['pixel_x']
+        pixel_y = output['pixel_y']
+
         Npix, Nhits, Nticks = ticks_prob.shape
-        
-        # Filter out hits with negligible probability
-        has_hit_mask = ticks_prob > self.hit_threshold  # (Npix, Nhits)
+
+        mask = ticks_prob > self.hit_threshold
 
         
-        # Flatten to create list of pseudo-hits
-        # We need to replicate pixel coordinates for each hit
-        all_ticks = jnp.arange(Nticks)[None, None, :] * jnp.ones((Npix, Nhits, Nticks), dtype=jnp.int32)  # (Npix, Nhits, Nticks)
-        pred_ticks = all_ticks[has_hit_mask]  # (N_total_hits,)
-        pred_adcs = adcs_distrib[has_hit_mask]  # (N_total_hits,)
-        pred_lambda = ticks_prob[has_hit_mask]  # (N_total_hits,)
-        
-        # For pixel coordinates, we need to replicate them for each hit
-        # Create indices for which pixel each hit belongs to
-        pixel_indices = jnp.arange(Npix)[:, None, None] * jnp.ones((Npix, Nhits, Nticks), dtype=jnp.int32)  # (Npix, Nhits, Nticks)
-        pred_pixel_idx = pixel_indices[has_hit_mask]  # (N_total_hits,)
+        hit_prob = ticks_prob[mask]
+        hit_adc = adcs_distrib[mask]
+        Q = adc2charge(hit_adc, params)
 
-        return pred_ticks, pred_adcs, pred_lambda, pred_pixel_idx
+        all_ticks = jnp.arange(Nticks)[None, None, :]*jnp.ones((Npix, Nhits, Nticks))
+        selected_ticks = all_ticks[mask]
+
+        # Get z-coordinates and event IDs from prediction (if available)
+        # If not available, compute from drift time or use same default as target
+        if 'pixel_z' in output:
+            # If prediction has pixel_z (from stochastic simulation), replicate for each hit
+            pred_z = output['pixel_z']
+        else:
+            # For probabilistic predictions without z, compute from drift time
+            # z = v_drift * t_drift (same approach as in simulate_stochastic)
+            # Get pixel plane for z calculation
+            pixel_plane = output.get('pixel_plane')
+            selected_planes = (pixel_plane[:, None, None] * jnp.ones((Npix, Nhits, Nticks), dtype=jnp.int32))[mask]
+            pred_z = get_hit_z(params, selected_ticks, selected_planes)
+
+        # Event is per-pixel, replicate for each hit
+        pred_event_per_pixel = output['event'][:, None, None] * jnp.ones((Npix, Nhits, Nticks), dtype=jnp.int32)  # (Npix, Nhits, Nticks)
+        pixel_x_per_event = pixel_x[:, None, None] * jnp.ones((Npix, Nhits, Nticks), dtype=jnp.int32)
+        pixel_y_per_event = pixel_y[:, None, None] * jnp.ones((Npix, Nhits, Nticks), dtype=jnp.int32)
+
+        return Q, pixel_x_per_event[mask], pixel_y_per_event[mask], pred_z, selected_ticks, hit_prob, pred_event_per_pixel[mask]
+
+    def _prepare_probabilistic_output(self, params, output):
+        # This function can be used to prepare the probabilistic output for loss computation
+        # For example, it can compute expected values or filter out low-probability hits
+        ticks_prob = output['ticks_prob']
+        adcs_distrib = output['adcs_distrib']
+        pixel_x = output['pixel_x']
+        pixel_y = output['pixel_y']
+        
+        expected_ticks_per_hit, expected_adcs_per_hit, hit_prob = get_average_hit_values(ticks_prob, adcs_distrib)
+        Npix, Nhits, Nticks = ticks_prob.shape
+
+        Q = adc2charge(expected_adcs_per_hit, params)
+
+        # Get z-coordinates and event IDs from prediction (if available)
+        # If not available, compute from drift time or use same default as target
+        if 'pixel_z' in output:
+            # If prediction has pixel_z (from stochastic simulation), replicate for each hit
+            pred_z = output['pixel_z']
+        else:
+            # For probabilistic predictions without z, compute from drift time
+            # z = v_drift * t_drift (same approach as in simulate_stochastic)
+            # Get pixel plane for z calculation
+            pixel_plane = output.get('pixel_plane')
+            pred_z = get_hit_z(params, expected_ticks_per_hit, pixel_plane[:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32))
+
+        # Event is per-pixel, replicate for each hit
+        pred_event_per_pixel = output['event'][:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32)  # (Npix, Nhits)
+        pixel_x_per_event = pixel_x[:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32)
+        pixel_y_per_event = pixel_y[:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32)
+
+        return Q, pixel_x_per_event, pixel_y_per_event, pred_z, expected_ticks_per_hit, hit_prob, pred_event_per_pixel
+        
+        
 
     def compute(self, params, prediction, target):
         """
@@ -220,57 +310,29 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
         
         Each (pixel, hit_index) combination should be treated independently.
         """
-        # Extract probabilistic distributions
-        ticks_prob = prediction['ticks_prob']  # (Npix, Nhits, Nticks)
-        adcs_distrib = prediction['adcs_distrib']  # (Npix, Nhits, Nticks)
-        pixel_x = prediction['pixel_x']
-        pixel_y = prediction['pixel_y']
-        
+
+        if self.prob_target:
+            ref_Q, target_x_per_event, target_y_per_event, ref_z, target_ticks, ref_hit_prob, ref_event = self._prepare_probabilistic_output(params, target)
+        else:
+            ref_Q = adc2charge(target['adcs'], params)
+            ref_z = target['pixel_z']
+            ref_event = target.get('event', jnp.zeros_like(target['ticks'], dtype=jnp.int32))
+            ref_hit_prob = target.get('hit_prob', jnp.ones_like(target['ticks']))
+            target_x_per_event = target['pixel_x']
+            target_y_per_event = target['pixel_y']
+            target_ticks = target['ticks']
+
         if self.collapsed:
-            # pred_ticks, pred_adcs, pred_lambda, pred_pixel_idx = self._generate_pseudo_hits(ticks_prob, adcs_distrib)  # Each shape: (Npix, Nhits)
-            pred_ticks, pred_adcs, pred_lambda = get_average_hit_values(ticks_prob, adcs_distrib)
-            Npix, Nhits, Nticks = ticks_prob.shape
+            pred_Q, pixel_x_per_event, pixel_y_per_event, pred_z, pred_ticks, pred_hit_prob, pred_event_per_pixel = self._prepare_probabilistic_output(params, prediction)
         else:
-            raise NotImplementedError("Non-collapsed distribution hits not implemented yet")
-            # pred_ticks, pred_adcs, pred_lambda, pred_pixel_idx = self._generate_distribution_hits(ticks_prob, adcs_distrib)  # Each shape: (Npix, Nhits, Nticks)
-        
-        # Convert ADCs to charge
-        pred_Q = adc2charge(pred_adcs, params)
-        ref_Q = adc2charge(target['adcs'], params)
-        
-        # Get z-coordinates and event IDs from prediction (if available)
-        # If not available, compute from drift time or use same default as target
-        if 'pixel_z' in prediction:
-            # If prediction has pixel_z (from stochastic simulation), replicate for each hit
-            pred_z = prediction['pixel_z']
-        else:
-            # For probabilistic predictions without z, compute from drift time
-            # z = v_drift * t_drift (same approach as in simulate_stochastic)
-            # Get pixel plane for z calculation
-            pixel_plane = prediction.get('pixel_plane')
-            pred_z = get_hit_z(params, pred_ticks, pixel_plane[:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32))
+            pred_Q, pixel_x_per_event, pixel_y_per_event, pred_z, pred_ticks, pred_hit_prob, pred_event_per_pixel = self._generate_distribution_hits(params, prediction)
 
-        
-        # Get reference z-coordinates using same logic
-        ref_z = target['pixel_z']
-        
-        # Event is per-pixel, replicate for each hit
-        pred_event_per_pixel = prediction['event'][:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32)  # (Npix, Nhits)
-        pixel_x_per_event = pixel_x[:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32)
-        pixel_y_per_event = pixel_y[:, None] * jnp.ones((Npix, Nhits), dtype=jnp.int32)
-
-        
-        # Get reference event IDs
-        ref_event = target.get('event', jnp.zeros_like(target['ticks'], dtype=jnp.int32))
-        
-        pred_hit_prob = pred_lambda 
-        ref_hit_prob = target.get('hit_prob', jnp.ones_like(target['ticks']))
         
         # Apply the deterministic loss function
         loss_val, aux = self.loss_fn(
             params,
             pred_Q.flatten(), pixel_x_per_event.flatten(), pixel_y_per_event.flatten(), pred_z.flatten(), pred_ticks.flatten(), pred_hit_prob.flatten(), pred_event_per_pixel.flatten(),
-            ref_Q, target['pixel_x'], target['pixel_y'], ref_z, target['ticks'], ref_hit_prob, ref_event,
+            ref_Q.flatten(), target_x_per_event.flatten(), target_y_per_event.flatten(), ref_z.flatten(), target_ticks.flatten(), ref_hit_prob.flatten(), ref_event.flatten(),
             **self.kwargs
         )
         
@@ -289,9 +351,18 @@ class ProbabilisticLossStrategy(LossStrategy):
         
         This ensures the model learns to concentrate probability only at pixels with actual hits.
         
+        NUMERICAL STABILITY NOTE:
+        The gradient of log(x) is 1/x, which explodes when x → 0. When probabilities are
+        very small (e.g., 1e-20), this causes gradient instability. We handle this by:
+        - Clipping probabilities to [eps, 1] before taking log
+        - This limits max gradient to 1/eps (e.g., 1e10 for eps=1e-10)
+        
+        ALTERNATIVE (for future): Work entirely in log-space by having the model output
+        log-probabilities directly using log_softmax, then loss = -log_prob (no additional log).
+        
         Args:
             sigma_charge: Standard deviation for Gaussian charge likelihood (in electrons)
-            eps: Small constant to avoid log(0)
+            eps: Small constant to avoid log(0). Also sets minimum probability floor.
         """
         super().__init__(**kwargs)
         self.sigma_charge = sigma_charge
@@ -324,10 +395,10 @@ class ProbabilisticLossStrategy(LossStrategy):
         
         # Find indices of target pixels in simulation output (unique_pixels is sorted)
         pixel_indices = jnp.searchsorted(sim_unique_pixels, target_pixel_ids)
-        
+        # jax.debug.print("pixel_indices={pixel_indices}", pixel_indices=pixel_indices)
         # Validate matches (check if pixel was actually simulated)
         pixel_indices_safe = jnp.clip(pixel_indices, 0, sim_unique_pixels.shape[0] - 1)
-        pixel_match_valid = sim_unique_pixels[pixel_indices_safe] == target_pixel_ids
+        pixel_match_valid = (sim_unique_pixels[pixel_indices_safe] == target_pixel_ids) & (target_pixel_ids >= 0)
         
         # Step 2: Extract probability distributions for matched pixels
         # ticks_prob shape: (Npix, Nvalues, Nticks)
@@ -337,7 +408,7 @@ class ProbabilisticLossStrategy(LossStrategy):
         adcs_distrib = prediction['adcs_distrib']  # (Npix, Nvalues, Nticks)
         
         # Compute marginal probability P(tick | pixel) = sum_values P(tick, value | pixel)
-        marginal_tick_prob = jnp.sum(ticks_prob, axis=1)  # (Npix, Nticks)
+        # marginal_tick_prob = jnp.sum(ticks_prob, axis=1)  # (Npix, Nticks)
         
         # Step 3: For each target hit, compute likelihood
         target_ticks = target['ticks'].astype(int)
@@ -347,100 +418,130 @@ class ProbabilisticLossStrategy(LossStrategy):
         # Gather probabilities for the matched pixels at observed ticks
         # For each hit i: marginal_tick_prob[pixel_indices[i], target_ticks[i]]
 
-        hit_tick_probs = marginal_tick_prob[pixel_indices_safe, target_ticks]
+        trigger_nb = compute_occurrence_indices(pixel_indices)
+        # jax.debug.print("trigger_nb={trigger_nb}", trigger_nb=trigger_nb)
+
+        hit_tick_probs = ticks_prob[pixel_indices_safe, trigger_nb, target_ticks]
+        # hit_tick_probs = jnp.sum(ticks_prob[pixel_indices_safe, :, target_ticks], axis=1)  # Sum over values to get P(tick|pixel)
         
         # Step 4: Compute expected charge at observed tick for each pixel
         # E[charge | pixel, tick] = sum_values charge(value, tick) * P(value | tick, pixel)
         # where P(value | tick, pixel) = P(value, tick | pixel) / P(tick | pixel)
         
         # Get conditional probability distributions: P(value | tick, pixel)
-        safe_marginal = jnp.where(marginal_tick_prob > self.eps, marginal_tick_prob, 1.0)
-        conditional_value_prob = ticks_prob / safe_marginal[:, None, :]  # (Npix, Nvalues, Nticks)
+        # safe_marginal = jnp.where(marginal_tick_prob > self.eps, marginal_tick_prob, 1.0)
+        # conditional_value_prob = ticks_prob / safe_marginal[:, None, :]  # (Npix, Nvalues, Nticks)
         
-        # Expected charge at each (pixel, tick)
-        expected_charge_adc = jnp.sum(adcs_distrib * conditional_value_prob, axis=1)  # (Npix, Nticks)
-        expected_charge = adc2charge(expected_charge_adc, params)
+        # # Expected charge at each (pixel, tick)
+        # expected_charge_adc = jnp.sum(adcs_distrib * conditional_value_prob, axis=1)  # (Npix, Nticks)
+        # expected_charge = adc2charge(expected_charge_adc, params)
         
         # Gather expected charges for observed hits
-        hit_expected_charges = expected_charge[pixel_indices_safe, target_ticks]
+        hit_expected_charges = adc2charge(adcs_distrib[pixel_indices_safe, trigger_nb, target_ticks], params)  # (Nhits,)
         
         # Step 5: Compute log-likelihood components
         
         # (a) Tick likelihood: log P(tick | pixel)
-        log_likelihood_tick = jnp.log(hit_tick_probs + self.eps)
+        # IMPORTANT: For numerical stability in gradient computation, we need to handle
+        # very small probabilities carefully. The issue is that d/dx log(x) = 1/x
+        # becomes huge when x → 0, causing gradient instability.
+        # 
+        # Solution: Clip probabilities to a reasonable range BEFORE taking log.
+        # This prevents gradients from exploding when probabilities are tiny.
+        # The clipping acts as a "soft floor" - probabilities below eps are treated
+        # as if they were eps, limiting the maximum gradient magnitude to 1/eps.
+        # prob_floor = 1e-5  # Ensure eps is not too small
+        # clipped_tick_probs = jnp.clip(hit_tick_probs, prob_floor, 1.0)
+        eps = 1e-3
+        # p_safe = hit_tick_probs * (1 - 2 * eps) + eps
+        # log_likelihood_tick = jnp.log(p_safe)
+        # log_likelihood_tick = jnp.sqrt(jnp.square(hit_tick_probs) + jnp.square(eps)) - eps
+        log_likelihood_tick = jnp.maximum(hit_tick_probs, jnp.log(eps))
         
         # (b) Charge likelihood: log P(charge | tick, pixel) assuming Gaussian
         #     P(charge_obs | charge_expected, sigma) ~ N(charge_expected, sigma^2)
         charge_diff = target_charge - hit_expected_charges
+        # jax.debug.print("target_charge={target_charge}", target_charge=target_charge)
+        # jax.debug.print("hit_expected_charges={hit_expected_charges}", hit_expected_charges=hit_expected_charges)
         log_likelihood_charge = (
-            -0.5 * (charge_diff / self.sigma_charge) ** 2 
-            - 0.5 * jnp.log(2 * jnp.pi * self.sigma_charge**2)
+            -0.5 * (charge_diff / (self.sigma_charge/1000)) ** 2 
+            - 0.5 * jnp.log(2 * jnp.pi * (self.sigma_charge/1000)**2)
         )
         
         # (c) Cap likelihood instead of masking for very small probabilities
         # When P(tick) is extremely small, cap the penalty instead of setting to 0
         # This ensures bad predictions are still penalized, preventing loss from artificially decreasing
-        tick_prob_threshold = 1e-8
-        max_negative_ll_tick = -jnp.log(tick_prob_threshold + self.eps)  # ≈ 18.4 for 1e-8
+        # tick_prob_threshold = 1e-8
+        # max_negative_ll_tick = -jnp.log(tick_prob_threshold + self.eps)  # ≈ 18.4 for 1e-8
         
         # Cap the tick likelihood: use actual value if reasonable, otherwise use max penalty
-        capped_log_likelihood_tick = jnp.where(
-            hit_tick_probs > tick_prob_threshold,
-            log_likelihood_tick,
-            -max_negative_ll_tick  # Large negative value (strong penalty)
-        )
+
+        # capped_log_likelihood_tick = jnp.where(
+        #     hit_tick_probs > tick_prob_threshold,
+        #     log_likelihood_tick,
+        #     -max_negative_ll_tick  # Large negative value (strong penalty)
+        # )
+        # capped_log_likelihood_tick = log_likelihood_tick
         
         # For charge: only compute when tick probability is significant
         # When P(tick) is tiny, the charge term is meaningless, so set to 0
-        tick_mask = hit_tick_probs > tick_prob_threshold
-        masked_log_likelihood_charge = jnp.where(tick_mask, log_likelihood_charge, 0.0)
+        # tick_mask = hit_tick_probs > tick_prob_threshold
+        # masked_log_likelihood_charge = jnp.where(tick_mask, log_likelihood_charge, 0.0)
         
         # (d) Combined log-likelihood per hit
-        log_likelihood_per_hit = capped_log_likelihood_tick + masked_log_likelihood_charge
+        # log_likelihood_per_hit = log_likelihood_tick #+ log_likelihood_charge
+        # log_likelihood_per_hit = log_likelihood_charge
+        log_likelihood_per_hit = log_likelihood_tick*100 + log_likelihood_charge
         
-        # Step 6: Handle invalid matches (pixels not in simulation)
-        # For invalid matches, assign a very negative log-likelihood (low probability)
+        # # Step 6: Handle invalid matches (pixels not in simulation)
+        # # For invalid matches, assign a very negative log-likelihood (low probability)
         log_likelihood_per_hit = jnp.where(
             pixel_match_valid, 
             log_likelihood_per_hit, 
-            jnp.log(self.eps)
+            0.0
         )
         
-        # Step 7: Sum log-likelihood over observed hits
+        # # Step 7: Sum log-likelihood over observed hits
         total_log_likelihood_hits = jnp.sum(log_likelihood_per_hit)
         
-        # Step 8: Add penalty for false positives (predicted hits where none observed)
-        # For each predicted pixel, compute λ = Σ_t P(tick|pixel) = expected number of hits
-        lambda_per_pixel = jnp.sum(marginal_tick_prob, axis=1)  # (Npix,)
+        # # Step 8: Add penalty for false positives (predicted hits where none observed)
+        # # For each predicted pixel, compute λ = Σ_t P(tick|pixel) = expected number of hits
+        lambda_per_pixel = jnp.sum(ticks_prob, axis=(1, 2))  # (Npix,)
         
-        # Check which predicted pixels have at least one observed hit
-        # For each predicted pixel, check if it appears in target_pixel_ids
-        pred_pixels = prediction['unique_pixels']
+        # # Check which predicted pixels have at least one observed hit
+        # # For each predicted pixel, check if it appears in target_pixel_ids
+        # pred_pixels = prediction['unique_pixels']
         
-        def pixel_has_hit(pred_pixel):
-            return jnp.sum(target_pixel_ids == pred_pixel) > 0
+        # def pixel_has_hit(pred_pixel):
+        #     return jnp.sum(target_pixel_ids == pred_pixel) > 0
         
-        pred_pixel_has_hit = jax.vmap(pixel_has_hit)(pred_pixels)  # (Npix,) boolean
+        # pred_pixel_has_hit = jax.vmap(pixel_has_hit)(pred_pixels)  # (Npix,) boolean
         
-        # For pixels with no observed hits: penalty = λ (from Poisson P(n=0|λ) = exp(-λ))
-        # For pixels with hits: already accounted for in Step 7
-        penalty_per_pixel = jnp.where(pred_pixel_has_hit, 0.0, lambda_per_pixel)
-        total_false_positive_penalty = jnp.sum(penalty_per_pixel)
+        # # # For pixels with no observed hits: penalty = λ (from Poisson P(n=0|λ) = exp(-λ))
+        # # # For pixels with hits: already accounted for in Step 7
+        # penalty_per_pixel = jnp.where(pred_pixel_has_hit, 0.0, lambda_per_pixel)
+        # total_false_positive_penalty = jnp.sum(penalty_per_pixel)
         
-        # Step 9: Combined loss (negative log-likelihood with false positive penalty)
-        nll = -total_log_likelihood_hits + total_false_positive_penalty
+        # # Step 9: Combined loss (negative log-likelihood with false positive penalty)
+        # nll = -total_log_likelihood_hits + total_false_positive_penalty
         
         # Auxiliary info for debugging
+        # aux = {
+        #     'n_hits': target_pixel_ids.shape[0],
+        #     'n_valid_matches': jnp.sum(pixel_match_valid),
+        #     'mean_tick_prob': jnp.mean(hit_tick_probs),
+        #     'mean_charge_diff': jnp.mean(jnp.abs(charge_diff)),
+        #     'n_capped_hits': jnp.sum(~tick_mask),  # Renamed: now counts capped hits, not masked
+        #     'false_positive_penalty': total_false_positive_penalty,
+        #     'n_pred_pixels': pred_pixels.shape[0],
+        #     'n_pixels_with_hits': jnp.sum(pred_pixel_has_hit),
+        # }
+
         aux = {
-            'n_hits': target_pixel_ids.shape[0],
-            'n_valid_matches': jnp.sum(pixel_match_valid),
-            'mean_tick_prob': jnp.mean(hit_tick_probs),
-            'mean_charge_diff': jnp.mean(jnp.abs(charge_diff)),
-            'n_capped_hits': jnp.sum(~tick_mask),  # Renamed: now counts capped hits, not masked
-            'false_positive_penalty': total_false_positive_penalty,
-            'n_pred_pixels': pred_pixels.shape[0],
-            'n_pixels_with_hits': jnp.sum(pred_pixel_has_hit),
+            "log_likelihood_charge": -jnp.sum(log_likelihood_charge),
+            "log_likelihood_tick": -jnp.sum(log_likelihood_tick),
+            # "total_false_positive_penalty": total_false_positive_penalty
         }
         
-        return nll, aux 
+        return -total_log_likelihood_hits, aux
 
