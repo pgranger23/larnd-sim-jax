@@ -169,7 +169,7 @@ def main(config):
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
-                                probabilistic_target=config.probabilistic_target, probabilistic_sim=config.probabilistic_sim,
+                                probabilistic_sim=config.probabilistic_sim,
                                 compute_target_hessian=True)
 
     else:
@@ -276,9 +276,9 @@ if __name__ == '__main__':
                         help="Upper number of different batches taken from the data, given the max_batch_len. Overrides data_sz.")
     parser.add_argument("--print_input", dest="print_input", default=False, action="store_true",
                         help="print the event and track id per batch.")
-    parser.add_argument("--shift-no-fit", dest="shift_no_fit", default=[], nargs="+", 
+    parser.add_argument("--shift_no_fit", dest="shift_no_fit", default=[], nargs="+",
                         help="Set of params to shift in target sim without fitting them (robustness/separability check).")
-    parser.add_argument("--set-target-vals", dest="set_target_vals", default=[], nargs="+", 
+    parser.add_argument("--set_target_vals", dest="set_target_vals", default=[], nargs="+",
                         help="Explicitly set values of target. Syntax is <param1> <val1> <param2> <val2>...")
     parser.add_argument("--set_init_params", dest="set_init_params", default=[], nargs="+",
                         help="Init parameter values. Syntax is <param1> <val1> <param2> <val2>...")
@@ -306,7 +306,7 @@ if __name__ == '__main__':
     parser.add_argument('--mc_diff', default=False, action="store_true", help='Use MC diffusion')
     parser.add_argument('--live_selection', default=False, action="store_true", help='Whether to run live selection or not')
     parser.add_argument('--read_target', default=False, action="store_true", help='read data(-like) target')
-    parser.add_argument('--probabilistic-sim', default=False, action="store_true", help='Use probabilistic sim')
+    parser.add_argument('--probabilistic_sim', default=False, action="store_true", help='Use probabilistic sim')
     parser.add_argument('--shuffle_bt', default=False, action="store_true", help='shuffle the batch order within an epoch')
     parser.add_argument('--sz_mini_bt', type=int, default=1, help='Number of mini-batch for one update')
     parser.add_argument('--profile', default=False, action='store_true', help='Should run some xprof execution profiling')
