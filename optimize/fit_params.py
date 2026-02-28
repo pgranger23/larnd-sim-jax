@@ -639,7 +639,6 @@ class GradientDescentFitter(ParamFitter):
             if len(dataloader_sim) != len(target):
                 raise Exception("Sim and target inputs do not match in size. Panic.")
 
-
         if iterations is not None:
             epochs = iterations // len(dataloader_sim) + 1
 
