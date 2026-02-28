@@ -229,7 +229,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
 
     Notes:
         - The function expects specific keys to be present in the YAML files, such as
-            'tpc_centers', 'time_interval', 'drift_length', 'vdrift_static', 'eField', etc.
+            'mod_centers', 'time_interval', 'drift_length', 'vdrift_static', 'eField', etc.
         - Pixel positions and borders are converted from millimeters to centimeters.
         - The function computes TPC and tile borders, pixel mappings, and other derived parameters.
         - Only parameters matching `params_cls.__match_args__` are passed to the class initializer.
@@ -283,7 +283,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "size_margin": 2e-2,
         "diffusion_in_current_sim": True,
         "mc_diff": False,
-        "tpc_centers": jnp.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
+        "mod_centers": jnp.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
         "response_full_drift_t": 190.61638,
         "nb_tran_diff_bins": 5,
         "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
@@ -306,7 +306,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         else:
             raise ValueError(f"Key '{key}' in detector properties file is not recognized.")
 
-    params_dict['tpc_centers'][:, [2, 0]] = params_dict['tpc_centers'][:, [0, 2]]
+    params_dict['mod_centers'][:, [2, 0]] = params_dict['mod_centers'][:, [0, 2]]
 
     with open(pixel_file, 'r') as pf:
         tile_layout = yaml.load(pf, Loader=yaml.FullLoader)
@@ -324,11 +324,11 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
 
     params_dict['tile_positions'] = np.array(list(tile_layout['tile_positions'].values())) * mm2cm
     params_dict['tile_orientations'] = np.array(list(tile_layout['tile_orientations'].values()))
-    tpcs = np.unique(params_dict['tile_positions'][:,0])
-    params_dict['tpc_borders'] = np.zeros((len(tpcs), 3, 2))
 
     tile_indeces = tile_layout['tile_indeces']
     tpc_ids = np.unique(np.array(list(tile_indeces.values()))[:,0], axis=0)
+ 
+    params_dict['tpc_borders'] = np.zeros((params_dict['mod_centers'].shape[0] * tpc_ids.shape[0], 3, 2))
 
     anodes = defaultdict(list)
     cathode_directions = dict() # What direction the cathode is relative to anode
@@ -354,16 +354,19 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         mod_anodes = params_dict['tile_positions'][:, 0]
         params_dict['drift_length'] = 0.5 * (max(mod_anodes) - min(mod_anodes)) * mm2cm
 
-    for itpc,tpc_id in enumerate(anodes):
-        tiles = np.vstack(anodes[tpc_id]) * mm2cm
-        x_border = min(tiles[:,2])+params_dict['tile_borders'][0][0]+params_dict['tpc_centers'][itpc][0], \
-                    max(tiles[:,2])+params_dict['tile_borders'][0][1]+params_dict['tpc_centers'][itpc][0]
-        y_border = min(tiles[:,1])+params_dict['tile_borders'][1][0]+params_dict['tpc_centers'][itpc][1], \
-                    max(tiles[:,1])+params_dict['tile_borders'][1][1]+params_dict['tpc_centers'][itpc][1]
-        z_border = min(tiles[:,0])+params_dict['tpc_centers'][itpc][2], \
-                    max(tiles[:,0])+params_dict['drift_length']*cathode_directions[tpc_id]+params_dict['tpc_centers'][itpc][2]
 
-        params_dict['tpc_borders'][itpc] = (x_border, y_border, z_border)
+    for im, mod_center in enumerate(params_dict['mod_centers']):
+        for ia, anode in enumerate(anodes):
+            tiles = np.vstack(anodes[anode]) * mm2cm
+            cathode_direction = cathode_directions[anode]
+            x_border = min(tiles[:,2])+params_dict['tile_borders'][0][0]+mod_center[0], \
+                        max(tiles[:,2])+params_dict['tile_borders'][0][1]+mod_center[0]
+            y_border = min(tiles[:,1])+params_dict['tile_borders'][1][0]+mod_center[1], \
+                        max(tiles[:,1])+params_dict['tile_borders'][1][1]+mod_center[1]
+            z_border = min(tiles[:,0])+mod_center[2], \
+                        max(tiles[:,0])+params_dict['drift_length']*cathode_direction+mod_center[2]
+
+            params_dict['tpc_borders'][im*2+ia] = (x_border, y_border, z_border)
 
     
     #: Number of pixels per axis

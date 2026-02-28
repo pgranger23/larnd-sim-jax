@@ -1,0 +1,27 @@
+mod_centers: # cm
+  - [33.5, 0., 33.5]
+  - [33.5, 0., -33.5]
+  - [-33.5, 0., 33.5]
+  - [-33.5, 0., -33.5]
+
+time_interval: [0, 200.] # us
+
+drift_length: 30.27225 # cm
+
+eField: 0.50 #kV/cm
+lifetime: 2.2e+3 # us
+
+vdrift: 0.1587 # cm / us
+
+MeVToElectrons: 4.237e+04 
+
+Ab: 0.8 
+kb: 0.0486 
+
+long_diff: 4.0e-6  # cm * cm / us
+tran_diff: 8.8e-6  # cm * cm / us
+
+DISCRIMINATION_THRESHOLD: 5000
+V_CM: 478.1
+V_REF: 1568
+GAIN: 4.522e-3
