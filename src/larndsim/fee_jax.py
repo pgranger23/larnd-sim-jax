@@ -7,6 +7,49 @@ from jax.profiler import annotate_function
 from jax import jit, vmap, lax, random, checkpoint
 from jax.scipy.special import erf
 from functools import partial
+import jax.scipy.special as jss
+import jax
+
+def log_diff_ndtr(a, b):
+    """
+    Compute log(Φ(a) - Φ(b)) where Φ is standard normal CDF.
+    
+    Uses numerically stable formulation to avoid NaN in gradients.
+    The key issue: when a ≈ b, expm1(lb - la) can have numerical errors
+    causing -expm1() to be non-positive, leading to log(<=0) = NaN.
+    
+    Solution: Clip the argument to log() and add safety checks.
+    """
+    # 1. Physics: If a <= b, probability is 0 (log is -inf)
+    mask = a > b
+    
+    # 2. Get the log-CDFs
+    la = jss.log_ndtr(a)
+    lb = jss.log_ndtr(b)
+    
+    # 3. Compute the difference in log-space
+    # For numerical stability, we compute: log(exp(la) - exp(lb))
+    # = la + log(1 - exp(lb - la)) = la + log(-expm1(lb - la))
+    safe_diff = jnp.where(mask, lb - la, -1.0)  # -1.0 is dummy for invalid branch
+    
+    # 4. The problematic part: -expm1(safe_diff) should be positive,
+    # but can become negative/zero due to numerical errors when safe_diff ≈ 0
+    # Solution: Clip to a reasonable epsilon to prevent log(<=0)
+    # Using 1e-30 instead of 1e-45 to avoid underflow issues
+    eps = 1e-30
+    neg_expm1 = -jnp.expm1(safe_diff)
+    neg_expm1_safe = jnp.maximum(neg_expm1, eps)
+    
+    # 5. Additional safety: if the result would be extremely negative (< -100),
+    # clamp it to avoid gradient issues
+    log_term = jnp.log(neg_expm1_safe)
+    log_term_safe = jnp.maximum(log_term, -100.0)  # Prevent extreme values
+    
+    log_prob = la + log_term_safe
+    
+    # 6. Return -1000 (effectively zero probability) where interval was invalid
+    # Using -1000 instead of -jnp.inf to avoid NaN in scan gradients
+    return jnp.where(mask, log_prob, -1000.0)
 
 @annotate_function
 @jit
@@ -287,56 +330,66 @@ def get_adc_values(params, pixels_signals, noise_rng_key):
 #     # return (charges_new, new_prob), (charge_avg_across, tick_avg, no_hit_prob_across, prob_distrib_across)
 
 
-def _find_one_hit_step(q_sum, prev_charges, previous_prob, sigma, threshold, interval, Nvalues):
-    """
-    Calculates a single hit-finding step for one pixel. This function is designed
-    to be vmapped across all pixels.
-    """
-    # This function contains the logic from the previous `_active_branch`.
+def _find_one_hit_step(q_sum, prev_charges, previous_log_prob, sigma, threshold, interval, Nvalues):
     Nticks = q_sum.shape[0]
-    inv_sqrt2_sigma = 1.0 / (jnp.sqrt(2) * sigma)
-    inv_sqrt2_sigma_uncor = 1.0 / (jnp.sqrt(2) * 250)
+    # We remove the sqrt(2) from the internal scaling because ndtr 
+    # effectively handles the erf-to-CDF conversion (argument is x/sigma)
+    z_scale = 1.0 / sigma 
+    
     shifted_ticks = jnp.arange(Nticks - 1) + interval + 1
     shifted_ticks = jnp.clip(shifted_ticks, 0, Nticks - 1)
-
     q_sum_loc = q_sum - prev_charges[..., None]
 
-    # Steps 1-2: Calculate Event Probabilities
-    erf_term = erf((q_sum_loc - threshold) * inv_sqrt2_sigma)
-    erf_term_signal = lax.cummax(erf_term, axis=1)
-    max_future_signal = lax.cummax(q_sum_loc, axis=1, reverse=True)
-    guess = 0.5 * jnp.diff(erf_term_signal, axis=-1)
-    prob_event = jnp.clip(0.5 * (erf((q_sum_loc - threshold) * inv_sqrt2_sigma)[..., shifted_ticks] - erf_term[..., :-1]), 0, guess)
+    # 1. Stable log-probability of a hit starting (Log-equivalent of 'guess')
+    q_max_future = lax.cummax(q_sum_loc, axis=1)
+    log_guess = log_diff_ndtr(
+        (q_max_future[..., 1:] - threshold) * z_scale,
+        (q_max_future[..., :-1] - threshold) * z_scale
+    )
 
-    # prob_event = jnp.clip(0.5 * (erf_term[..., shifted_ticks] - erf_term[..., :-1]), 0, guess)
-    # prob_event = jnp.clip(0.5*(1 + erf_term[..., shifted_ticks])*guess, 0, guess)
-    prob_ghost = jnp.clip(guess - 0.5 * (erf_term[..., shifted_ticks] - erf_term[..., :-1]), 0, guess) 
-    # esperance_value = q_sum_loc[..., shifted_ticks] + threshold - 0.5 * (q_sum_loc[..., 1:] + q_sum_loc[..., :-1])
+    # 2. Stable log-probability of a hit being collected in the shifted window
+    log_prob_event = log_diff_ndtr(
+        (q_sum_loc[..., shifted_ticks] - threshold) * z_scale,
+        (q_sum_loc[..., :-1] - threshold) * z_scale
+    )
+    # log-space equivalent of jnp.clip(p, 0, guess) is jnp.minimum(log_p, log_guess)
+    log_prob_event = jnp.minimum(log_prob_event, log_guess)
+    log_prob_event = jnp.maximum(log_prob_event, -1000)
+
+    # Thresholding small probabilities in log-space (e.g., -50 is 1e-22)
+    # Use -1000 instead of -jnp.inf to avoid NaN in logsumexp gradient when all values are below threshold
+    # -1000 represents probability ~ exp(-1000) ~ 1e-434, effectively zero but gradients are well-defined
     esperance_value = q_sum[..., shifted_ticks] + threshold - 0.5 * (q_sum[..., 1:] + q_sum[..., :-1])
-
-    prob_event = jnp.where(esperance_value < threshold, 0, prob_event)  # Thresholding small probabilities to zero for numerical stability
-
-    # Step 3: Aggregate Results
-    prob_distrib = prob_event * previous_prob[:, None]
-    total_hit_distrib_prob_per_tick = jnp.sum(prob_distrib, axis=0)
-    total_distrib_prob_per_tick = jnp.sum(guess * previous_prob[:, None], axis=0) 
+    log_prob_event = jnp.where(esperance_value < threshold, -1000.0, log_prob_event)
+    # jax.debug.print("log_prob_event={log_prob_event}", log_prob_event=log_prob_event)
+    # jax.debug.print("esperance_value={esperance_value}", esperance_value=esperance_value)
+    # 3. Aggregate Results (Multiplication -> Addition; Sum -> LogSumExp)
+    log_prob_distrib = log_prob_event + previous_log_prob[:, None]
     
-    # Step 4: Optimized Merging & Selection
-    future_hit_earliest_end = jnp.clip(shifted_ticks + interval + 1, 0, Nticks - 1)
+    # log P(hit | tick) = log(sum_paths exp(log_prob_distrib))
+    log_total_hit_dist_tick = jax.nn.logsumexp(log_prob_distrib, axis=0)    
+    # log P(any_hit | tick)
+    log_total_dist_tick = jax.nn.logsumexp(log_guess + previous_log_prob[:, None], axis=0)
+
+    # 4. Path Selection logic in Log-Space
     next_q_sum = q_sum_loc[:, jnp.clip(shifted_ticks + 1, 0, Nticks - 1)]
-    future_hit_prob = 0.5 * (1 + erf((max_future_signal[:, future_hit_earliest_end] - next_q_sum - threshold) * inv_sqrt2_sigma))
-    # path_selection_prob = prob_distrib * future_hit_prob
-    path_selection_prob = guess * future_hit_prob * previous_prob[:, None]  #All the kind of hits should count here
-    total_prob_per_tick = jnp.sum(path_selection_prob, axis=0)
-
-    # Step 5: Construct the State for the Next Iteration
-    _, top_k_ticks = lax.top_k(total_prob_per_tick, k=Nvalues)
-    new_prob = total_distrib_prob_per_tick[top_k_ticks]
-    best_path_next_ticks_indices = jnp.clip(shifted_ticks[top_k_ticks] + 1, 0, Nticks - 1)
-    charges_new = q_sum[best_path_next_ticks_indices]
+    max_future_signal = lax.cummax(q_sum_loc, axis=1, reverse=True)
+    future_hit_earliest_end = jnp.clip(shifted_ticks + interval + 1, 0, Nticks - 1)
     
-    # Return the new state and the outputs for this step for this pixel
-    return (charges_new, new_prob), (total_hit_distrib_prob_per_tick, esperance_value)
+    # 0.5 * (1 + erf(x)) is simply ndtr(x*sqrt(2))
+    log_future_hit_prob = jss.log_ndtr((max_future_signal[:, future_hit_earliest_end] - next_q_sum - threshold) * z_scale)
+    
+    # Selection metric: log(guess * future_prob * prev_prob)
+    log_selection_prob = log_guess + log_future_hit_prob + previous_log_prob[:, None]
+    log_total_sel_prob_tick = jax.nn.logsumexp(log_selection_prob, axis=0)
+
+    # 5. Construct State for Next Iteration
+    _, top_k_ticks = lax.top_k(log_total_sel_prob_tick, k=Nvalues)
+    new_log_prob = log_total_dist_tick[top_k_ticks]
+    best_path_next_ticks = jnp.clip(shifted_ticks[top_k_ticks] + 1, 0, Nticks - 1)
+    charges_new = q_sum[best_path_next_ticks]
+    
+    return (charges_new, new_log_prob), (log_total_hit_dist_tick, esperance_value)
 
 @partial(jit, static_argnums=(2))
 def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
@@ -366,7 +419,7 @@ def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
         # Apply jax.checkpoint to the expensive branch of the computation.
         # This tells JAX not to store intermediate values from this function,
         # saving memory at the cost of some re-computation.
-        # @checkpoint
+        @checkpoint
         def _active_branch(operand):
             """The expensive vmapped computation, only run when globally active."""
             charges, probs, _ = operand
@@ -375,36 +428,46 @@ def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
                 q_sum_all, charges, probs, params.RESET_NOISE_CHARGE, params.DISCRIMINATION_THRESHOLD, interval, 
                 Nvalues
             )
-            # Check if ANY pixel is still active for the next iteration
-            new_active_flag = jnp.any(jnp.sum(new_probs, axis=1) > stop_threshold)
-
-            return (new_charges, new_probs, new_active_flag), (prob_dist, charge_dist)
+            # LogSumExp gives the log of the total probability
+            total_prob_per_pixel = jax.nn.logsumexp(new_probs, axis=1)
+            new_active = jnp.any(total_prob_per_pixel > jnp.log(stop_threshold))
+            return (new_charges, new_probs, new_active), (prob_dist, charge_dist)
 
         def _inactive_branch(operand):
             """A cheap pass-through, executed when the whole batch is inactive."""
             return operand, (
-                jnp.zeros((Npix, Nticks - 1), dtype=jnp.float32),
+                jnp.full((Npix, Nticks - 1), -1000.0, dtype=jnp.float32),
                 jnp.zeros((Npix, Nticks - 1), dtype=jnp.float32),
                 )
 
         # --- Global Conditional Execution ---
-        final_carry, final_outputs = lax.cond(
-            is_active_global,
-            _active_branch,
-            _inactive_branch,
-            carry
-        )
+        final_carry, final_outputs = _active_branch(carry)
+        # lax.cond(
+        #     is_active_global,
+        #     _active_branch,
+        #     _inactive_branch,
+        #     carry
+        # )
         return final_carry, final_outputs
 
     # --- Setup and Execute the Global Scan ---
     initial_charges = jnp.zeros((Npix, Nvalues), dtype=jnp.float32)
-    initial_probs = jnp.zeros((Npix, Nvalues), dtype=jnp.float32).at[:, 0].set(1.0)
+    initial_log_probs = jnp.full((Npix, Nvalues), -1000.0, dtype=jnp.float32).at[:, 0].set(0.0)
     initial_active = jnp.array(True)
     
-    init_loop = (initial_charges, initial_probs, initial_active)
+    init_loop = (initial_charges, initial_log_probs, initial_active)
 
-    _, (prob_distrib, charge_distrib) = lax.scan(global_scan_fun, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
-    return jnp.moveaxis(prob_distrib, 0, 1), jnp.moveaxis(charge_distrib, 0, 1)
+    _, (log_prob_distrib, charge_distrib) = lax.scan(global_scan_fun, init_loop, jnp.arange(0, params.MAX_ADC_VALUES))
+    # log_prob_distrib = jnp.full((Npix, params.MAX_ADC_VALUES, Nticks - 1), -jnp.inf, dtype=jnp.float32)
+    # charge_distrib = jnp.zeros((Npix, params.MAX_ADC_VALUES, Nticks - 1), dtype=jnp.float32)
+    # carry = init_loop
+    # for _ in range(params.MAX_ADC_VALUES):
+    #     carry, (log_prob_step, charge_step) = global_scan_fun(carry, None)
+    #     log_prob_distrib = log_prob_distrib.at[:, _, :].set(log_prob_step)
+    #     charge_distrib = charge_distrib.at[:, _, :].set(charge_step)
+
+
+    return jnp.moveaxis(log_prob_distrib, 0, 1), jnp.moveaxis(charge_distrib, 0, 1)
 
 @jit
 def get_average_hit_values(ticks_prob, adcs_distrib):
