@@ -35,9 +35,6 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-
     with h5py.File(filename, 'r') as f:
         tracks = np.array(f['segments'])
 
-    if not 't0' in tracks.dtype.names:
-        tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
-
     track_fields = tracks.dtype.names
 
     replace_map = {
@@ -46,6 +43,17 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-
         }
     track_fields = tuple([replace_map.get(field, field) if field in replace_map else field for field in track_fields])
     tracks.dtype.names = track_fields
+
+    if not 't0' in tracks.dtype.names:
+        tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
+
+    if not 'global_eventID' in tracks.dtype.names:
+        tracks = rfn.append_fields(tracks, 'global_eventID', tracks['eventID'].copy(), usemask=False)
+
+        unique_event_ids = np.unique(tracks['eventID'])
+        event_id_to_file_id = {eid: idx + 1 for idx, eid in enumerate(unique_event_ids)}
+        file_event_ids = np.array([event_id_to_file_id[eid] for eid in tracks['eventID']])
+        tracks['eventID'] = file_event_ids
 
     if n_events > 0:
         evID = np.unique(tracks['eventID'])[:n_events]
@@ -140,7 +148,6 @@ def main(config):
             wfs, unique_pixels = simulate_wfs(ref_params, response, tracks, fields)
             adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, hit_pixels = simulate_stochastic(ref_params, wfs, unique_pixels, rngseed=rngseed)
         else:
-            
             adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, hit_pixels = simulate_parametrized(ref_params, tracks, fields, rngseed=rngseed)
             wfs = None
         if config.jac:

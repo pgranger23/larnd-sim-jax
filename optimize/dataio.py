@@ -146,22 +146,26 @@ class TracksDataset:
             tracks['z_start'] = x_start
             tracks['z_end'] = x_end
             tracks['z'] = x
-        
 
-        if not 't0' in tracks.dtype.names:
-            tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
-        
-        
         self.track_fields = tracks.dtype.names
         replace_map = {
             'event_id': 'eventID',
             'traj_id': 'trackID',
         }
         self.track_fields = tuple([replace_map.get(field, field) for field in self.track_fields])
-
         tracks.dtype.names = self.track_fields
 
-        
+        if not 't0' in tracks.dtype.names:
+            tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
+
+        if not 'global_eventID' in tracks.dtype.names:
+            tracks = rfn.append_fields(tracks, 'global_eventID', tracks['eventID'].copy(), usemask=False)
+
+            unique_event_ids = np.unique(tracks['eventID'])
+            event_id_to_file_id = {eid: idx + 1 for idx, eid in enumerate(unique_event_ids)}
+            file_event_ids = np.array([event_id_to_file_id[eid] for eid in tracks['eventID']])
+            tracks['eventID'] = file_event_ids
+
         if live_selection:
             # flat index for all reasonable track [eventID, trackID] 
             index = []

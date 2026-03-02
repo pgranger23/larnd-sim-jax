@@ -862,7 +862,7 @@ def simulate_probabilistic(params, wfs, unique_pixels):
     
     return adcs_distrib, pixel_x, pixel_y, ticks_prob, event
 
-
+# Not used
 def prepare_tracks(params, tracks_file, invert_xz=True):
     tracks, dtype = load_data(tracks_file, invert_xz)
     fields = dtype.names

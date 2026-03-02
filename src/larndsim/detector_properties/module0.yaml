@@ -1,4 +1,4 @@
-tpc_centers: # cm
+mod_centers: # cm
   - [0, 0, 0]
   - [0, 0, 0]
 
