@@ -302,7 +302,8 @@ class ParamFitter:
         self.ref_params = ref_params
 
         self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
-        self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
+        # self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
+        self.norm_params = ref_params.replace(**{key: 0. for key in self.relevant_params_list})
 
         #Only do it now to not inpact current_params (ref_params?)
         #FIXME It's a problem if the noise parameters are to be fitted
@@ -313,7 +314,22 @@ class ParamFitter:
             self.norm_params = remove_noise_from_params(self.norm_params)
 
     def update_params(self):
-        self.current_params = self.norm_params.replace(**{key: getattr(self.norm_params, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list})
+        new_physical_params = {}
+        for key in self.relevant_params_list:
+            # Get the unconstrained value from the optimizer
+            val = getattr(self.norm_params, key)
+            
+            # Get boundaries from your existing ranges dictionary
+            low = ranges[key]['down']
+            high = ranges[key]['up']
+            
+            # Soft-map: Physical = Low + (High - Low) * Sigmoid(Optimizer_Val)
+            # This prevents the parameter from ever escaping the [low, high] box.
+            mapped_val = low + (high - low) * jax.nn.sigmoid(val)
+            new_physical_params[key] = mapped_val
+            
+        self.current_params = self.ref_params.replace(**new_physical_params)
+        # self.current_params = self.norm_params.replace(**{key: getattr(self.norm_params, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list})
 
     def make_target_sim(self):
         np.random.seed(self.target_seed)
@@ -468,17 +484,28 @@ class ParamFitter:
             'pixel_id': ref_pixel_id
         }
 
-        def loss_wrapper(params):
-            prediction = self.sim_strategy.predict(params, tracks, self.sim_track_fields, rngkey)
-            return self.loss_strategy.compute(params, prediction, target_data)
+        def loss_wrapper(norm_params_input):
+            # 1. Map from unconstrained space to physical space internally
+            new_phys = {}
+            for key in self.relevant_params_list:
+                val = getattr(norm_params_input, key)
+                low, high = ranges[key]['down'], ranges[key]['up']
+                new_phys[key] = low + (high - low) * jax.nn.sigmoid(val)
+            
+            # Reconstruct the physical params object for the simulation
+            physical_params = self.ref_params.replace(**new_phys)
 
-        # Simulate and get output
+            # 2. Run simulation and loss calculation
+            prediction = self.sim_strategy.predict(physical_params, tracks, self.sim_track_fields, rngkey)
+            return self.loss_strategy.compute(physical_params, prediction, target_data)
+
+        # 3. Differentiate directly with respect to norm_params
         if with_loss and with_grad:
-            (loss_val, aux), grads = value_and_grad(loss_wrapper, has_aux = True)(self.current_params)
+            (loss_val, aux), grads = value_and_grad(loss_wrapper, has_aux=True)(self.norm_params)
         elif with_loss:
-            loss_val, aux = loss_wrapper(self.current_params)
+            loss_val, aux = loss_wrapper(self.norm_params)
         elif with_grad:
-            grads, aux = grad(loss_wrapper, has_aux=True)(self.current_params)
+            grads, aux = grad(loss_wrapper, has_aux=True)(self.norm_params)
         return loss_val, grads, aux
     
     def prepare_fit(self):
@@ -601,21 +628,49 @@ class GradientDescentFitter(ParamFitter):
         setattr(self, params, getattr(self, params).replace(**{key: getattr(getattr(self, params), key) + val for key, val in update.items()}))
 
     def process_grads(self, grads):
-        scaled_grads = {key: getattr(grads, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list}
+        # REMOVE scaling by params_normalization. 
+        # With Sigmoid mapping, the gradient 'grads' is already the correct 
+        # derivative with respect to the unconstrained values.
+        
+        # We extract only the relevant parameters to pass to the optimizer
+        relevant_grads = extract_relevant_params(grads, self.relevant_params_list)
 
-        leaves = jax.tree_util.tree_leaves(grads)
-        hasNaN = any(jnp.isnan(leaf).any() for leaf in leaves)
-        if hasNaN:
+        leaves = jax.tree_util.tree_leaves(relevant_grads)
+        if any(jnp.isnan(leaf).any() for leaf in leaves):
             logger.warning("Got NaN gradients! Skipping update for this batch")
-        else:
-            updates, self.opt_state = self.optimizer.update(scaled_grads, self.opt_state)
-            # self.current_params = update_params(self.norm_params, updates)
-            self.apply_updates('norm_params', updates)
-            if self.clip_from_range:
-                #Clipping param values
-                self.clip_values_from_range()
-            self.update_params()
-        return scaled_grads
+            return relevant_grads
+
+        # Update the optimizer state and get the updates for norm_params
+        updates, self.opt_state = self.optimizer.update(relevant_grads, self.opt_state)
+        
+        # Apply the updates directly to the unconstrained norm_params
+        self.apply_updates('norm_params', updates)
+        
+        # IMPORTANT: Disable manual range clipping. 
+        # The Sigmoid mapping in update_params() handles boundaries naturally.
+        # if self.clip_from_range:
+        #     self.clip_values_from_range()
+
+        # Re-map unconstrained values to physical values for the next simulation step
+        self.update_params()
+        
+        return relevant_grads
+
+    # def process_grads(self, grads):
+    #     scaled_grads = {key: getattr(grads, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list}
+    #     leaves = jax.tree_util.tree_leaves(grads)
+    #     hasNaN = any(jnp.isnan(leaf).any() for leaf in leaves)
+    #     if hasNaN:
+    #         logger.warning("Got NaN gradients! Skipping update for this batch")
+    #     else:
+    #         updates, self.opt_state = self.optimizer.update(scaled_grads, self.opt_state)
+    #         # self.current_params = update_params(self.norm_params, updates)
+    #         self.apply_updates('norm_params', updates)
+    #         if self.clip_from_range:
+    #             #Clipping param values
+    #             self.clip_values_from_range()
+    #         self.update_params()
+    #     return scaled_grads
 
     def add_grads(self, g1, g2):
         return jax.tree_util.tree_map(lambda a, b: a + b, g1, g2)
