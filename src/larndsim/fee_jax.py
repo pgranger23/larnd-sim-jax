@@ -441,13 +441,12 @@ def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
                 )
 
         # --- Global Conditional Execution ---
-        final_carry, final_outputs = _active_branch(carry)
-        # lax.cond(
-        #     is_active_global,
-        #     _active_branch,
-        #     _inactive_branch,
-        #     carry
-        # )
+        final_carry, final_outputs = lax.cond(
+            is_active_global,
+            _active_branch,
+            _inactive_branch,
+            carry
+        )
         return final_carry, final_outputs
 
     # --- Setup and Execute the Global Scan ---
