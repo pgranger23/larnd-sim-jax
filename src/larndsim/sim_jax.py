@@ -796,7 +796,7 @@ def simulate_probabilistic(params, wfs, unique_pixels):
 
     # integral, ticks, hit_prob = fee_sim_from_split(params, padded_small_nb, padded_large_nb, wfs[:, 1:], mask_small_rois, roi_start, wfs.shape[1] - 2)
     
-    ticks_prob, charge_distrib = get_adc_values_average_noise_vmap(params, wfs[:, 1:])
+    ticks_prob, charge_distrib = get_adc_values_average_noise_vmap(params, wfs)
 
     adcs_distrib = digitize(params, charge_distrib)
     pixel_x, pixel_y, pixel_plane, event = id2pixel(params, unique_pixels)
