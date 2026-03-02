@@ -399,6 +399,12 @@ class ProbabilisticLossStrategy(LossStrategy):
         # Validate matches (check if pixel was actually simulated)
         pixel_indices_safe = jnp.clip(pixel_indices, 0, sim_unique_pixels.shape[0] - 1)
         pixel_match_valid = (sim_unique_pixels[pixel_indices_safe] == target_pixel_ids) & (target_pixel_ids >= 0)
+
+        # jax.debug.print("target_pixel_ids={target_pixel_ids}", target_pixel_ids=target_pixel_ids[:5])
+        # jax.debug.print("sim_unique_pixels={sim_unique_pixels}", sim_unique_pixels=sim_unique_pixels[:5])
+        # jax.debug.print("Matched {sim} to {target} pixels", sim=sim_unique_pixels[pixel_indices_safe][:5], target=target_pixel_ids[:5])
+        # jax.debug.print("pixel_match_valid={pixel_match_valid}", pixel_match_valid=pixel_match_valid[:5])
+
         
         # Step 2: Extract probability distributions for matched pixels
         # ticks_prob shape: (Npix, Nvalues, Nticks)
@@ -418,10 +424,14 @@ class ProbabilisticLossStrategy(LossStrategy):
         # Gather probabilities for the matched pixels at observed ticks
         # For each hit i: marginal_tick_prob[pixel_indices[i], target_ticks[i]]
 
-        trigger_nb = compute_occurrence_indices(pixel_indices)
+        trigger_nb = compute_occurrence_indices(target_pixel_ids)
         # jax.debug.print("trigger_nb={trigger_nb}", trigger_nb=trigger_nb)
 
         hit_tick_probs = ticks_prob[pixel_indices_safe, trigger_nb, target_ticks]
+        # jax.debug.print("hit_tick_probs={pixel_indices_safe}", pixel_indices_safe=pixel_indices_safe[:5])
+        # jax.debug.print("trigger_nb={trigger_nb}", trigger_nb=trigger_nb[:5])
+        # jax.debug.print("target_ticks={target_ticks}", target_ticks=target_ticks[:5])
+        # jax.debug.print("hit_tick_probs={hit_tick_probs}", hit_tick_probs=hit_tick_probs[:5])
         # hit_tick_probs = jnp.sum(ticks_prob[pixel_indices_safe, :, target_ticks], axis=1)  # Sum over values to get P(tick|pixel)
         
         # Step 4: Compute expected charge at observed tick for each pixel
@@ -438,7 +448,7 @@ class ProbabilisticLossStrategy(LossStrategy):
         
         # Gather expected charges for observed hits
         hit_expected_charges = adc2charge(adcs_distrib[pixel_indices_safe, trigger_nb, target_ticks], params)  # (Nhits,)
-        
+        hit_expected_charges = jnp.where(pixel_match_valid, hit_expected_charges, 0.0)  # Set to 0 for invalid matches
         # Step 5: Compute log-likelihood components
         
         # (a) Tick likelihood: log P(tick | pixel)
@@ -452,7 +462,7 @@ class ProbabilisticLossStrategy(LossStrategy):
         # as if they were eps, limiting the maximum gradient magnitude to 1/eps.
         # prob_floor = 1e-5  # Ensure eps is not too small
         # clipped_tick_probs = jnp.clip(hit_tick_probs, prob_floor, 1.0)
-        eps = 1e-3
+        eps = 1e-10
         # p_safe = hit_tick_probs * (1 - 2 * eps) + eps
         # log_likelihood_tick = jnp.log(p_safe)
         # log_likelihood_tick = jnp.sqrt(jnp.square(hit_tick_probs) + jnp.square(eps)) - eps
@@ -467,6 +477,21 @@ class ProbabilisticLossStrategy(LossStrategy):
             -0.5 * (charge_diff / (self.sigma_charge/1000)) ** 2 
             - 0.5 * jnp.log(2 * jnp.pi * (self.sigma_charge/1000)**2)
         )
+
+        # log_likelihood_charge = jnp.where(
+        #     pixel_match_valid, 
+        #     log_likelihood_charge, 
+        #     0.0
+        # )
+
+        log_likelihood_tick = jnp.where(
+            pixel_match_valid, 
+            log_likelihood_tick,
+            0.0
+        )
+
+
+        # jax.debug.print("log_likelihood_tick={log_likelihood_tick}", log_likelihood_tick=log_likelihood_tick[:5])
         
         # (c) Cap likelihood instead of masking for very small probabilities
         # When P(tick) is extremely small, cap the penalty instead of setting to 0
@@ -495,14 +520,15 @@ class ProbabilisticLossStrategy(LossStrategy):
         
         # # Step 6: Handle invalid matches (pixels not in simulation)
         # # For invalid matches, assign a very negative log-likelihood (low probability)
-        log_likelihood_per_hit = jnp.where(
-            pixel_match_valid, 
-            log_likelihood_per_hit, 
-            0.0
-        )
         
         # # Step 7: Sum log-likelihood over observed hits
-        total_log_likelihood_hits = jnp.sum(log_likelihood_per_hit)
+        # total_log_likelihood_hits = jnp.sum(log_likelihood_per_hit)
+
+        no_match_penalty = jnp.log(eps)*jnp.sum(sim_unique_pixels[pixel_indices_safe] != target_pixel_ids)
+        total_log_likelihood_time = jnp.sum(log_likelihood_tick) + no_match_penalty
+
+        total_log_likelihood_hits = -jnp.sqrt(total_log_likelihood_time*jnp.sum(log_likelihood_charge))
+        # jax.debug.print("total_log_likelihood_hits={total_log_likelihood_hits}", total_log_likelihood_hits=total_log_likelihood_hits)
         
         # # Step 8: Add penalty for false positives (predicted hits where none observed)
         # # For each predicted pixel, compute λ = Σ_t P(tick|pixel) = expected number of hits
@@ -539,7 +565,8 @@ class ProbabilisticLossStrategy(LossStrategy):
 
         aux = {
             "log_likelihood_charge": -jnp.sum(log_likelihood_charge),
-            "log_likelihood_tick": -jnp.sum(log_likelihood_tick),
+            "log_likelihood_tick": -total_log_likelihood_time,
+            "no_match_penalty": -no_match_penalty
             # "total_false_positive_penalty": total_false_positive_penalty
         }
         
