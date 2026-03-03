@@ -115,7 +115,7 @@ class ParamFitter:
                  detector_props, pixel_layouts,
                  loss_fn=None, loss_fn_kw=None, readout_noise_target=True, readout_noise_guess=False, 
                  out_label="", test_name="this_test",
-                 shift_no_fit=[], set_target_vals=[], vary_init=False, keep_in_memory=False,
+                 shift_no_fit=[], set_target_vals=[], set_params={}, vary_init=False, keep_in_memory=False,
                  compute_target_hessian=False, sim_seed_strategy="different",
                  target_seed=0, target_fixed_range=None,
                  adc_norm=1, match_z=True,
@@ -128,6 +128,7 @@ class ParamFitter:
 
         self.read_target = read_target
         self.shift_no_fit = shift_no_fit
+        self.set_params = set_params
         self.detector_props = detector_props
         self.pixel_layouts = pixel_layouts
         self.readout_noise_target = readout_noise_target
@@ -261,6 +262,11 @@ class ParamFitter:
     def setup_params(self):
         Params = build_params_class(self.relevant_params_list)
         ref_params = load_detector_properties(Params, self.detector_props, self.pixel_layouts)
+
+        if self.set_params:
+            logger.info(f"Applying global parameter overrides: {self.set_params}")
+            ref_params = ref_params.replace(**{k: float(v) for k, v in self.set_params.items()})
+
         ref_params = ref_params.replace(
             electron_sampling_resolution=self.electron_sampling_resolution,
             number_pix_neighbors=self.number_pix_neighbors,

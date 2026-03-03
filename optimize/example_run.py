@@ -116,7 +116,7 @@ def main(config):
                                 optimizer_fn=config.optimizer_fn,
                                 lr_scheduler=config.lr_scheduler, lr_kw=config.lr_kw,
                                 loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
-                                set_target_vals=config.set_target_vals, vary_init=config.vary_init, compute_target_hessian=config.compute_target_hessian,
+                                set_target_vals=config.set_target_vals, set_params=config.set_params, vary_init=config.vary_init, compute_target_hessian=config.compute_target_hessian,
                                 config = config, epoch_size=len(tracks_dataloader_sim), keep_in_memory=config.keep_in_memory,
                                 diffusion_in_current_sim=config.diffusion_in_current_sim,
                                 mc_diff=config.mc_diff,
@@ -132,7 +132,7 @@ def main(config):
                                 readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
                                 out_label=config.out_label, test_name=config.test_name,
                                 loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
-                                set_target_vals=config.set_target_vals, vary_init=config.vary_init,
+                                set_target_vals=config.set_target_vals, set_params=config.set_params, vary_init=config.vary_init,
                                 config = config, keep_in_memory=config.keep_in_memory,
                                 diffusion_in_current_sim=config.diffusion_in_current_sim,
                                 mc_diff=config.mc_diff,
@@ -147,7 +147,7 @@ def main(config):
                                 readout_noise_guess=(not config.no_noise) and (not config.no_noise_guess),
                                 out_label=config.out_label, test_name=config.test_name,
                                 loss_fn=config.loss_fn, loss_fn_kw=config.loss_fn_kw, shift_no_fit=config.shift_no_fit,
-                                set_target_vals=config.set_target_vals, vary_init=config.vary_init,
+                                set_target_vals=config.set_target_vals, set_params=config.set_params, vary_init=config.vary_init,
                                 config = config, keep_in_memory=config.keep_in_memory,
                                 diffusion_in_current_sim=config.diffusion_in_current_sim,
                                 mc_diff=config.mc_diff,
@@ -263,6 +263,8 @@ if __name__ == '__main__':
                         help="Set of params to shift in target sim without fitting them (robustness/separability check).")
     parser.add_argument("--set-target-vals", dest="set_target_vals", default=[], nargs="+", 
                         help="Explicitly set values of target. Syntax is <param1> <val1> <param2> <val2>...")
+    parser.add_argument("--set-params", dest="set_params", default={}, type=json.loads,
+                        help="Explicitly set global parameter values. Syntax is '{\"param1\": val1, \"param2\": val2}'")
     parser.add_argument("--scan_tgt_nom", dest="scan_tgt_nom", default=False, action="store_true",
                         help="Set the gradient and loss scan target to the parameter nominal value, otherwise there will be a target throw.")
     parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')

@@ -361,6 +361,11 @@ def _find_one_hit_step(q_sum, prev_charges, previous_log_prob, sigma, threshold,
     # -1000 represents probability ~ exp(-1000) ~ 1e-434, effectively zero but gradients are well-defined
     esperance_value = q_sum[..., shifted_ticks] + threshold - 0.5 * (q_sum[..., 1:] + q_sum[..., :-1])
     log_prob_event = jnp.where(esperance_value < threshold, -1000.0, log_prob_event)
+
+    # esperance_value = q_sum_loc[0, shifted_ticks]
+    # log_prob_event = jnp.where(q_sum_loc[..., shifted_ticks] < threshold, -1000.0, log_prob_event)
+
+
     # jax.debug.print("log_prob_event={log_prob_event}", log_prob_event=log_prob_event)
     # jax.debug.print("esperance_value={esperance_value}", esperance_value=esperance_value)
     # 3. Aggregate Results (Multiplication -> Addition; Sum -> LogSumExp)
