@@ -125,6 +125,23 @@ def pad_sequence(sequences: List[jnp.ndarray],
 
     return padded_sequences
 
+def rename_fields_aligned(arr, rename_map):
+
+    old_dtype = arr.dtype
+
+    new_names = [
+        rename_map.get(name, name)
+        for name in old_dtype.names
+    ]
+
+    new_dtype = np.dtype({
+        "names": new_names,
+        "formats": [old_dtype.fields[name][0] for name in old_dtype.names],
+        "offsets": [old_dtype.fields[name][1] for name in old_dtype.names],
+        "itemsize": old_dtype.itemsize,
+    })
+
+    return arr.view(new_dtype)
 
 class TracksDataset:
     def __init__(self, filename, ntrack, max_nbatch=None, swap_xz=True, seed=3, random_ntrack=False, track_len_sel=2., 
@@ -147,13 +164,12 @@ class TracksDataset:
             tracks['z_end'] = x_end
             tracks['z'] = x
 
-        self.track_fields = tracks.dtype.names
         replace_map = {
             'event_id': 'eventID',
             'traj_id': 'trackID',
         }
-        self.track_fields = tuple([replace_map.get(field, field) for field in self.track_fields])
-        tracks.dtype.names = self.track_fields
+
+        tracks = rename_fields_aligned(tracks, replace_map)
 
         if not 't0' in tracks.dtype.names:
             tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
@@ -161,10 +177,10 @@ class TracksDataset:
         if not 'global_eventID' in tracks.dtype.names:
             tracks = rfn.append_fields(tracks, 'global_eventID', tracks['eventID'].copy(), usemask=False)
 
-            unique_event_ids = np.unique(tracks['eventID'])
-            event_id_to_file_id = {eid: idx + 1 for idx, eid in enumerate(unique_event_ids)}
-            file_event_ids = np.array([event_id_to_file_id[eid] for eid in tracks['eventID']])
-            tracks['eventID'] = file_event_ids
+            unique_ids, inverse = np.unique(tracks['eventID'], return_inverse=True)
+            tracks['eventID'] = inverse + 1
+
+        self.track_fields = tracks.dtype.names
 
         if live_selection:
             # flat index for all reasonable track [eventID, trackID] 

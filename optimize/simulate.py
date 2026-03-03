@@ -35,14 +35,30 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-
     with h5py.File(filename, 'r') as f:
         tracks = np.array(f['segments'])
 
-    track_fields = tracks.dtype.names
+    def rename_fields_aligned(arr, rename_map):
+
+        old_dtype = arr.dtype
+
+        new_names = [
+            rename_map.get(name, name)
+            for name in old_dtype.names
+        ]
+
+        new_dtype = np.dtype({
+            "names": new_names,
+            "formats": [old_dtype.fields[name][0] for name in old_dtype.names],
+            "offsets": [old_dtype.fields[name][1] for name in old_dtype.names],
+            "itemsize": old_dtype.itemsize,
+        })
+
+        return arr.view(new_dtype)
 
     replace_map = {
             'event_id': 'eventID',
             'traj_id': 'trackID',
         }
-    track_fields = tuple([replace_map.get(field, field) if field in replace_map else field for field in track_fields])
-    tracks.dtype.names = track_fields
+
+    tracks = rename_fields_aligned(tracks, replace_map)
 
     if not 't0' in tracks.dtype.names:
         tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
@@ -54,6 +70,8 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-
         event_id_to_file_id = {eid: idx + 1 for idx, eid in enumerate(unique_event_ids)}
         file_event_ids = np.array([event_id_to_file_id[eid] for eid in tracks['eventID']])
         tracks['eventID'] = file_event_ids
+
+    track_fields = tracks.dtype.names
 
     if n_events > 0:
         evID = np.unique(tracks['eventID'])[:n_events]
