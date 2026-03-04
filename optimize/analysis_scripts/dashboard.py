@@ -61,6 +61,30 @@ def smooth_data(data, window):
         return data
     return pd.Series(data).rolling(window=window, min_periods=1).mean().values
 
+def compute_folder_signature(files):
+    signature = []
+    for f in files:
+        try:
+            stat = os.stat(f)
+            signature.append((f, stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            signature.append((f, 0, 0))
+    return tuple(sorted(signature))
+
+def prepare_log_values(values):
+    arr = np.asarray(values, dtype=float)
+    positive = arr > 0
+    if not np.any(positive):
+        return arr, False
+    min_pos = np.min(arr[positive])
+    floor = min_pos * 0.1
+    return np.where(arr <= 0, floor, arr), True
+
+def to_xy_series(values):
+    y_arr = np.asarray(values, dtype=float)
+    x_arr = np.arange(len(y_arr), dtype=float)
+    return x_arr, y_arr
+
 # -- Scan Extraction Logic --
 def extract_param_from_filename(fname, local_params):
     basename = os.path.basename(fname)
@@ -131,19 +155,42 @@ def extract_scan_data(results, config, fname):
 
 
 # -- HTML Report Generator --
-def generate_html_report(figs_to_export):
-    """Stitches Plotly figures into a single responsive HTML file."""
+def generate_html_report(figs_to_export, config_data):
+    """Stitches Plotly figures and Config into a single responsive HTML file."""
+    
+    # Format config as an HTML table string
+    config_html = ""
+    if config_data:
+        # Convert to dict if it's an object
+        c_dict = vars(config_data) if hasattr(config_data, '__dict__') else config_data
+        if isinstance(c_dict, dict):
+            rows = "".join([f"<tr><td style='font-weight:bold; padding:4px;'>{k}</td><td style='padding:4px;'>{v}</td></tr>" for k, v in c_dict.items()])
+            config_html = f"""
+            <div class='config-container'>
+                <h2>Configuration</h2>
+                <div style='max-height: 200px; overflow-y: auto; border: 1px solid #ddd;'>
+                    <table style='width:100%; border-collapse: collapse; font-family: monospace; font-size: 12px;'>
+                        {rows}
+                    </table>
+                </div>
+            </div>
+            """
+
     html = [
         "<html><head><title>Fit Dashboard Report</title>",
-        "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>",
+        "<script src='https://cdnjs.cloudflare.com/ajax/libs/plotly.js/3.1.1/plotly.min.js'></script>",
         "<style>",
         "body { font-family: sans-serif; padding: 20px; background-color: #f9f9f9; }",
-        ".grid { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; }",
-        ".plot-container { background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); padding: 15px; width: 45%; min-width: 500px; }",
+        ".grid { display: grid; grid-template-columns: repeat(3, minmax(320px, 1fr)); gap: 20px; }",
+        ".config-container { background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); padding: 15px; margin-bottom: 20px; }",
+        ".plot-container { background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); padding: 15px; width: 100%; min-width: 0; }",
         "h2 { text-align: center; color: #333; margin-top: 0; }",
-        "@media print { .plot-container { width: 100%; box-shadow: none; page-break-inside: avoid; } }",
+        "@media (max-width: 1100px) { .grid { grid-template-columns: repeat(2, minmax(280px, 1fr)); } }",
+        "@media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }",
+        "@media print { .grid { grid-template-columns: 1fr; } .plot-container { box-shadow: none; page-break-inside: avoid; } .config-container { page-break-inside: avoid; } }",
         "</style></head><body>",
         "<h1 style='text-align:center;'>Monitoring Report</h1>",
+        config_html,
         "<div class='grid'>"
     ]
     for title, fig in figs_to_export:
@@ -192,7 +239,7 @@ def render_scan_mode(all_data, plot_all, export_list):
             fig.update_xaxes(title_text=p_name, **AXIS_STYLE)
             fig.update_yaxes(title_text="Gradient", title_font=dict(color="#1f77b4"), tickfont=dict(color="#1f77b4"), secondary_y=False, **AXIS_STYLE)
             fig.update_yaxes(title_text="Loss", title_font=dict(color="#2ca02c"), tickfont=dict(color="#2ca02c"), secondary_y=True, **AXIS_STYLE)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             export_list.append((f"{p_name} - Gradient & Loss", fig))
 
         with cols[1]:
@@ -215,7 +262,7 @@ def render_scan_mode(all_data, plot_all, export_list):
                 fig.update_layout(title="Sub-loss terms", xaxis_title=p_name, yaxis_title="Sub-loss values", hovermode="closest")
                 fig.update_xaxes(**AXIS_STYLE)
                 fig.update_yaxes(**AXIS_STYLE)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 export_list.append((f"{p_name} - Sub-losses", fig))
             else:
                 st.info("No auxiliary data")
@@ -228,7 +275,7 @@ def render_scan_mode(all_data, plot_all, export_list):
                 fig.update_layout(title="Time per iteration", xaxis_title="Iteration", yaxis_title="Time (s)")
                 fig.update_xaxes(**AXIS_STYLE)
                 fig.update_yaxes(**AXIS_STYLE)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 export_list.append((f"{p_name} - Time", fig))
         
         st.markdown("---")
@@ -246,17 +293,22 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
     
     with global_cols[0]:
         fig = go.Figure()
+        has_positive = False
         for idx, (fp, d) in enumerate(all_data.items()):
             name = os.path.splitext(os.path.basename(fp))[0]
             if 'losses_iter' in d:
                 y_smooth = smooth_data(d['losses_iter'], smoothing_window)
-                fig.add_trace(go.Scatter(y=y_smooth, mode='lines', name=name, line=dict(color=COLORS[idx % len(COLORS)], width=2)))
+                y_smooth, has_pos = prepare_log_values(y_smooth)
+                has_positive = has_positive or has_pos
+                x_arr, y_arr = to_xy_series(y_smooth)
+                if len(y_arr) > 0:
+                    fig.add_trace(go.Scatter(x=x_arr, y=y_arr, mode='lines', name=name, line=dict(color=COLORS[idx % len(COLORS)], width=2)))
         
         fig.update_layout(**COMMON_LAYOUT)
         fig.update_layout(title="Loss Evolution", xaxis_title="Iteration", yaxis_title="Loss")
         fig.update_xaxes(**AXIS_STYLE)
-        fig.update_yaxes(type="log", **AXIS_STYLE)
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_yaxes(type="log" if has_positive else "linear", **AXIS_STYLE)
+        st.plotly_chart(fig, width='stretch')
         export_list.append(("Global - Loss Evolution", fig))
 
     with global_cols[1]:
@@ -271,7 +323,7 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
         fig.update_layout(title="Step Time vs Iteration", xaxis_title="Iteration", yaxis_title="Time (s)")
         fig.update_xaxes(**AXIS_STYLE)
         fig.update_yaxes(**AXIS_STYLE)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         export_list.append(("Global - Step Time", fig))
 
     with global_cols[2]:
@@ -287,7 +339,7 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
             fig.update_layout(title="Step Time Distribution", barmode='overlay', xaxis_title="Time (s)", yaxis_title="Frequency", hovermode="closest")
             fig.update_xaxes(**AXIS_STYLE)
             fig.update_yaxes(**AXIS_STYLE)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             export_list.append(("Global - Time Distribution", fig))
         else:
             st.info("No step_time data.")
@@ -316,24 +368,29 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
             fig.update_layout(title=f"{par} Evolution", xaxis_title="Iteration", yaxis_title=par)
             fig.update_xaxes(**AXIS_STYLE)
             fig.update_yaxes(**AXIS_STYLE)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             export_list.append((f"{par} - Evolution", fig))
             
         with par_cols[1]:
             fig = go.Figure()
+            has_positive = False
             for idx, (fp, d) in enumerate(all_data.items()):
                 name = os.path.splitext(os.path.basename(fp))[0]
                 c = COLORS[idx % len(COLORS)]
                 if f'{par}_grad' in d:
                     grads = np.abs(d[f'{par}_grad'])
                     y_smooth = smooth_data(grads, smoothing_window)
-                    fig.add_trace(go.Scatter(y=y_smooth, mode='lines', name=name, line=dict(color=c, width=2)))
+                    y_smooth, has_pos = prepare_log_values(y_smooth)
+                    has_positive = has_positive or has_pos
+                    x_arr, y_arr = to_xy_series(y_smooth)
+                    if len(y_arr) > 0:
+                        fig.add_trace(go.Scatter(x=x_arr, y=y_arr, mode='lines', name=name, line=dict(color=c, width=2)))
                     
             fig.update_layout(**COMMON_LAYOUT)
             fig.update_layout(title="Absolute Gradient", xaxis_title="Iteration", yaxis_title="|Gradient|")
             fig.update_xaxes(**AXIS_STYLE)
-            fig.update_yaxes(type="log", **AXIS_STYLE)
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_yaxes(type="log" if has_positive else "linear", **AXIS_STYLE)
+            st.plotly_chart(fig, width='stretch')
             export_list.append((f"{par} - Gradient", fig))
 
         with par_cols[2]:
@@ -364,7 +421,7 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
                 fig.update_layout(title="Phase Plot", xaxis_title="Parameter Value", yaxis_title="Gradient", hovermode="closest")
                 fig.update_xaxes(**AXIS_STYLE)
                 fig.update_yaxes(**AXIS_STYLE)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 export_list.append((f"{par} - Phase Plot", fig))
 
 
@@ -398,20 +455,47 @@ st.sidebar.markdown("---")
 files = sorted(glob.glob(pattern))
 all_data = {}
 figs_to_export = [] # List to collect all figures generated during the loop
+config_to_export = None # Placeholder for the config to export
+
+folder_signature = compute_folder_signature(files)
+folder_changed = st.session_state.get("cached_folder") != selected_folder
+data_changed = st.session_state.get("cached_signature") != folder_signature
+needs_reload = folder_changed or data_changed
 
 if not files:
     st.warning(f"No files found matching: {pattern}")
 else:
-    for f in files:
-        data = safe_load(f)
-        if data is not None:
-            all_data[f] = data
+    if needs_reload:
+        for f in files:
+            data = safe_load(f)
+            if data is not None:
+                all_data[f] = data
+
+        st.session_state.cached_all_data = all_data
+        st.session_state.cached_signature = folder_signature
+        st.session_state.cached_folder = selected_folder
+    else:
+        all_data = st.session_state.get("cached_all_data", {})
 
     if not all_data:
         st.info("Files found but could not be read (locked?). Retrying...")
     else:
         st.sidebar.markdown(f"**Active Files:** {len(all_data)}")
         
+        # --- Config Display Logic ---
+        # Grab config from the first valid file
+        first_data = next(iter(all_data.values()))
+        config_to_export = first_data.get('config', None)
+
+        if config_to_export is not None:
+            with st.expander("📂 Run Configuration", expanded=False):
+                # Convert argparse Namespace or others to dict for pretty display
+                if hasattr(config_to_export, '__dict__'):
+                    st.json(vars(config_to_export))
+                else:
+                    st.json(config_to_export)
+
+        # --- Mode Detection ---
         is_scan = False
         for d in all_data.values():
             if 'config' in d and hasattr(d['config'], 'fit_type'):
@@ -433,15 +517,15 @@ if figs_to_export:
     st.sidebar.markdown("---")
     st.sidebar.subheader("Export")
     
-    # Generate the HTML payload
-    html_report = generate_html_report(figs_to_export)
+    # Generate the HTML payload with Config included
+    html_report = generate_html_report(figs_to_export, config_to_export)
     
     st.sidebar.download_button(
         label="📥 Download Full Report (HTML)",
         data=html_report,
         file_name=f"fit_report_{os.path.basename(os.path.abspath(selected_folder))}.html",
         mime="text/html",
-        help="Downloads a single interactive HTML file containing all the current plots. You can open it and 'Print to PDF' if needed!"
+        help="Downloads an interactive HTML file containing the Configuration and all current plots."
     )
 
 if auto_refresh:

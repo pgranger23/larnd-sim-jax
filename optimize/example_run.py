@@ -306,7 +306,7 @@ if __name__ == '__main__':
     parser.add_argument('--mc_diff', default=False, action="store_true", help='Use MC diffusion')
     parser.add_argument('--live_selection', default=False, action="store_true", help='Whether to run live selection or not')
     parser.add_argument('--read_target', default=False, action="store_true", help='read data(-like) target')
-    parser.add_argument('--probabilistic_sim', default=False, action="store_true", help='Use probabilistic sim')
+    parser.add_argument('--probabilistic_sim', '--probabilistic-sim', default=False, action="store_true", help='Use probabilistic sim')
     parser.add_argument('--shuffle_bt', default=False, action="store_true", help='shuffle the batch order within an epoch')
     parser.add_argument('--sz_mini_bt', type=int, default=1, help='Number of mini-batch for one update')
     parser.add_argument('--profile', default=False, action='store_true', help='Should run some xprof execution profiling')

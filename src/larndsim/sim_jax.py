@@ -226,6 +226,11 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
 
     # --- 3. BOUNDARY CORRECTIONS (CUMSUMS) ---
     response_cum = jnp.cumsum(response_template, axis=-1)
+
+    # jax.debug.print("currents_idx={currents_idx}", currents_idx=currents_idx.reshape(params.nb_tran_diff_bins, params.nb_tran_diff_bins, 2))
+    # jax.debug.print("pixels={pixels}", pixels=pixels.reshape(params.nb_tran_diff_bins, params.nb_tran_diff_bins))
+    # jax.debug.print("pix_renum={pix_renum}", pix_renum=pix_renum.reshape(params.nb_tran_diff_bins, params.nb_tran_diff_bins))
+    # jax.debug.print("nelectrons={nelectrons}", nelectrons=nelectrons.reshape(params.nb_tran_diff_bins, params.nb_tran_diff_bins))
     
     # Main Corrections - Linearly interpolate the continuous boundary integral
     base_curr = (currents_idx[:, 0] * Ny + currents_idx[:, 1]) * Nt
@@ -260,16 +265,16 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     # We now concatenate the _0 and _1 variants to smoothly accumulate both
     all_indices = jnp.concatenate([
         main_flat_indices_0, main_flat_indices_1, 
-        neigh_flat_indices_0, neigh_flat_indices_1, 
-        idx_corr_main_0, idx_corr_main_1, 
-        idx_corr_neigh_0, idx_corr_neigh_1
+        # neigh_flat_indices_0, neigh_flat_indices_1, 
+        # idx_corr_main_0, idx_corr_main_1, 
+        # idx_corr_neigh_0, idx_corr_neigh_1
     ])
     
     all_values = jnp.concatenate([
         main_vals_0, main_vals_1, 
-        neigh_vals_0, neigh_vals_1, 
-        diff_main_0, diff_main_1, 
-        diff_neigh_0, diff_neigh_1
+        # neigh_vals_0, neigh_vals_1, 
+        # diff_main_0, diff_main_1, 
+        # diff_neigh_0, diff_neigh_1
     ])
 
     wfs_flat = jax.ops.segment_sum(
@@ -400,8 +405,9 @@ def simulate_drift_new(params, tracks, fields):
                         (nb_tran_diff_bins_sym + 1) * width,
                         nb_tran_diff_bins + 1)
     
-    x0 = main_electrons[:, x_idx] % width
-    y0 = main_electrons[:, y_idx] % width
+    borders = jnp.take(params.tpc_borders, main_electrons[:, pixel_plane_idx].astype(int), axis=0)
+    x0 = (main_electrons[:, x_idx] - borders[:, 0, 0]) % width
+    y0 = (main_electrons[:, y_idx] - borders[:, 1, 0]) % width
     sigma = main_electrons[:, tran_diff_idx]
     tran_diff_weights = density_2d(bins, x0, y0, sigma)
 
@@ -423,14 +429,14 @@ def simulate_drift_new(params, tracks, fields):
 
     bin_shifts = jnp.mgrid[-nb_tran_diff_bins_sym:nb_tran_diff_bins_sym+1, -nb_tran_diff_bins_sym:nb_tran_diff_bins_sym+1]
 
-    bins_pitches_new = (bins_pitches[..., jnp.newaxis, jnp.newaxis] + bin_shifts).swapaxes(1, -1)
+    bins_pitches_new = jnp.moveaxis(bins_pitches[..., jnp.newaxis, jnp.newaxis] + bin_shifts, 1, -1)
     pix_pitches = bins_pitches_new // params.nb_sampling_bins_per_pixel
     pixels = pixel2id(params, pix_pitches[..., 0], pix_pitches[..., 1], 
                      main_electrons[:, pixel_plane_idx][:, None, None].astype(int), 
                      main_electrons[:, eventID_idx][:, None, None].astype(int))
     main_pixels = pixels[:, nb_tran_diff_bins_sym, nb_tran_diff_bins_sym] #Getting the main pixel, not considering pixels that would only see some diffusion charge
     currents_idx = jnp.abs(bins_pitches_new % params.nb_sampling_bins_per_pixel - params.nb_sampling_bins_per_pixel//2 + 0.5).reshape(-1, 2).astype(int)
-    # jax.debug.print("currents_idx={currents_idx}", currents_idx=currents_idx)
+
 
     #########################################################
     #################Adding neighbors########################
