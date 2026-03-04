@@ -265,7 +265,7 @@ if __name__ == '__main__':
                         help="Schedule learning rate, e.g. ExponentialLR")
     parser.add_argument("--lr_kw", dest="lr_kw", default=None, type=json.loads,
                         help="kwargs for learning rate scheduler, as string dict")
-    parser.add_argument("--iterations", dest="iterations", default=10, type=int,
+    parser.add_argument("--iterations", dest="iterations", default=None, type=int,
                         help="Number of iterations to run. Overrides epochs.")
     parser.add_argument("--loss_fn", dest="loss_fn", default=None,
                         help="Loss function to use. Named options are SDTW and space_match.")
@@ -273,7 +273,7 @@ if __name__ == '__main__':
                         help="Loss function keyword arguments.")
     parser.add_argument("--max_batch_len", dest="max_batch_len", default=None, type=float,
                         help="Max dx [cm] per batch. If passed, will add tracks to batch until overflow, splitting where needed")
-    parser.add_argument("--max_nbatch", dest="max_nbatch", default=1, type=int,
+    parser.add_argument("--max_nbatch", dest="max_nbatch", default=None, type=int,
                         help="Upper number of different batches taken from the data, given the max_batch_len. Overrides data_sz.")
     parser.add_argument("--print_input", dest="print_input", default=False, action="store_true",
                         help="print the event and track id per batch.")

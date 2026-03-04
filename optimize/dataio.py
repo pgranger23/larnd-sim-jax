@@ -127,7 +127,7 @@ def pad_sequence(sequences: List[jnp.ndarray],
 
 
 class TracksDataset:
-    def __init__(self, filename, ntrack, max_nbatch=1, swap_xz=True, seed=3, random_ntrack=False, track_len_sel=2., 
+    def __init__(self, filename, ntrack, max_nbatch=None, swap_xz=True, seed=3, random_ntrack=False, track_len_sel=2., 
                  max_abs_costheta_sel=0.966, min_abs_segz_sel=15., track_z_bound=28., max_batch_len=None, print_input=False,
                  chopped=True, pad=True, electron_sampling_resolution=0.001, live_selection=False):
 
@@ -161,7 +161,7 @@ class TracksDataset:
 
         # Only load useful tracks
         # assuming tracks are in orders as a unit of trajectory
-        if max_batch_len is not None and max_nbatch is not None:
+        if max_batch_len is not None and max_nbatch is not None and max_nbatch > 0:
             length_load_threshold = max_batch_len * (max_nbatch + 2)
             loaded_tracks = tracks[np.cumsum(tracks['dx']) < length_load_threshold]
             tracks = loaded_tracks
@@ -264,7 +264,7 @@ class TracksDataset:
 
             # Cap the number of batches if max_nbatch is set
             # split_points start from 0
-            if max_nbatch:
+            if max_nbatch and max_nbatch > 0:
                 split_points = split_points[:(max_nbatch+1)]
 
             # Create JaX batches
