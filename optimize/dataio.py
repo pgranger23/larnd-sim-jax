@@ -3,9 +3,6 @@ import numpy as np
 from numpy.lib import recfunctions as rfn
 import random
 import logging
-import jax.numpy as jnp
-from jax import vmap
-import jax
 from typing import List, Union, Tuple
 from tqdm import tqdm
 
@@ -21,12 +18,15 @@ class DataLoader:
         self.index = 0
         self.indices = np.arange(len(dataset))
         if self.shuffle:
-            self.indices = random.permutation(random.PRNGKey(self.seed), self.indices)
+            # use NumPy RNG for permutation (keep data loader host-side)
+            rng = np.random.default_rng(self.seed)
+            self.indices = rng.permutation(self.indices)
 
     def __iter__(self):
         self.index = 0
         if self.shuffle:
-            self.indices = random.permutation(random.PRNGKey(self.seed), self.indices)
+            rng = np.random.default_rng(self.seed)
+            self.indices = rng.permutation(self.indices)
         return self
 
     def __getitem__(self, idx):
@@ -42,8 +42,8 @@ class DataLoader:
         # Directly index into the dataset using batch_indices
         batch = [self.dataset[i] for i in batch_indices]
 
-        # Convert the batch to a JAX array if needed
-        batch = jnp.array(batch)
+        # Keep the batch as a host NumPy array (consistent boundary)
+        batch = np.array(batch)
 
         self.index += self.batch_size
         return batch
@@ -51,9 +51,10 @@ class DataLoader:
     def __len__(self):
         return (len(self.dataset) + self.batch_size - 1) // self.batch_size
 
-def jax_from_structured(tracks):
+def np_from_structured(tracks):
+    # structured_to_unstructured returns a NumPy array; keep it as NumPy
     tracks_np = rfn.structured_to_unstructured(tracks, copy=True, dtype=np.float32)
-    return jnp.array(tracks_np).astype(jnp.float32)
+    return np.asarray(tracks_np, dtype=np.float32)
 
 def chop_tracks(tracks, fields, precision=0.001):
     def split_track(track, nsteps, length, direction, i):
@@ -101,27 +102,26 @@ def chop_tracks(tracks, fields, precision=0.001):
     new_tracks = np.vstack([split_track(tracks[i], nsteps[i], length[i], direction[i], i) for i in range(tracks.shape[0])])
     return new_tracks
 
-def pad_sequence(sequences: List[jnp.ndarray],
-                 padding_value: Union[float, int] = 0.0) -> jnp.ndarray:
+def pad_sequence(sequences: List[np.ndarray],
+                 padding_value: Union[float, int] = 0.0) -> List[np.ndarray]:
     logger.info(f"Padding sequences with padding value: {padding_value}")
     # Input Validation
     if not isinstance(sequences, (list, tuple)):
-        raise TypeError(f"Input 'sequences' must be a list or tuple of jnp arrays, got {type(sequences)}")
+        raise TypeError(f"Input 'sequences' must be a list or tuple of arrays, got {type(sequences)}")
 
     if not sequences:
-        return jnp.array([], dtype=jnp.float32)
+        return []
 
     shapes = [s.shape for s in sequences]
 
     max_len = max(s[0] for s in shapes)
 
-    def pad_single_sequence(seq, max_len):
+    padded_sequences = []
+    for seq in sequences:
         current_len = seq.shape[0]
         pad_len = max_len - current_len
-        padded_seq = jnp.pad(seq, ((0, pad_len), (0, 0)), constant_values=padding_value)
-        return padded_seq
-
-    padded_sequences = [pad_single_sequence(seq, max_len) for seq in sequences]
+        padded_seq = np.pad(seq, ((0, pad_len), (0, 0)), mode='constant', constant_values=padding_value)
+        padded_sequences.append(np.asarray(padded_seq, dtype=np.float32))
 
     return padded_sequences
 
@@ -195,11 +195,11 @@ class TracksDataset:
             mask = np.repeat(trk_mask, n_repeat)
 
             keys = np.ascontiguousarray(selected_tracks[mask][['eventID', 'trackID']])
-            all_tracks = jax_from_structured(selected_tracks[mask])
+            all_tracks = np_from_structured(selected_tracks[mask])
             index, inverse_idx = np.unique(keys, return_inverse=True)
         else:
             keys = np.ascontiguousarray(tracks[['eventID', 'trackID']])
-            all_tracks = jax_from_structured(tracks)
+            all_tracks = np_from_structured(tracks)
             index, inverse_idx = np.unique(keys, return_inverse=True)
 
         # all fit with a sub-set of tracks
@@ -267,7 +267,7 @@ class TracksDataset:
             if max_nbatch and max_nbatch > 0:
                 split_points = split_points[:(max_nbatch+1)]
 
-            # Create JaX batches
+            # Create NumPy batches
             batches = []
             fit_index_bt = []
             for i in range(len(split_points)-1):
@@ -277,9 +277,9 @@ class TracksDataset:
                 raise ValueError(f"The batch split point must be indices > 0")
             tot_data_length = cumsum_lengths[split_points[-1]-1]
             if chopped:
-                fit_tracks = [jnp.array(chop_tracks(batch, self.track_fields, electron_sampling_resolution)) for batch in batches]
+                fit_tracks = [np.array(chop_tracks(batch, self.track_fields, electron_sampling_resolution)) for batch in batches]
             else:
-                fit_tracks = [jnp.array(batch) for batch in batches]
+                fit_tracks = [np.array(batch) for batch in batches]
 
             if print_input:
                 logger.info(f"training set [ev, trk]: {[idx.tolist() for idx in fit_index_bt]}")
@@ -358,8 +358,8 @@ class TgtTracksDataset:
                 if not np.array_equal(np.unique(tracks['file_traj_id'][mask]), load_file_traj):
                     raise ValueError("Target and input do not contain the same tracks! Please check.")
 
-                batches.append(jnp.vstack(jax_from_structured(tracks[mask])))
-                tot_data_length += jnp.sum(tracks[mask]['dx'])
+                batches.append(np.vstack(np_from_structured(tracks[mask])))
+                tot_data_length += np.sum(tracks[mask]['dx'])
 
                 if print_input:
                     all_load_file_traj.append(load_file_traj)
@@ -383,16 +383,16 @@ class TgtTracksDataset:
                 if not np.array_equal(np.unique(event_track_id[mask]), load_file_traj):
                     raise ValueError("Target and input do not contain the same tracks! Please check.")
 
-                batches.append(jnp.vstack(jax_from_structured(tracks[mask])))
-                tot_data_length += jnp.sum(tracks[mask]['dx'])
+                batches.append(np.vstack(np_from_structured(tracks[mask])))
+                tot_data_length += np.sum(tracks[mask]['dx'])
 
                 if print_input:
                     all_load_file_traj.append(load_file_traj)
  
         if chopped:
-            fit_tracks = [jnp.array(chop_tracks(batch, self.tgt_track_fields, electron_sampling_resolution)) for batch in batches]
+            fit_tracks = [np.array(chop_tracks(batch, self.tgt_track_fields, electron_sampling_resolution)) for batch in batches]
         else:
-            fit_tracks = [jnp.array(batch) for batch in batches]
+            fit_tracks = [np.array(batch) for batch in batches]
 
         if print_input:
             logger.info(f"training set: {all_load_file_traj}")
