@@ -364,30 +364,43 @@ class TgtTracksDataset:
                 if print_input:
                     all_load_file_traj.append(load_file_traj)
         else:
+            # Build structured (eventID, trackID) pairs for the target tracks once,
+            # outside the loop, to avoid recomputing on every batch iteration.
+            pair_dtype = np.dtype([('eventID', np.int64), ('trackID', np.int64)])
+            tracks_pairs = np.empty(len(tracks), dtype=pair_dtype)
+            tracks_pairs['eventID'] = tracks['eventID'].astype(np.int64)
+            tracks_pairs['trackID'] = tracks['trackID'].astype(np.int64)
+
             for bt in dataset_sim:
-                if np.max(bt[:, self.sim_track_fields.index("trackID")]) > 1E5:
-                    raise ValueError("Assumption broke! More than 1E5 trajectories in some event!")
-                load_file_traj = np.unique(bt[:, self.sim_track_fields.index("eventID")]*1E5 + bt[:, self.sim_track_fields.index("trackID")])
-                # remove padded value 0 (although a real traj can have event and track id 0, sacrifice traj)
-                index0 = np.where(load_file_traj == 0)
-                load_file_traj = np.delete(load_file_traj, index0)
+                event_ids = bt[:, self.sim_track_fields.index("eventID")].astype(np.int64)
+                track_ids = bt[:, self.sim_track_fields.index("trackID")].astype(np.int64)
 
-                event_track_id = tracks['eventID']*1E5 + tracks['trackID']
-                mask = np.isin(event_track_id, load_file_traj)
+                # Use structured (eventID, trackID) pairs for collision-free unique identification
+                bt_pairs = np.empty(len(event_ids), dtype=pair_dtype)
+                bt_pairs['eventID'] = event_ids
+                bt_pairs['trackID'] = track_ids
+                unique_pairs = np.unique(bt_pairs)
 
-                if len(load_file_traj) == 0:
+                # Remove padded value (eventID=0, trackID=0)
+                unique_pairs = unique_pairs[
+                    ~((unique_pairs['eventID'] == 0) & (unique_pairs['trackID'] == 0))
+                ]
+
+                if len(unique_pairs) == 0:
                     logger.info(f"-- Removing empty batch.")
                     continue
 
+                mask = np.isin(tracks_pairs, unique_pairs)
+
                 # Explicitly check that the input tracks are the same for the target and the simulation
-                if not np.array_equal(np.unique(event_track_id[mask]), load_file_traj):
+                if not np.array_equal(np.unique(tracks_pairs[mask]), unique_pairs):
                     raise ValueError("Target and input do not contain the same tracks! Please check.")
 
                 batches.append(np.vstack(jax_from_structured(tracks[mask])))
                 tot_data_length += np.sum(tracks[mask]['dx'])
 
                 if print_input:
-                    all_load_file_traj.append(load_file_traj)
+                    all_load_file_traj.append(unique_pairs)
  
         if chopped:
             fit_tracks = [jnp.array(chop_tracks(batch, self.tgt_track_fields, electron_sampling_resolution)) for batch in batches]
