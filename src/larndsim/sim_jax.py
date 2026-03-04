@@ -150,7 +150,9 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
 
     # --- 1. PREPARE MAIN PIXEL DATA (DIFFERENTIABLE TIME SHIFT) ---
     pix_renum = jnp.searchsorted(unique_pixels, pixels.ravel(), method='sort')
-    
+    mask = (unique_pixels[pix_renum] == pixels.ravel())
+    pix_renum = jnp.where(mask, pix_renum, -1) #Maybe a bit ugly but out of range indices should be properly ignored by jax in the sum
+
     # Extract continuous tick and fractional remainder for the gradient
     float_ticks_main = t0_after_diff / params.t_sampling
     cathode_ticks_main = jnp.clip(jnp.floor(float_ticks_main).astype(int), 0, Nt - 1)
@@ -428,7 +430,7 @@ def simulate_drift_new(params, tracks, fields):
                      main_electrons[:, eventID_idx][:, None, None].astype(int))
     main_pixels = pixels[:, nb_tran_diff_bins_sym, nb_tran_diff_bins_sym] #Getting the main pixel, not considering pixels that would only see some diffusion charge
     currents_idx = jnp.abs(bins_pitches_new % params.nb_sampling_bins_per_pixel - params.nb_sampling_bins_per_pixel//2 + 0.5).reshape(-1, 2).astype(int)
-
+    # jax.debug.print("currents_idx={currents_idx}", currents_idx=currents_idx)
 
     #########################################################
     #################Adding neighbors########################
