@@ -358,8 +358,8 @@ class TgtTracksDataset:
                 if not np.array_equal(np.unique(tracks['file_traj_id'][mask]), load_file_traj):
                     raise ValueError("Target and input do not contain the same tracks! Please check.")
 
-                batches.append(np.vstack(jax_from_structured(tracks[mask])))
-                tot_data_length += np.sum(tracks[mask]['dx'])
+                batches.append(jnp.vstack(jax_from_structured(tracks[mask])))
+                tot_data_length += jnp.sum(tracks[mask]['dx'])
 
                 if print_input:
                     all_load_file_traj.append(load_file_traj)
@@ -383,8 +383,8 @@ class TgtTracksDataset:
                 if not np.array_equal(np.unique(event_track_id[mask]), load_file_traj):
                     raise ValueError("Target and input do not contain the same tracks! Please check.")
 
-                batches.append(np.vstack(jax_from_structured(tracks[mask])))
-                tot_data_length += np.sum(tracks[mask]['dx'])
+                batches.append(jnp.vstack(jax_from_structured(tracks[mask])))
+                tot_data_length += jnp.sum(tracks[mask]['dx'])
 
                 if print_input:
                     all_load_file_traj.append(load_file_traj)
