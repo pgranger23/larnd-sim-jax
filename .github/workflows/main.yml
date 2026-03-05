@@ -173,7 +173,7 @@ jobs:
           uv pip install --system .[dev] pytest-xdist  # parallelize tests
       - name: Check fit
         run: |
-          ./optimize/fit_nll_test.sh
+          ./optimize/fit_nll_test.sh --lut
 
       - name: Make fit plots
         run: |
