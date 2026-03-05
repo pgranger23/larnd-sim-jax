@@ -337,8 +337,8 @@ class ParamFitter:
             val = getattr(self.norm_params, key)
             
             # Get boundaries from your existing ranges dictionary
-            low = ranges[key]['down']
-            high = ranges[key]['up']
+            low = ranges[key]['min']
+            high = ranges[key]['max']
             
             # Soft-map: Physical = Low + (High - Low) * Sigmoid(Optimizer_Val)
             # This prevents the parameter from ever escaping the [low, high] box.
@@ -511,7 +511,7 @@ class ParamFitter:
                 new_phys = {}
                 for key in self.relevant_params_list:
                     val = getattr(norm_params_input, key)
-                    low, high = ranges[key]['down'], ranges[key]['up']
+                    low, high = ranges[key]['min'], ranges[key]['max']
                     new_phys[key] = low + (high - low) * jax.nn.sigmoid(val)
                 
                 physical_params = self.ref_params.replace(**new_phys)
