@@ -75,7 +75,7 @@ def chop_tracks(tracks, fields, precision=0.001):
         new_tracks[-1, fields.index("x_end")] = track[fields.index("x_end")]
         new_tracks[-1, fields.index("y_end")] = track[fields.index("y_end")]
         new_tracks[-1, fields.index("z_end")] = track[fields.index("z_end")]
-        new_tracks[-1, fields.index("dE")] = track[fields.index("dE")]*(1 - precision*(nsteps - 1)/(length + 1e-10))
+        new_tracks[-1, fields.index("dE")] = float(track[fields.index("dE")])*(1 - precision*(nsteps - 1)/(length + 1e-10))
         new_tracks[-1, fields.index("dx")] = length - precision*(nsteps - 1)
 
         #Finally computing the middle point once everything is ok
