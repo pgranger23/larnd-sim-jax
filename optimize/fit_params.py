@@ -460,7 +460,7 @@ class ParamFitter:
 
         return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id
 
-    def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True, with_hess=False, epoch=0):
+    def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True, with_hess=False, epoch=0, use_physical_params=False):
         if self.probabilistic_sim:
             rngkey = None
         else:
@@ -491,31 +491,43 @@ class ParamFitter:
             'pixel_id': ref_pixel_id
         }
 
-        def loss_wrapper(norm_params_input):
-            # 1. Map from unconstrained space to physical space internally
-            new_phys = {}
-            for key in self.relevant_params_list:
-                val = getattr(norm_params_input, key)
-                low, high = ranges[key]['down'], ranges[key]['up']
-                new_phys[key] = low + (high - low) * jax.nn.sigmoid(val)
-            
-            # Reconstruct the physical params object for the simulation
-            physical_params = self.ref_params.replace(**new_phys)
+        if use_physical_params:
+            def loss_wrapper(physical_params):
+                prediction = self.sim_strategy.predict(physical_params, tracks, self.sim_track_fields, rngkey)
+                return self.loss_strategy.compute(physical_params, prediction, target_data)
 
-            # 2. Run simulation and loss calculation
-            prediction = self.sim_strategy.predict(physical_params, tracks, self.sim_track_fields, rngkey)
-            return self.loss_strategy.compute(physical_params, prediction, target_data)
+            if with_loss and with_grad:
+                (loss_val, aux), grads = value_and_grad(loss_wrapper, has_aux=True)(self.current_params)
+            elif with_loss:
+                loss_val, aux = loss_wrapper(self.current_params)
+            elif with_grad:
+                grads, aux = grad(loss_wrapper, has_aux=True)(self.current_params)
 
-        # 3. Differentiate directly with respect to norm_params
-        if with_loss and with_grad:
-            (loss_val, aux), grads = value_and_grad(loss_wrapper, has_aux=True)(self.norm_params)
-        elif with_loss:
-            loss_val, aux = loss_wrapper(self.norm_params)
-        elif with_grad:
-            grads, aux = grad(loss_wrapper, has_aux=True)(self.norm_params)
+            if with_hess:
+                hess, aux_hess = jax.jacfwd(jax.jacrev(loss_wrapper, has_aux=True), has_aux=True)(self.current_params)
+        else:
+            def loss_wrapper(norm_params_input):
+                # Map from unconstrained space to physical space internally
+                new_phys = {}
+                for key in self.relevant_params_list:
+                    val = getattr(norm_params_input, key)
+                    low, high = ranges[key]['down'], ranges[key]['up']
+                    new_phys[key] = low + (high - low) * jax.nn.sigmoid(val)
+                
+                physical_params = self.ref_params.replace(**new_phys)
+                prediction = self.sim_strategy.predict(physical_params, tracks, self.sim_track_fields, rngkey)
+                return self.loss_strategy.compute(physical_params, prediction, target_data)
+
+            # Differentiate with respect to norm_params
+            if with_loss and with_grad:
+                (loss_val, aux), grads = value_and_grad(loss_wrapper, has_aux=True)(self.norm_params)
+            elif with_loss:
+                loss_val, aux = loss_wrapper(self.norm_params)
+            elif with_grad:
+                grads, aux = grad(loss_wrapper, has_aux=True)(self.norm_params)
  
-        if with_hess:
-            hess, aux_hess = jax.jacfwd(jax.jacrev(loss_wrapper, has_aux=True), has_aux=True)(self.norm_params)
+            if with_hess:
+                hess, aux_hess = jax.jacfwd(jax.jacrev(loss_wrapper, has_aux=True), has_aux=True)(self.norm_params)
 
         return loss_val, grads, aux, hess, aux_hess
 
@@ -903,17 +915,9 @@ class LikelihoodProfiler(ParamFitter):
 
                 for iter in tqdm(range(nb_steps)):
                     start_time = time()
-                    # if iter == 3:
-                    #     options = jax.profiler.ProfileOptions()
-                    #     options.host_tracer_level = 2
-                    #     jax.profiler.start_trace("/sdf/home/p/pgranger/profile-data", profiler_options=options)
-                    #     # libcudart.cudaProfilerStart()
-                    # if iter == 9:
-                    #     jax.profiler.stop_trace()
-                    #     # libcudart.cudaProfilerStop()
                     new_param_values = {param: lower + iter*param_step}
                     self.current_params = self.ref_params.replace(**new_param_values)
-                    loss_val, grads, aux, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True)
+                    loss_val, grads, aux, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True, use_physical_params=True)
 
                     stop_time = time()
 
@@ -1027,13 +1031,13 @@ class MinuitFitter(ParamFitter):
                 def loss_wrapper(args): # type: ignore
                     # Update the current params with the new values
                     self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
-                    loss_val, _, _ , _, _= self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_grad=False)
+                    loss_val, _, _ , _, _= self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_grad=False, use_physical_params=True)
                     return loss_val
 
                 def grad_wrapper(args): # type: ignore
                     # Update the current params with the new values
                     self.current_params = self.current_params.replace(**{key: args[i] for i, key in enumerate(self.relevant_params_list)})
-                    _, grads, _, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=False)
+                    _, grads, _, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=False, use_physical_params=True)
                     return [getattr(grads, key) for key in self.relevant_params_list]
 
                 self.configure_minimizer(loss_wrapper, grad_wrapper)
@@ -1060,7 +1064,7 @@ class MinuitFitter(ParamFitter):
                     # target
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = get_target(self, i, evts_sim, target)
 
-                    loss_val, _, _, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_grad=False, with_loss=True)
+                    loss_val, _, _, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_grad=False, with_loss=True, use_physical_params=True)
                     tot_loss += loss_val # type: ignore
                 logger.debug(f"Total loss: {tot_loss}")
                 return tot_loss
@@ -1079,7 +1083,7 @@ class MinuitFitter(ParamFitter):
                     # target
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = get_target(self, i, evts_sim, target)
 
-                    _, grads, _, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=False)
+                    _, grads, _, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=False, use_physical_params=True)
                     tot_grad = [getattr(grads, key) + tot_grad[i] for i, key in enumerate(self.relevant_params_list)]
                 logger.debug(f"Average gradient: {[g/len(dataloader_sim) for g in tot_grad]}")
                 return [g for g in tot_grad]
