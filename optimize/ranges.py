@@ -1,16 +1,20 @@
 # From https://docs.google.com/spreadsheets/d/1DLpSDgPsHeHUWCEBayYCcbLzIzd30vfBe72N-Z5vWTc/edit#gid=1247026028
+# Convention for bounds:
+#   - 'nom'  : nominal (central) value used in default configurations.
+#   - 'down'/'up' : typical variation range around 'nom' (e.g. for scans / 1σ-like studies).
+#   - 'min'/'max' : hard limits; values should not be generated or tuned outside this range.
 ranges = {}
-ranges['lArDensity']     = {'nom': 1.38, 'down': 1.37, 'up': 1.41}
-ranges['eField']         = {'nom': 0.5, 'down': 0.45, 'up': 0.55}
-ranges['vdrift']         = {'nom': 0.1596, 'down': 0.1400, 'up': 0.1800}
-ranges['MeVToElectrons'] = {'nom': 4.237e4, 'down': 3.48e4, 'up': 5.13e4}
-ranges['alpha']          = {'nom': 0.93, 'down': 0.85, 'up': 1.1}
-ranges['beta']           = {'nom': 0.207, 'down': 0.18, 'up': 0.22}
-ranges['Ab']             = {'nom': 0.8, 'down': 0.78, 'up': 0.88}
-ranges['kb']             = {'nom': 0.0486, 'down': 0.04, 'up': 0.07}
-ranges['lifetime']       = {'nom': 2.2e3, 'down': 500, 'up': 5000}
-ranges['long_diff']      = {'nom': 4.0e-6, 'down': 2e-6, 'up': 9e-6}
-ranges['tran_diff']      = {'nom': 8.8e-6, 'down': 4e-6, 'up': 14e-6}
-ranges['shift_x']        = {'nom': 0, 'down': -0.22, 'up': 0.22}
-ranges['shift_y']        = {'nom': 0, 'down': -0.22, 'up': 0.22}
-ranges['shift_z']        = {'nom': 0, 'down': -0.22, 'up': 0.22}
+ranges['lArDensity']     = {'nom': 1.38, 'down': 1.37, 'up': 1.41, 'min': 1.35, 'max': 1.43}
+ranges['eField']         = {'nom': 0.5, 'down': 0.45, 'up': 0.55, 'min': 0.4, 'max': 0.6}
+ranges['vdrift']         = {'nom': 0.1596, 'down': 0.1400, 'up': 0.1800, 'min': 0.13, 'max': 0.19}
+ranges['MeVToElectrons'] = {'nom': 4.237e4, 'down': 3.48e4, 'up': 5.13e4, 'min': 3e4, 'max': 6e4}
+ranges['alpha']          = {'nom': 0.93, 'down': 0.85, 'up': 1.1, 'min': 0.8, 'max': 1.2}
+ranges['beta']           = {'nom': 0.207, 'down': 0.18, 'up': 0.22, 'min': 0.15, 'max': 0.25}
+ranges['Ab']             = {'nom': 0.8, 'down': 0.78, 'up': 0.88, 'min': 0.75, 'max': 0.9}
+ranges['kb']             = {'nom': 0.0486, 'down': 0.04, 'up': 0.07, 'min': 0.03, 'max': 0.08}
+ranges['lifetime']       = {'nom': 2.2e3, 'down': 500, 'up': 5000, 'min': 400, 'max': 6000}
+ranges['long_diff']      = {'nom': 4.0e-6, 'down': 2e-6, 'up': 9e-6, 'min': 1e-6, 'max': 1e-5}
+ranges['tran_diff']      = {'nom': 8.8e-6, 'down': 4e-6, 'up': 14e-6, 'min': 3e-6, 'max': 15e-6}
+ranges['shift_x']        = {'nom': 0, 'down': -0.22, 'up': 0.22, 'min': -0.44, 'max': 0.44}
+ranges['shift_y']        = {'nom': 0, 'down': -0.22, 'up': 0.22, 'min': -0.44, 'max': 0.44}
+ranges['shift_z']        = {'nom': 0, 'down': -0.22, 'up': 0.22, 'min': -0.44, 'max': 0.44}
