@@ -1,4 +1,8 @@
 # From https://docs.google.com/spreadsheets/d/1DLpSDgPsHeHUWCEBayYCcbLzIzd30vfBe72N-Z5vWTc/edit#gid=1247026028
+# Convention for bounds:
+#   - 'nom'  : nominal (central) value used in default configurations.
+#   - 'down'/'up' : typical variation range around 'nom' (e.g. for scans / 1σ-like studies).
+#   - 'min'/'max' : hard limits; values should not be generated or tuned outside this range.
 ranges = {}
 ranges['lArDensity']     = {'nom': 1.38, 'down': 1.37, 'up': 1.41, 'min': 1.35, 'max': 1.43}
 ranges['eField']         = {'nom': 0.5, 'down': 0.45, 'up': 0.55, 'min': 0.4, 'max': 0.6}
