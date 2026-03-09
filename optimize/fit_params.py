@@ -110,6 +110,30 @@ def remove_noise_from_params(params):
     noise_params = ('RESET_NOISE_CHARGE', 'UNCORRELATED_NOISE_CHARGE')
     return params.replace(**{key: 0. for key in noise_params})
 
+def map_norm_to_phys(val, key):
+    """Map an unconstrained (normalised) value to physical space via sigmoid.
+
+    Physical = low + (high - low) * sigmoid(val)
+
+    This keeps the physical parameter strictly inside [low, high] for any
+    finite *val*, making boundary handling implicit rather than explicit.
+    """
+    low, high = ranges[key]['min'], ranges[key]['max']
+    return low + (high - low) * jax.nn.sigmoid(val)
+
+def map_phys_to_norm(val, key):
+    """Inverse of :func:`map_norm_to_phys` — map a physical value to unconstrained space.
+
+    norm = logit((val - low) / (high - low))
+
+    Useful for initialising the optimiser from a known physical starting point.
+    The fraction is clamped to (eps, 1-eps) to avoid infinite results at the boundaries.
+    """
+    low, high = ranges[key]['min'], ranges[key]['max']
+    eps = jnp.finfo(jnp.float32).eps
+    frac = jnp.clip((val - low) / (high - low), eps, 1.0 - eps)
+    return jnp.log(frac / (1.0 - frac))
+
 class ParamFitter:
     def __init__(self, relevant_params, set_init_params, sim_track_fields, tgt_track_fields,
                  detector_props, pixel_layouts,
@@ -331,20 +355,10 @@ class ParamFitter:
             self.norm_params = remove_noise_from_params(self.norm_params)
 
     def update_params(self):
-        new_physical_params = {}
-        for key in self.relevant_params_list:
-            # Get the unconstrained value from the optimizer
-            val = getattr(self.norm_params, key)
-            
-            # Get boundaries from your existing ranges dictionary
-            low = ranges[key]['down']
-            high = ranges[key]['up']
-            
-            # Soft-map: Physical = Low + (High - Low) * Sigmoid(Optimizer_Val)
-            # This prevents the parameter from ever escaping the [low, high] box.
-            mapped_val = low + (high - low) * jax.nn.sigmoid(val)
-            new_physical_params[key] = mapped_val
-            
+        new_physical_params = {
+            key: map_norm_to_phys(getattr(self.norm_params, key), key)
+            for key in self.relevant_params_list
+        }
         self.current_params = self.ref_params.replace(**new_physical_params)
         # self.current_params = self.norm_params.replace(**{key: getattr(self.norm_params, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list})
 
@@ -508,12 +522,10 @@ class ParamFitter:
         else:
             def loss_wrapper(norm_params_input):
                 # Map from unconstrained space to physical space internally
-                new_phys = {}
-                for key in self.relevant_params_list:
-                    val = getattr(norm_params_input, key)
-                    low, high = ranges[key]['down'], ranges[key]['up']
-                    new_phys[key] = low + (high - low) * jax.nn.sigmoid(val)
-                
+                new_phys = {
+                    key: map_norm_to_phys(getattr(norm_params_input, key), key)
+                    for key in self.relevant_params_list
+                }
                 physical_params = self.ref_params.replace(**new_phys)
                 prediction = self.sim_strategy.predict(physical_params, tracks, self.sim_track_fields, rngkey)
                 return self.loss_strategy.compute(physical_params, prediction, target_data)
