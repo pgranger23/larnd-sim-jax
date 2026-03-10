@@ -265,16 +265,16 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     # We now concatenate the _0 and _1 variants to smoothly accumulate both
     all_indices = jnp.concatenate([
         main_flat_indices_0, main_flat_indices_1, 
-        # neigh_flat_indices_0, neigh_flat_indices_1, 
-        # idx_corr_main_0, idx_corr_main_1, 
-        # idx_corr_neigh_0, idx_corr_neigh_1
+        neigh_flat_indices_0, neigh_flat_indices_1, 
+        idx_corr_main_0, idx_corr_main_1, 
+        idx_corr_neigh_0, idx_corr_neigh_1
     ])
     
     all_values = jnp.concatenate([
         main_vals_0, main_vals_1, 
-        # neigh_vals_0, neigh_vals_1, 
-        # diff_main_0, diff_main_1, 
-        # diff_neigh_0, diff_neigh_1
+        neigh_vals_0, neigh_vals_1, 
+        diff_main_0, diff_main_1, 
+        diff_neigh_0, diff_neigh_1
     ])
 
     wfs_flat = jax.ops.segment_sum(
