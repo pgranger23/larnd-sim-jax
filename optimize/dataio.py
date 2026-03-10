@@ -269,6 +269,7 @@ class TracksDataset:
 
         if pad:
             self.tracks = pad_sequence(fit_tracks, padding_value = 0)
+            self.tracks = [t.at[:, self.track_fields.index("eventID")].set(jnp.where(t[:, self.track_fields.index("dEdx")] == 0, -1, t[:, self.track_fields.index("eventID")])) for t in self.tracks]  # Set eventID to -1 for padded segments
         else:
             self.tracks = fit_tracks
 
