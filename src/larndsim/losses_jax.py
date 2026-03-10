@@ -428,7 +428,7 @@ def llhd_loss(ticks_prob_distrib, ticks_mc, no_hit_prob, charge_distrib, charge_
     log_likelihoods_tick = jnp.where(ticks_mc < ticks_prob_distrib.shape[1] - 3, log_likelihoods_tick, jnp.log(no_hit_prob + eps))
     
     # Add Gaussian prior on charge: log P(charge_mc | charge_pred, sigma)
-    # log P = -0.5 * ((charge_mc - charge_pred) / sigma)^2 - 0.5 * log(2*pi*sigma^2)
+    # log P = -0.5 * ((charge_mc - charge_pred) / sigma) ** 2 - 0.5 * log(2*pi*sigma^2)
     charge_diff = charge_mc - predicted_charges_at_mc_ticks
     log_likelihoods_charge = -0.5 * (charge_diff / sigma) ** 2 - 0.5 * jnp.log(2 * jnp.pi * sigma**2)
     
@@ -440,72 +440,31 @@ def llhd_loss(ticks_prob_distrib, ticks_mc, no_hit_prob, charge_distrib, charge_
     
     return llhd, dict()
 
+def wasserstein_1d_loss(trainable_values, ref_quantiles, event_ids, num_quantiles=100, trim=0.0):
+    """Computes the 2-Wasserstein distance between two unbinned 1D samples."""
+    q = jnp.linspace(trim, 1.0 - trim, num_quantiles)
 
-#Code commented below is unused but I still want to keep it for future reference
+    # Replace invalid values with NaN to mask padded segments
+    valid_values = jnp.where(event_ids >= 0, trainable_values, jnp.nan)
+    
+    # Compute the quantiles for both distributions
+    quantiles_train = jnp.nanquantile(valid_values, q)
+    quantiles_ref = jnp.quantile(ref_quantiles, q)
 
-# def batch_hits(params, adcs, pIDs, ticks):
-#     pixel_x, pixel_y, pixel_z, eventID = get_hits_space_coords(params, pIDs, ticks)
-#     with jax.named_scope("masking"):
-#         mask = adcs.flatten() > 0
-#         pixel_x_masked = jnp.repeat(pixel_x, 10)[mask]
-#         pixel_y_masked = jnp.repeat(pixel_y, 10)[mask]
-#         pixel_z_masked = pixel_z[mask]
-#         eventID_masked = jnp.repeat(eventID, 10)[mask]
-#         adcs_masked = adcs.flatten()[mask]
+    eps = 1e-6
+    log_q_train = jnp.log(quantiles_train + eps)
+    log_q_ref = jnp.log(quantiles_ref + eps)
+    
+    return jnp.mean((log_q_train - log_q_ref)**2)
 
-#     unique_event_ids, event_start_indices = jnp.unique(eventID_masked, return_index=True)
-#     num_events = unique_event_ids.shape[0]
-#     # Compute the number of hits per event
-#     hits_per_event = jnp.diff(jnp.append(event_start_indices, eventID_masked.shape[0]))
-#     # Determine maximum hits per event for padding
-
-#     max_hits_per_event = jnp.max(hits_per_event)
-#     padded_size = pad_size(max_hits_per_event, "batch_hits")
-#     max_hits_per_event = padded_size
-   
-#     # Create scatter indices to place hits into batch array
-#     with jax.named_scope("batching"):
-#         max_range = jnp.arange(max_hits_per_event, dtype=int)
-#         event_hit_ranges = max_range[None, :] < hits_per_event[:, None]
-#         hit_indices = jnp.where(event_hit_ranges, max_range[None, :], -1).flatten()
-#         valid_hit_indices = hit_indices[hit_indices >= 0]
-        
-#         event_indices = jnp.repeat(jnp.arange(num_events, dtype=int), hits_per_event)
-        
-#         #Initialize padded array
-#         batched_hits = jnp.full((num_events, max_hits_per_event, 4), 0.)
-#         # masks = jnp.zeros((num_events, max_hits_per_event), dtype=int)
-        
-#         batched_hits = batched_hits.at[event_indices, valid_hit_indices, 0].set(pixel_x_masked)
-#         batched_hits = batched_hits.at[event_indices, valid_hit_indices, 1].set(pixel_y_masked)
-#         batched_hits = batched_hits.at[event_indices, valid_hit_indices, 2].set(pixel_z_masked)
-#         batched_hits = batched_hits.at[event_indices, valid_hit_indices, 3].set(adcs_masked)
-
-#     # masks = masks.at[event_indices, valid_hit_indices].set(1)
-
-#     return batched_hits, unique_event_ids
-
-# @jit
-# def chamfer_distance_batch(points1, points2, mask1, mask2):
-#     """
-#     Computes the Chamfer distance for each event independently using masks.
-#     Args:
-#         points1, points2: Arrays of shape (B, P, D) and (B, Q, D) for batched events.
-#         mask1, mask2: Binary masks for valid points (shape (B, P) and (B, Q)).
-#     Returns:
-#         Chamfer distance for each event.
-#     """
-#     def chamfer_event(p1, p2, m1, m2):
-#         dists = jnp.sum((p1[:, None, :] - p2[None, :, :]) ** 2, axis=-1)
-
-#         valid_dists1 = jnp.where(m2[None, :], dists, 1e10)
-#         valid_dists2 = jnp.where(m1[:, None], dists, 1e10)
-
-#         min_dist1 = jnp.min(valid_dists1, axis=1)
-#         min_dist2 = jnp.min(valid_dists2, axis=0)
-
-#         mean_dist1 = jnp.sum(min_dist1 * m1)# / jnp.sum(m1)
-#         mean_dist2 = jnp.sum(min_dist2 * m2)# / jnp.sum(m2)
-
-#         return mean_dist1 + mean_dist2
-#     return vmap(chamfer_event)(points1, points2, mask1, mask2)
+def compute_tv_penalty(log_values, track_ids, event_ids):
+    """Computes total variation penalty for smoothness along a track."""
+    diffs = jnp.diff(log_values) 
+    
+    # Mask to only compare adjacent segments belonging to the same track
+    same_track_mask = (track_ids[1:] == track_ids[:-1]) & (event_ids[1:] == event_ids[:-1]) & (event_ids[1:] >= 0)
+    
+    valid_diffs = jnp.abs(diffs) * same_track_mask
+    num_valid_pairs = jnp.maximum(1.0, jnp.sum(same_track_mask))
+    
+    return jnp.sum(valid_diffs) / num_valid_pairs
