@@ -153,12 +153,11 @@ class ParamFitter:
 
         self.sim_track_fields = sim_track_fields
         self.tgt_track_fields = tgt_track_fields
+
         if 'eventID' in self.sim_track_fields:
             self.evt_id = 'eventID'
-            self.trj_id = 'trackID'
         else:
             self.evt_id = 'event_id'
-            self.trj_id = 'traj_id'
 
         if type(relevant_params) == dict:
             self.relevant_params_list = list(relevant_params.keys())
