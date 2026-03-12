@@ -196,20 +196,14 @@ class TracksDataset:
             mask = np.repeat(trk_mask, n_repeat)
 
             keys = np.ascontiguousarray(selected_tracks[mask][['eventID', 'trackID']])
-            # remove tracks with eventID and trackID = 0, due to the pad value, even they could be valid
-            valid_index = np.where((keys['eventID'] != 0) & (keys['trackID'] != 0))[0]
-            keys = keys[valid_index]
-            # Build per-row trajectory index mapping using unique keys for the selected rows
-            # tracks remains the full structured array; map rows -> trajectory index below.
-            index, inverse_idx = np.unique(keys, return_inverse=True)
-
         else:
             keys = np.ascontiguousarray(tracks[['eventID', 'trackID']])
-            # remove tracks with eventID and trackID = 0, due to the pad value, even they could be valid
-            valid_index = np.where((keys['eventID'] != 0) & (keys['trackID'] != 0))[0]
-            keys = keys[valid_index]
-            # compute unique trajectory keys for the whole file and inverse mapping
-            index, inverse_idx = np.unique(keys, return_inverse=True)
+
+        # Keep trajectory keys (eventID, trackID) aligned with trajectory ids.
+        # Build per-row trajectory index mapping using unique keys for the selected rows
+        # compute unique trajectory keys for the whole file and inverse mapping
+        index, inverse_idx = np.unique(keys, return_inverse=True)
+        self.traj_keys = np.ascontiguousarray(index)
 
         # Build per-trajectory list of row indices.
         # Assemble batches on-demand instead of storing full arrays.
@@ -238,7 +232,7 @@ class TracksDataset:
             else:
                 rnd_idx = rng.permutation(len(traj_row_indices)).astype(int)
 
-        trajectory_row_indices = [traj_row_indices[idx] for idx in rnd_idx]
+            trajectory_row_indices = [traj_row_indices[idx] for idx in rnd_idx]
 
         ##################################
 
@@ -311,10 +305,15 @@ class TracksDataset:
         # select structured rows and convert to 2D float array
         selected_struct = self.tracks_struct[rows]
         batch_arr = np_from_structured(selected_struct)
+
+        if self.print_input:
+            logger.info(f"Sim selected_struct[['eventID', 'trackID']]: {np.unique(selected_struct[['eventID', 'trackID']])}")
+
         # optionally chop per-trajectory. chop_tracks expects full tracks input arranged by rows per trajectory,
         # our rows are concatenated in trajectory order; chop_tracks will split each trajectory by steps.
         if self.chopped:
             batch_arr = chop_tracks(batch_arr, self.track_fields, precision=self.electron_sampling_resolution)
+
         # pad to global max if requested
         if self.pad and self.max_batch_nsteps > 0:
             cur_len = batch_arr.shape[0]
@@ -325,6 +324,23 @@ class TracksDataset:
 
     def get_track_fields(self):
         return self.track_fields
+
+    def get_batch_row_keys(self):
+        """Return row-level (eventID, trackID) keys for all rows used in batch idx."""
+
+        all_batch_keys = []
+
+        for idx in range(len(self.batch_traj_indices)):
+            traj_indices = self.batch_traj_indices[idx]
+            rows_list = [self.trajectory_row_indices[t] for t in traj_indices]
+            if len(rows_list) == 0:
+                return np.empty((0,), dtype=self.traj_keys.dtype)
+
+            rows = np.concatenate(rows_list)
+            batch_keys = np.ascontiguousarray(np.unique(self.tracks_struct[rows][['eventID', 'trackID']]))
+            all_batch_keys.append(batch_keys)
+
+        return all_batch_keys
 
 class TgtTracksDataset:
     def __init__(self, filename, dataset_sim, swap_xz=True, chopped=True, pad=True, electron_sampling_resolution=0.001, print_input=False):
@@ -340,7 +356,7 @@ class TgtTracksDataset:
             tracks_ds = f["segments"][:] # convert to array
 
         if not 't0' in tracks_ds.dtype.names:
-            tracks_ds = rfn.append_fields(tracks_ds, 't0', np.zeros(tracks.shape[0]), usemask=False)
+            tracks_ds = rfn.append_fields(tracks_ds, 't0', np.zeros(tracks_ds.shape[0]), usemask=False)
 
         self.tgt_track_fields = tracks_ds.dtype.names
 
@@ -350,19 +366,72 @@ class TgtTracksDataset:
         }
         self.tgt_track_fields = tuple([replace_map.get(field, field) for field in self.tgt_track_fields])
 
+        tracks_ds.dtype.names = self.tgt_track_fields
+
+        if self.swap_xz:
+            x_start = np.copy(tracks_ds['x_start'])
+            x_end = np.copy(tracks_ds['x_end'])
+            x = np.copy(tracks_ds['x'])
+
+            tracks_ds['x_start'] = np.copy(tracks_ds['z_start'])
+            tracks_ds['x_end'] = np.copy(tracks_ds['z_end'])
+            tracks_ds['x'] = np.copy(tracks_ds['z'])
+
+            tracks_ds['z_start'] = x_start
+            tracks_ds['z_end'] = x_end
+            tracks_ds['z'] = x
+
+        # Keep target rows in memory once and build a fast row index by key.
+        self.tracks_struct = tracks_ds
+        tgt_key_ids = self._pack_evt_trk_ids(self.tracks_struct['eventID'], self.tracks_struct['trackID'])
+        self._target_sorted_row_idx = np.argsort(tgt_key_ids)
+        sorted_key_ids = tgt_key_ids[self._target_sorted_row_idx]
+        self._target_unique_key_ids, self._target_unique_starts = np.unique(sorted_key_ids, return_index=True)
+        self._target_unique_ends = np.append(self._target_unique_starts[1:], len(self._target_sorted_row_idx))
+
         # Precompute a small per-batch key list from dataset_sim (int)
-        self.batch_keys = []
-        for bt in dataset_sim:
-            evt_trk_id = np.column_stack((bt[:, self.sim_track_fields.index("eventID")], bt[:, self.sim_track_fields.index("trackID")]))
-            unique_evt_trk_id = np.unique(evt_trk_id, axis=0)
-            self.batch_keys.append(unique_evt_trk_id)
+        self.batch_keys = dataset_sim.get_batch_row_keys()
 
         # Basic metadata
         self.n_batches = len(self.batch_keys)
-        self.longest_batch = max(len(bt_idx) for bt_idx in self.batch_keys)
+
         if self.print_input:
             logger.info(f"TgtTracksDataset prepared {self.n_batches} batch keys from sim dataset")
 
+    @staticmethod
+    def _pack_evt_trk_ids(event_ids, track_ids):
+        """Pack (eventID, trackID) pairs into collision-free uint64 keys."""
+        evt_u = np.asarray(event_ids, dtype=np.int64).astype(np.uint64)
+        trk_u = np.asarray(track_ids, dtype=np.int64).astype(np.uint64)
+        return (evt_u << np.uint64(32)) | (trk_u & np.uint64(0xFFFFFFFF))
+    
+    @staticmethod
+    def _format_key_pairs_from_ids(key_ids, max_items=8):
+        """Decode packed key ids into human-readable (eventID, trackID) pairs."""
+        if key_ids.size == 0:
+            return []
+        key_ids = np.asarray(key_ids, dtype=np.uint64)
+        evt = (key_ids >> np.uint64(32)).astype(np.int64)
+        trk = (key_ids & np.uint64(0xFFFFFFFF)).astype(np.int64)
+        n = min(max_items, key_ids.size)
+        return list(zip(evt[:n].tolist(), trk[:n].tolist()))
+
+    def _assert_batch_key_match(self, idx, expected_key_ids, selected_rows):
+        """Ensure selected target rows contain exactly the expected batch keys."""
+        got_key_ids = np.unique(self._pack_evt_trk_ids(selected_rows['eventID'], selected_rows['trackID']))
+
+        if not np.array_equal(expected_key_ids, got_key_ids):
+            missing = np.setdiff1d(expected_key_ids, got_key_ids, assume_unique=True)
+            extra = np.setdiff1d(got_key_ids, expected_key_ids, assume_unique=True)
+            msg = (
+                f"Batch {idx} key mismatch between sim and tgt. "
+                f"expected={expected_key_ids.size}, got={got_key_ids.size}, "
+                f"missing={missing.size}, extra={extra.size}. "
+                f"missing_sample={self._format_key_pairs_from_ids(missing)}, "
+                f"extra_sample={self._format_key_pairs_from_ids(extra)}"
+            )
+            raise ValueError(msg)
+        
     def __len__(self):
         return self.n_batches
 
@@ -371,59 +440,50 @@ class TgtTracksDataset:
             raise IndexError("TgtTracksDataset index out of range")
 
         keys = self.batch_keys[idx]
-        flat_keys = [key[0]*self.longest_batch + key[1] for key in keys]
         if keys.size == 0:
             if self.print_input:
                 logger.info(f"-- Removing empty batch {idx}.")
             return np.empty((0, len(self.tgt_track_fields)), dtype=np.float32)
 
-        # Get batch matching keys, select these traj rows into host memory.
-        with h5py.File(self.filename, "r") as f:
-            tracks_ds = f["segments"][:] # convert to array
+        key_ids = np.unique(self._pack_evt_trk_ids(keys['eventID'], keys['trackID']))
 
-            if not 't0' in tracks_ds.dtype.names:
-                tracks_ds = rfn.append_fields(tracks_ds, 't0', np.zeros(tracks_ds.shape[0]), usemask=False)
+        left = np.searchsorted(self._target_unique_key_ids, key_ids, side='left')
+        right = np.searchsorted(self._target_unique_key_ids, key_ids, side='right')
 
-            tmp_tgt_track_fields = tracks_ds.dtype.names
-            replace_map = {
-                'event_id': 'eventID',
-                'traj_id': 'trackID',
-            }
-            tmp_tgt_track_fields = tuple([replace_map.get(field, field) for field in tmp_tgt_track_fields])
-            tracks_ds.dtype.names = tmp_tgt_track_fields
+        row_chunks = []
+        for lpos, rpos in zip(left, right):
+            if lpos < rpos:
+                for upos in range(lpos, rpos):
+                    s = self._target_unique_starts[upos]
+                    e = self._target_unique_ends[upos]
+                    row_chunks.append(self._target_sorted_row_idx[s:e])
 
-            evt_trk_id = tracks_ds["eventID"] * self.longest_batch + tracks_ds["trackID"]
-            mask = np.in1d(evt_trk_id, flat_keys)
+        if len(row_chunks) == 0:
+            raise ValueError(f"-- No matching target rows for batch {idx}.")
 
-            if mask.sum() == 0:
-                raise ValueError(f"-- No matching target rows for batch {idx}.")
-            selected_rows = tracks_ds[mask]
+        selected_row_idx = np.sort(np.concatenate(row_chunks))
+        selected_rows = self.tracks_struct[selected_row_idx]
+        self._assert_batch_key_match(idx, key_ids, selected_rows)
 
-            if self.swap_xz:
-                x_start = np.copy(selected_rows['x_start'] )
-                x_end = np.copy(selected_rows['x_end'])
-                x = np.copy(selected_rows['x'])
-
-                selected_rows['x_start'] = np.copy(selected_rows['z_start'])
-                selected_rows['x_end'] = np.copy(selected_rows['z_end'])
-                selected_rows['x'] = np.copy(selected_rows['z'])
-
-                selected_rows['z_start'] = x_start
-                selected_rows['z_end'] = x_end
-                selected_rows['z'] = x
-
-            # Convert structured rows to 2D float32 numpy array
-            batch_arr = np_from_structured(selected_rows)
-
-        # chop tracks (host-side)
-        if self.chopped and batch_arr.size:
-            batch_arr = chop_tracks(batch_arr, self.tgt_track_fields, precision=self.electron_sampling_resolution)
+        # Convert structured rows to 2D float32 numpy array
+        batch_arr = np_from_structured(selected_rows)
 
         # Note: we do not globally pad batches here. Padding can be applied
         # by the caller if needed (pad_sequence) or simulated code can handle variable-length.
         if self.print_input:
             logger.info(f"Yielding target batch {idx} shape {batch_arr.shape}")
-        logger.info(f"Yielding target batch {idx} shape {batch_arr.shape}")
+            logger.info(f"selected_rows[['eventID', 'trackID']]: {np.unique(selected_rows[['eventID', 'trackID']])}")
+
+        # chop tracks (host-side)
+        if self.chopped and batch_arr.size:
+            batch_arr = chop_tracks(batch_arr, self.tgt_track_fields, precision=self.electron_sampling_resolution)
+
+        # Optionally pad to a fixed global length (same behavior as TracksDataset).
+        if self.pad and self.max_batch_nsteps > 0:
+            cur_len = batch_arr.shape[0]
+            if cur_len < self.max_batch_nsteps:
+                pad_len = self.max_batch_nsteps - cur_len
+                batch_arr = np.pad(batch_arr, ((0, pad_len), (0, 0)), mode='constant', constant_values=0)
 
         return np.asarray(batch_arr, dtype=np.float32)
 
