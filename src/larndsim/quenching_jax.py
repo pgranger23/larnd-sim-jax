@@ -53,7 +53,7 @@ def quench(params, tracks, fields):
     elif params.recombination_mode == RecombinationMode.BIRKS:
         recomb = birks_model(tracks[:, fields.index("dEdx")], params.eField, params.lArDensity, params.Ab, params.kb)
     elif params.recombination_mode == RecombinationMode.ELLIPSOID:
-        # Requires the track angle 'phi' (in radians) to be present in the tracks array
+        # Requires geometry fields (z_start, z_end, dx) to compute the track angle via cos(phi)
         cosphi = jnp.abs(tracks[:, fields.index("z_end")] - tracks[:, fields.index("z_start")]) / (tracks[:, fields.index("dx")] + 1e-10)
         recomb = ellipsoid_box_model(
             tracks[:, fields.index("dEdx")], 
@@ -65,7 +65,10 @@ def quench(params, tracks, fields):
             params.R_param
         )
     else:
-        raise ValueError(f"Invalid recombination mode {params.recombination_mode}: must be 'BOX', 'BIRKS', or 'ELLIPSOID'")
+        raise ValueError(
+            f"Invalid recombination mode {params.recombination_mode}: "
+            "must be RecombinationMode.BOX, RecombinationMode.BIRKS, or RecombinationMode.ELLIPSOID"
+        )
 
     #TODO: n_electrons should be int, but truncation makes gradients vanish
     updated_tracks = tracks.at[:, fields.index("n_electrons")].set(get_nelectrons(tracks[:, fields.index("dE")], recomb, params.MeVToElectrons))
