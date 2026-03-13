@@ -178,12 +178,11 @@ class ParamFitter:
 
         self.sim_track_fields = sim_track_fields
         self.tgt_track_fields = tgt_track_fields
+
         if 'eventID' in self.sim_track_fields:
             self.evt_id = 'eventID'
-            self.trj_id = 'trackID'
         else:
             self.evt_id = 'event_id'
-            self.trj_id = 'traj_id'
 
         if type(relevant_params) == dict:
             self.relevant_params_list = list(relevant_params.keys())
@@ -724,7 +723,6 @@ class GradientDescentFitter(ParamFitter):
             # If explicit number of iterations, scale epochs accordingly
             if len(dataloader_sim) != len(target):
                 raise Exception("Sim and target inputs do not match in size. Panic.")
-
 
         if iterations is not None:
             epochs = iterations // len(dataloader_sim) + 1
