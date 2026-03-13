@@ -1,7 +1,9 @@
 #!/bin/bash
 
 #SBATCH --partition=ampere
-#SBATCH --account=mli:cider-ml
+##SBATCH --account=mli:cider-ml
+##SBATCH --account=mli:nu-ml-dev
+#SBATCH --account=neutrino:dune-ml
 #SBATCH --job-name=scan_collapsed_mse
 #SBATCH --output=logs/scan/job_collapsed_mse_%j.out
 #SBATCH --ntasks=1
@@ -35,7 +37,10 @@ nvidia-smi
 
 PARAMS=("Ab" "kb" "eField" "tran_diff" "long_diff" "lifetime" "shift_z" "shift_x" "shift_y")
 PARAM=${PARAMS[$SLURM_ARRAY_TASK_ID]}
-LABEL=scan_collapsed_mse_sigma10_${PARAM}_${UUID}
+lambda_Q=0.1
+BASE_LABEL=scan_collapsed_mse_lambda${lambda_Q}_collapsed_new_${SLURM_ARRAY_JOB_ID}
+LABEL=${BASE_LABEL}_${PARAM}_${UUID}
+
 
 apptainer exec --nv -B /sdf,/fs,/sdf/scratch,/lscratch ${SIF_FILE} /bin/bash -c "
 pip install .
@@ -51,7 +56,7 @@ python3 -m optimize.example_run \
     --no-noise-target \
     --data_seed ${DATA_SEED} \
     --out_label ${LABEL} \
-    --test_name scan_collapsed_mse \
+    --test_name ${BASE_LABEL} \
     --seed ${TARGET_SEED} \
     --random_ntrack \
     --iterations ${ITERATIONS} \
@@ -69,5 +74,5 @@ python3 -m optimize.example_run \
     --scan_tgt_nom \
     --mc_diff \
     --probabilistic-sim \
-    --loss_fn_kw '{\"sigma\": 10}'
+    --loss_fn_kw '{\"sigma\": 1, \"lambda_Q\": ${lambda_Q}}'
 "

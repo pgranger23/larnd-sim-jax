@@ -94,9 +94,9 @@ def chop_tracks(tracks, fields, precision=0.001):
                     tracks[:, fields.index("z_end")]], axis=1)
 
     segment = end - start
-    length = np.sqrt(np.sum(segment**2, axis=1, keepdims=True))
+    length = np.sqrt(np.sum(segment**2, axis=1))
     eps = 1e-10
-    direction = segment / (length + eps)
+    direction = segment / (length[:, None] + eps)
     nsteps = np.maximum(np.ceil(length / precision), 1).astype(int).flatten()
     # step_size = length/nsteps
     new_tracks = np.vstack([split_track(tracks[i], nsteps[i], length[i], direction[i], i) for i in range(tracks.shape[0])])
@@ -321,11 +321,11 @@ class TracksDataset:
             if cur_len < self.max_batch_nsteps:
                 pad_len = self.max_batch_nsteps - cur_len
                 batch_arr = np.pad(batch_arr, ((0, pad_len), (0, 0)), mode='constant', constant_values=0)
+                batch_arr = [t.at[:, self.track_fields.index("eventID")].set(jnp.where(t[:, self.track_fields.index("dEdx")] == 0, -1, t[:, self.track_fields.index("eventID")])) for t in batch_arr]  # Set eventID to -1 for padded segments
 
         if self.print_input:
             logger.info(f"Yielding simulation batch {idx} shape {batch_arr.shape}")
             logger.info(f"Simulation ['eventID', 'trackID'] batch: {self.get_batch_row_keys()[idx].tolist()}")
-            # logger.info(f"Sim selected_struct[['eventID', 'trackID']]: {np.unique(selected_struct[['eventID', 'trackID']])}")
 
         return np.asarray(batch_arr, dtype=np.float32)
 
@@ -501,11 +501,11 @@ class TgtTracksDataset:
         if self.pad and self.max_batch_nsteps > 0 and batch_arr.shape[0] < self.max_batch_nsteps:
             pad_len = self.max_batch_nsteps - batch_arr.shape[0]
             batch_arr = np.pad(batch_arr, ((0, pad_len), (0, 0)), mode='constant', constant_values=0)
+            batch_arr = [t.at[:, self.tgt_track_fields.index("eventID")].set(jnp.where(t[:, self.tgt_track_fields.index("dEdx")] == 0, -1, t[:, self.tgt_track_fields.index("eventID")])) for t in batch_arr]  # Set eventID to -1 for padded segments
 
         if self.print_input:
             logger.info(f"Yielding target batch {idx} shape {batch_arr.shape}")
             logger.info(f"selected_rows[['eventID', 'trackID']]: {self.batch_keys[idx].tolist()}")
-            # logger.info(f"selected_rows[['eventID', 'trackID']]: {np.unique(selected_rows[['eventID', 'trackID']])}")
 
         return np.asarray(batch_arr, dtype=np.float32)
 

@@ -31,7 +31,7 @@ from larndsim.losses_jax import adc2charge
 # libcudart = cdll.LoadLibrary('libcudart.so')
 
 
-def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-1):
+def load_events_as_batch(filename, swap_xz=True, n_events=-1):
     with h5py.File(filename, 'r') as f:
         tracks = np.array(f['segments'])
 
@@ -74,7 +74,7 @@ def load_events_as_batch(filename, sampling_resolution, swap_xz=True, n_events=-
 
     logger.info(f"Loaded {len(first_indices)} events from {filename} with {tracks.shape[0]} tracks")
     
-    return [chop_tracks(tracks[first_indices[i]:last_indices[i] + 1, :], track_fields, sampling_resolution) for i in range(len(first_indices))], track_fields
+    return [tracks[first_indices[i]:last_indices[i] + 1, :] for i in range(len(first_indices))], track_fields
 
 
 logger = logging.getLogger(__name__)
@@ -123,14 +123,14 @@ def main(config):
     if not config.noise:
         ref_params = ref_params.replace(RESET_NOISE_CHARGE=0, UNCORRELATED_NOISE_CHARGE=0)
 
-
-    dataset, fields = load_events_as_batch(config.input_file, config.electron_sampling_resolution, swap_xz=True, n_events=config.n_events)
+    dataset, fields = load_events_as_batch(config.input_file, swap_xz=True, n_events=config.n_events)
 
     if config.out_np:
         l_adc, l_Q, l_ticks, l_eventID, l_pix_x, l_pix_y, l_pix_z, l_hit_prob = [], [], [], [], [], [], [], []
 
     # libcudart.cudaProfilerStart()
-    for ibatch, batch in tqdm(enumerate(dataset), desc="Loading tracks", total=len(dataset)):
+    for ibatch, tracks in tqdm(enumerate(dataset), desc="Loading tracks", total=len(dataset)):
+        batch = chop_tracks(tracks, fields, config.electron_sampling_resolution)
         size = batch.shape[0]
         size = pad_size(size, "batch_size", 0.5)
         batch = np.pad(batch, ((0, size - batch.shape[0]), (0, 0)), mode='constant', constant_values=0)

@@ -238,8 +238,9 @@ def apply_tran_diff(params, electrons, fields):
     
    # Foreach electrons entry, apply the possible shifts and give the corresponding weight to the number of electrons using only vectorized operations
     new_electrons = jnp.repeat(electrons[:, None, :], shifts.shape[0], axis=1)
-    new_electrons = new_electrons.at[:, :, fields.index("x")].add(shifts[:, 0])
-    new_electrons = new_electrons.at[:, :, fields.index("y")].add(shifts[:, 1])
+    bin_width = params.tran_diff_bin_edges[1] - params.tran_diff_bin_edges[0]
+    new_electrons = new_electrons.at[:, :, fields.index("x")].add(shifts[:, 0] * bin_width)
+    new_electrons = new_electrons.at[:, :, fields.index("y")].add(shifts[:, 1] * bin_width)
     new_electrons = new_electrons.at[:, :, fields.index("n_electrons")].multiply(gaussian_integral_2d.reshape(-1, shifts.shape[0]))
     return new_electrons.reshape(-1, electrons.shape[1])
 
