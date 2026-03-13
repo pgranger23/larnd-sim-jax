@@ -13,7 +13,7 @@ from larndsim.quenching_jax import quench
 from larndsim.drifting_jax import drift
 from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise_vmap
 from optimize.dataio import chop_tracks
-from larndsim.consts_jax import get_vdrift
+from larndsim.consts_jax import get_vdrift, RecombinationMode
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -124,7 +124,7 @@ def simulate_drift(params, tracks, fields, rngkey):
     #Shifting tracks
     new_tracks = shift_tracks(params, tracks, fields)
     #Quenching and drifting
-    new_tracks = quench(params, new_tracks, 2, fields)
+    new_tracks = quench(params, new_tracks, fields)
     new_tracks = drift(params, new_tracks, fields)
 
     #Simulating the electron generation according to the diffusion coefficients
@@ -386,9 +386,7 @@ def simulate_drift_new(params, tracks, fields):
     
     #Shifting tracks
     new_tracks = shift_tracks(params, tracks, fields)
-    # Quenching and drifting - TODO: parameterize the hard-coded "2"
-    quench_mode = getattr(params, "quench_mode", 2)
-    new_tracks = quench(params, new_tracks, quench_mode, fields)
+    new_tracks = quench(params, new_tracks, fields)
     new_tracks = drift(params, new_tracks, fields)
 
     #Getting the pixels where the electrons are
