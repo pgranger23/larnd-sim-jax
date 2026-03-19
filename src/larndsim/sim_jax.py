@@ -145,8 +145,13 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     
     Npixels = unique_pixels.shape[0]
     Nticks = int(params.time_interval[1] / params.t_sampling) + 1
-    Ntemplates, Nx, Ny, Nt = response_template.shape
+    Ntemplates, Nx, Ny, Nt_sig = response_template.shape  # Nt_sig == signal_length (trimmed template)
     sig_len = params.signal_length
+    # response_template has already been trimmed to the last sig_len ticks by load_lut.
+    # params.response_cum holds the cumsum of the full template up to (and including) the boundary
+    # tick, with shape (Ntemplates, Nx, Ny, Nt_cum) where Nt_cum = original_Nt - sig_len + 1.
+    response_cum = params.response_cum   # (Ntemplates, Nx, Ny, Nt_cum)
+    Nt_cum = response_cum.shape[-1]      # = original_Nt - sig_len + 1
 
     # --- 1. PREPARE MAIN PIXEL DATA (DIFFERENTIABLE TIME SHIFT) ---
     pix_renum = jnp.searchsorted(unique_pixels, pixels.ravel(), method='sort')
@@ -155,7 +160,8 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
 
     # Extract continuous tick and fractional remainder for the gradient
     float_ticks_main = t0_after_diff / params.t_sampling
-    cathode_ticks_main = jnp.clip(jnp.floor(float_ticks_main).astype(int), 0, Nt - 1)
+    # cathode_ticks is in terms of the original Nt; clip to valid cumsum range [0, Nt_cum-1]
+    cathode_ticks_main = jnp.clip(jnp.floor(float_ticks_main).astype(int), 0, Nt_cum - 1)
     frac_main = float_ticks_main - cathode_ticks_main  # The gradient flows through here!
     
     # Quadratic Interpolation setup (remains the same)
@@ -168,7 +174,10 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     c = (long_diff - x0) * (long_diff - x1) / ((x2 - x0) * (x2 - x1))
 
     # Signal Indices (Main) - Split across adjacent ticks
-    start_ticks_0 = Nt - sig_len - cathode_ticks_main
+    # With the trimmed template (Nt_sig == sig_len), start_ticks is measured in output waveform ticks.
+    # The original formula was: start_ticks = Nt - sig_len - cathode_ticks.
+    # Now Nt = Nt_cum - 1 + sig_len, so: start_ticks = Nt_cum - 1 - cathode_ticks.
+    start_ticks_0 = Nt_cum - 1 - cathode_ticks_main
     start_ticks_1 = start_ticks_0 - 1  # The adjacent shift
 
     time_ticks_0 = start_ticks_0[..., None] + jnp.arange(sig_len)
@@ -181,12 +190,14 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     main_flat_indices_1 = (pix_renum[:, None] * Nticks + time_ticks_1).ravel()
 
     # Signal Values (Interpolated Main)
-    local_t = jnp.arange(Nt - sig_len, Nt)
-    base_idx = (currents_idx[:, 0, None] * Ny + currents_idx[:, 1, None]) * Nt + local_t
+    # response_template is now trimmed: shape (Ntemplates, Nx, Ny, sig_len).
+    # Stride within the template: Nx*Ny*sig_len per template, Ny*sig_len per x, sig_len per y.
+    local_t = jnp.arange(sig_len)   # indices 0..sig_len-1 within the trimmed template
+    base_idx = (currents_idx[:, 0, None] * Ny + currents_idx[:, 1, None]) * Nt_sig + local_t
     main_vals_2d = (
-        response_template.take(idx[:, None] * Nx * Ny * Nt + base_idx) * b[:, None] +
-        response_template.take((idx - 1)[:, None] * Nx * Ny * Nt + base_idx) * a[:, None] +
-        response_template.take((idx + 1)[:, None] * Nx * Ny * Nt + base_idx) * c[:, None]
+        response_template.take(idx[:, None] * Nx * Ny * Nt_sig + base_idx) * b[:, None] +
+        response_template.take((idx - 1)[:, None] * Nx * Ny * Nt_sig + base_idx) * a[:, None] +
+        response_template.take((idx + 1)[:, None] * Nx * Ny * Nt_sig + base_idx) * c[:, None]
     ) * nelectrons[:, None]
     
     # Weight the values by the sub-tick fraction
@@ -202,10 +213,10 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     
     # Extract continuous tick and fractional remainder for neighbors
     float_ticks_neigh = neigh_t0 / params.t_sampling
-    cathode_ticks_neigh = jnp.clip(jnp.floor(float_ticks_neigh).astype(int), 0, Nt - 1)
+    cathode_ticks_neigh = jnp.clip(jnp.floor(float_ticks_neigh).astype(int), 0, Nt_cum - 1)
     frac_neigh = float_ticks_neigh - cathode_ticks_neigh
     
-    neigh_start_ticks_0 = Nt - sig_len - cathode_ticks_neigh
+    neigh_start_ticks_0 = Nt_cum - 1 - cathode_ticks_neigh
     neigh_start_ticks_1 = neigh_start_ticks_0 - 1
     
     neigh_time_ticks_0 = neigh_start_ticks_0[..., None] + jnp.arange(sig_len)
@@ -218,28 +229,24 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     neigh_flat_indices_1 = (pix_renumbering_neigh[:, None] * Nticks + neigh_time_ticks_1).ravel()
     
     # Neighbor Values (Assumes Template 0, no diffusion)
-    neigh_base_idx = (currents_idx_neigh[:, 0, None] * Ny + currents_idx_neigh[:, 1, None]) * Nt + local_t
+    neigh_base_idx = (currents_idx_neigh[:, 0, None] * Ny + currents_idx_neigh[:, 1, None]) * Nt_sig + local_t
     neigh_vals_2d = response_template[0].take(neigh_base_idx) * neigh_charge[:, None]
     
     neigh_vals_0 = (neigh_vals_2d * (1.0 - frac_neigh[:, None])).ravel()
     neigh_vals_1 = (neigh_vals_2d * frac_neigh[:, None]).ravel()
 
     # --- 3. BOUNDARY CORRECTIONS (CUMSUMS) ---
-    response_cum = jnp.cumsum(response_template, axis=-1)
+    # response_cum: (Ntemplates, Nx, Ny, Nt_cum)
+    # The boundary tick is index Nt_cum-1 (= original Nt - sig_len).
+    # cathode_ticks is clipped to [0, Nt_cum-1], so all lookups are in range.
 
-    # jax.debug.print("currents_idx={currents_idx}", currents_idx=currents_idx.reshape(params.nb_tran_diff_bins, params.nb_tran_diff_bins, 2))
-    # jax.debug.print("pixels={pixels}", pixels=pixels.reshape(params.nb_tran_diff_bins, params.nb_tran_diff_bins))
-    # jax.debug.print("pix_renum={pix_renum}", pix_renum=pix_renum.reshape(params.nb_tran_diff_bins, params.nb_tran_diff_bins))
-    # jax.debug.print("nelectrons={nelectrons}", nelectrons=nelectrons.reshape(params.nb_tran_diff_bins, params.nb_tran_diff_bins))
-    
     # Main Corrections - Linearly interpolate the continuous boundary integral
-    base_curr = (currents_idx[:, 0] * Ny + currents_idx[:, 1]) * Nt
-    val_cum_0 = response_cum.take(idx * Nx * Ny * Nt + base_curr + cathode_ticks_main)
-    # Use jnp.clip for safety on the +1 wrap boundary
-    val_cum_1 = response_cum.take(idx * Nx * Ny * Nt + base_curr + jnp.clip(cathode_ticks_main + 1, 0, Nt - 1))
+    base_curr = (currents_idx[:, 0] * Ny + currents_idx[:, 1]) * Nt_cum
+    val_cum_0 = response_cum.take(idx * Nx * Ny * Nt_cum + base_curr + cathode_ticks_main)
+    val_cum_1 = response_cum.take(idx * Nx * Ny * Nt_cum + base_curr + jnp.clip(cathode_ticks_main + 1, 0, Nt_cum - 1))
     interp_cum = val_cum_0 * (1.0 - frac_main) + val_cum_1 * frac_main
     
-    diff_main_interp = (response_cum.take(idx * Nx * Ny * Nt + base_curr + Nt - sig_len) - interp_cum) * nelectrons
+    diff_main_interp = (response_cum.take(idx * Nx * Ny * Nt_cum + base_curr + Nt_cum - 1) - interp_cum) * nelectrons
     
     idx_corr_main_0 = jnp.where((start_ticks_0 <= 0) | (start_ticks_0 >= Nticks - 1), 0, start_ticks_0) + pix_renum * Nticks
     idx_corr_main_1 = jnp.where((start_ticks_1 <= 0) | (start_ticks_1 >= Nticks - 1), 0, start_ticks_1) + pix_renum * Nticks
@@ -248,12 +255,12 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     diff_main_1 = diff_main_interp * frac_main
 
     # Neighbor Corrections
-    base_curr_neigh = (currents_idx_neigh[:, 0] * Ny + currents_idx_neigh[:, 1]) * Nt
+    base_curr_neigh = (currents_idx_neigh[:, 0] * Ny + currents_idx_neigh[:, 1]) * Nt_cum
     val_cum_neigh_0 = response_cum[0].take(base_curr_neigh + cathode_ticks_neigh)
-    val_cum_neigh_1 = response_cum[0].take(base_curr_neigh + jnp.clip(cathode_ticks_neigh + 1, 0, Nt - 1))
+    val_cum_neigh_1 = response_cum[0].take(base_curr_neigh + jnp.clip(cathode_ticks_neigh + 1, 0, Nt_cum - 1))
     interp_cum_neigh = val_cum_neigh_0 * (1.0 - frac_neigh) + val_cum_neigh_1 * frac_neigh
     
-    diff_neigh_interp = (response_cum[0].take(base_curr_neigh + Nt - sig_len) - interp_cum_neigh) * neigh_charge
+    diff_neigh_interp = (response_cum[0].take(base_curr_neigh + Nt_cum - 1) - interp_cum_neigh) * neigh_charge
     
     idx_corr_neigh_0 = jnp.where((neigh_start_ticks_0 <= 0) | (neigh_start_ticks_0 >= Nticks - 1), 0, neigh_start_ticks_0) + pix_renumbering_neigh * Nticks
     idx_corr_neigh_1 = jnp.where((neigh_start_ticks_1 <= 0) | (neigh_start_ticks_1 >= Nticks - 1), 0, neigh_start_ticks_1) + pix_renumbering_neigh * Nticks
@@ -536,11 +543,17 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     wfs = jnp.zeros((Npixels, Nticks))
     wfs = wfs.ravel()
 
-    cathode_ticks = (t0_after_diff/params.t_sampling).astype(int) #Start tick from distance to the end of the cathode
-    response_cum = jnp.cumsum(response_template, axis=-1)  # Needed for corrections and neighbor processing
+    # response_template has been trimmed to the last signal_length ticks by load_lut.
+    # params.response_cum holds the cumsum of the full template up to (and including) the boundary
+    # tick, with shape (Ntemplates, Nx, Ny, Nt_cum) where Nt_cum = original_Nt - signal_length + 1.
+    response_cum = params.response_cum   # (Ntemplates, Nx, Ny, Nt_cum)
+    Nt_cum = response_cum.shape[-1]      # = original_Nt - signal_length + 1
 
-    # Compute indices for updating wfs, taking into account start_ticks
-    start_ticks = response_template.shape[-1] - params.signal_length - cathode_ticks
+    cathode_ticks = jnp.clip((t0_after_diff/params.t_sampling).astype(int), 0, Nt_cum - 1)
+
+    # With the trimmed template, the output start tick formula becomes:
+    # start_ticks = Nt_cum - 1 - cathode_ticks   (was Nt - sig_len - cathode_ticks)
+    start_ticks = Nt_cum - 1 - cathode_ticks
     time_ticks = start_ticks[..., None] + jnp.arange(params.signal_length)
 
     time_ticks = jnp.where((time_ticks <= 0 ) | (time_ticks >= Nticks - 1), 0, time_ticks+1) # it should be start_ticks +1 in theory but we cheat by putting the cumsum in the garbage too when strarting at 0 to mimic the expected behavior
@@ -555,7 +568,7 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     # More efficient broadcasting - use broadcast_to instead of ones multiplication
     charge = jnp.broadcast_to(nelectrons[:, None], (nelectrons.shape[0], params.signal_length)).reshape(-1)
 
-    Ntemplates, Nx, Ny, Nt = response_template.shape
+    Ntemplates, Nx, Ny, Nt_sig = response_template.shape  # Nt_sig == signal_length
 
     template_values = params.long_diff_template
 
@@ -579,12 +592,13 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     b_broadcast = jnp.broadcast_to(b[:, None], signal_shape).reshape(-1)
     c_broadcast = jnp.broadcast_to(c[:, None], signal_shape).reshape(-1)
 
-    signal_indices = jnp.ravel((idx[..., None]*Nx*Ny + currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt + jnp.arange(response_template.shape[-1] - params.signal_length, response_template.shape[-1]))
+    # Trimmed template: indices run 0..sig_len-1 within each (x,y) block
+    signal_indices = jnp.ravel((idx[..., None]*Nx*Ny + currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt_sig + jnp.arange(Nt_sig))
 
     # Cache template lookups to avoid repeated computation
     template_values_at_indices = response_template.take(signal_indices)
-    template_values_minus = response_template.take(signal_indices - Nx*Ny*Nt)
-    template_values_plus = response_template.take(signal_indices + Nx*Ny*Nt)
+    template_values_minus = response_template.take(signal_indices - Nx*Ny*Nt_sig)
+    template_values_plus = response_template.take(signal_indices + Nx*Ny*Nt_sig)
 
     # Update wfs with accumulated signals - combine multiplications efficiently
     wfs = wfs.at[(flat_indices,)].add(template_values_at_indices * charge * b_broadcast)
@@ -592,14 +606,14 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     wfs = wfs.at[(flat_indices,)].add(template_values_plus * charge * c_broadcast)
 
     #Now correct for the missed ticks at the beginning
-    # Cache the common index calculation to avoid recomputation
-    base_indices = (currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt
-    integrated_start = response_cum.take(jnp.ravel(base_indices + response_template.shape[-1] - params.signal_length))
+    # response_cum: (Ntemplates, Nx, Ny, Nt_cum); boundary tick is index Nt_cum-1.
+    base_indices = (currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt_cum
+    integrated_start = response_cum.take(jnp.ravel(base_indices + Nt_cum - 1))
     real_start = response_cum.take(jnp.ravel(base_indices + cathode_ticks))
     difference = (integrated_start - real_start)*nelectrons
 
-    start_ticks = jnp.where((start_ticks <= 0 ) | (start_ticks >= Nticks - 1), 0, start_ticks) + pix_renumbering * Nticks
-    wfs = wfs.at[start_ticks].add(difference)
+    start_ticks_corr = jnp.where((start_ticks <= 0 ) | (start_ticks >= Nticks - 1), 0, start_ticks) + pix_renumbering * Nticks
+    wfs = wfs.at[start_ticks_corr].add(difference)
 
     wfs = wfs.reshape((Npixels, Nticks))
 
@@ -611,9 +625,10 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     nelectrons_neigh = jnp.take(nelectrons_neigh, elec_ids, mode='fill', fill_value=0)
     t0_neighbors = jnp.take(t0_neigh, elec_ids, mode='fill', fill_value=0)
 
-    cathode_ticks_neigh = (t0_neighbors/params.t_sampling).astype(int) #Start tick from distance to the end of the cathode
+    cathode_ticks_neigh = jnp.clip((t0_neighbors/params.t_sampling).astype(int), 0, Nt_cum - 1)
     #WARNING: Assuming here that response_template[0] corresponds to no diff
-    wfs = accumulate_signals(wfs, currents_idx_neigh, nelectrons_neigh, response_template[0], response_cum, pix_renumbering_neigh, cathode_ticks_neigh, params.signal_length)
+    # Pass the trimmed response_template[0] and the precomputed response_cum[0] separately.
+    wfs = accumulate_signals(wfs, currents_idx_neigh, nelectrons_neigh, response_template[0], response_cum[0], pix_renumbering_neigh, cathode_ticks_neigh, params.signal_length)
 
     return wfs
 
