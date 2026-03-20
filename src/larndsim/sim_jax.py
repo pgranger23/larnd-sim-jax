@@ -139,19 +139,22 @@ def simulate_drift(params, tracks, fields, rngkey):
     return electrons, pIDs
 
 @jit
-def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template, 
-                             nelectrons, long_diff, currents_idx, nelectrons_neigh, 
+def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template,
+                             nelectrons, long_diff, tran_diff, currents_idx, nelectrons_neigh,
                              pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
     
     Npixels = unique_pixels.shape[0]
     Nticks = int(params.time_interval[1] / params.t_sampling) + 1
-    Ntemplates, Nx, Ny, Nt_sig = response_template.shape  # Nt_sig == signal_length (trimmed template)
+    n_long, n_tran, Nx, Ny, Nt_sig = response_template.shape  # 5D: (n_long, n_tran, Nx, Ny, sig_len)
     sig_len = params.signal_length
-    # response_template has already been trimmed to the last sig_len ticks by load_lut.
-    # params.response_cum holds the cumsum of the full template up to (and including) the boundary
-    # tick, with shape (Ntemplates, Nx, Ny, Nt_cum) where Nt_cum = original_Nt - sig_len + 1.
-    response_cum = params.response_cum   # (Ntemplates, Nx, Ny, Nt_cum)
+    # response_template: always 5D, trimmed to last sig_len ticks by load_lut.
+    # response_cum: 4D (n_long, Nx, Ny, Nt_cum), built from tran[0] only for memory efficiency.
+    response_cum = params.response_cum   # (n_long, Nx, Ny, Nt_cum)
     Nt_cum = response_cum.shape[-1]      # = original_Nt - sig_len + 1
+    long_stride = n_tran * Nx * Ny * Nt_sig  # flat stride for one longitudinal-template step
+    # Nearest-bin lookup for transverse diffusion
+    tran_diff_vals = params.tran_diff_template   # (n_tran,) sigma values used at template build time
+    tran_idx = jnp.clip(jnp.searchsorted(tran_diff_vals, tran_diff), 0, n_tran - 1)
 
     # --- 1. PREPARE MAIN PIXEL DATA (DIFFERENTIABLE TIME SHIFT) ---
     pix_renum = jnp.searchsorted(unique_pixels, pixels.ravel(), method='sort')
@@ -193,11 +196,13 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     # response_template is now trimmed: shape (Ntemplates, Nx, Ny, sig_len).
     # Stride within the template: Nx*Ny*sig_len per template, Ny*sig_len per x, sig_len per y.
     local_t = jnp.arange(sig_len)   # indices 0..sig_len-1 within the trimmed template
-    base_idx = (currents_idx[:, 0, None] * Ny + currents_idx[:, 1, None]) * Nt_sig + local_t
+    # Flat index into (n_long, n_tran, Nx, Ny, Nt_sig):
+    #   long*long_stride + tran*(Nx*Ny*Nt_sig) + x*(Ny*Nt_sig) + y*Nt_sig + t
+    tran_spatial_base = (tran_idx[:, None] * Nx * Ny + currents_idx[:, 0, None] * Ny + currents_idx[:, 1, None]) * Nt_sig + local_t
     main_vals_2d = (
-        response_template.take(idx[:, None] * Nx * Ny * Nt_sig + base_idx) * b[:, None] +
-        response_template.take((idx - 1)[:, None] * Nx * Ny * Nt_sig + base_idx) * a[:, None] +
-        response_template.take((idx + 1)[:, None] * Nx * Ny * Nt_sig + base_idx) * c[:, None]
+        response_template.take(idx[:, None] * long_stride + tran_spatial_base) * b[:, None] +
+        response_template.take((idx - 1)[:, None] * long_stride + tran_spatial_base) * a[:, None] +
+        response_template.take((idx + 1)[:, None] * long_stride + tran_spatial_base) * c[:, None]
     ) * nelectrons[:, None]
     
     # Weight the values by the sub-tick fraction
@@ -229,8 +234,9 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     neigh_flat_indices_1 = (pix_renumbering_neigh[:, None] * Nticks + neigh_time_ticks_1).ravel()
     
     # Neighbor Values (Assumes Template 0, no diffusion)
+    # Neighbors use zero-diffusion template: long[0], tran[0] -> (Nx, Ny, Nt_sig)
     neigh_base_idx = (currents_idx_neigh[:, 0, None] * Ny + currents_idx_neigh[:, 1, None]) * Nt_sig + local_t
-    neigh_vals_2d = response_template[0].take(neigh_base_idx) * neigh_charge[:, None]
+    neigh_vals_2d = response_template[0, 0].take(neigh_base_idx) * neigh_charge[:, None]
     
     neigh_vals_0 = (neigh_vals_2d * (1.0 - frac_neigh[:, None])).ravel()
     neigh_vals_1 = (neigh_vals_2d * frac_neigh[:, None]).ravel()
@@ -458,10 +464,12 @@ def simulate_drift_new(params, tracks, fields):
     pIDs_neigh = pIDs.at[:, params.number_pix_neighbors, params.number_pix_neighbors].set(-999) # Getting rid of the main pixel, which is already in the main_pixels
     nelectrons_neigh = n_electrons_base  # Use cached value
     t0_neigh = t0
-    return main_pixels, pixels, nelectrons, t0_after_diff, long_diff, currents_idx, pIDs_neigh ,currents_idx_neigh, nelectrons_neigh, t0_neigh
+    # Broadcast tran_diff (sigma_T) to match the nb_tran_diff_bins^2 expansion
+    tran_diff_broadcast = jnp.broadcast_to(main_electrons[:, tran_diff_idx, None, None], shape_2d).reshape(-1)
+    return main_pixels, pixels, nelectrons, t0_after_diff, long_diff, tran_diff_broadcast, currents_idx, pIDs_neigh, currents_idx_neigh, nelectrons_neigh, t0_neigh
 
 @jit
-def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
+def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, tran_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
     """
     Simulates electronic signals on detector pixels using LUT-based current response templates.
     
@@ -568,7 +576,10 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     # More efficient broadcasting - use broadcast_to instead of ones multiplication
     charge = jnp.broadcast_to(nelectrons[:, None], (nelectrons.shape[0], params.signal_length)).reshape(-1)
 
-    Ntemplates, Nx, Ny, Nt_sig = response_template.shape  # Nt_sig == signal_length
+    n_long, n_tran, Nx, Ny, Nt_sig = response_template.shape  # 5D: (n_long, n_tran, Nx, Ny, sig_len)
+    long_stride = n_tran * Nx * Ny * Nt_sig  # stride per longitudinal-template step
+    tran_diff_vals = params.tran_diff_template  # (n_tran,) sigma values
+    tran_idx = jnp.clip(jnp.searchsorted(tran_diff_vals, tran_diff), 0, n_tran - 1)
 
     template_values = params.long_diff_template
 
@@ -592,13 +603,15 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     b_broadcast = jnp.broadcast_to(b[:, None], signal_shape).reshape(-1)
     c_broadcast = jnp.broadcast_to(c[:, None], signal_shape).reshape(-1)
 
-    # Trimmed template: indices run 0..sig_len-1 within each (x,y) block
-    signal_indices = jnp.ravel((idx[..., None]*Nx*Ny + currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt_sig + jnp.arange(Nt_sig))
+    # 5D template: flat index = long*long_stride + tran*(Nx*Ny*Nt_sig) + x*(Ny*Nt_sig) + y*Nt_sig + t
+    signal_indices = jnp.ravel(
+        (idx[..., None] * n_tran * Nx * Ny + tran_idx[..., None] * Nx * Ny +
+         currents_idx[..., 0, None] * Ny + currents_idx[..., 1, None]) * Nt_sig + jnp.arange(Nt_sig))
 
     # Cache template lookups to avoid repeated computation
     template_values_at_indices = response_template.take(signal_indices)
-    template_values_minus = response_template.take(signal_indices - Nx*Ny*Nt_sig)
-    template_values_plus = response_template.take(signal_indices + Nx*Ny*Nt_sig)
+    template_values_minus = response_template.take(signal_indices - long_stride)
+    template_values_plus = response_template.take(signal_indices + long_stride)
 
     # Update wfs with accumulated signals - combine multiplications efficiently
     wfs = wfs.at[(flat_indices,)].add(template_values_at_indices * charge * b_broadcast)
@@ -606,8 +619,9 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     wfs = wfs.at[(flat_indices,)].add(template_values_plus * charge * c_broadcast)
 
     #Now correct for the missed ticks at the beginning
-    # response_cum: (Ntemplates, Nx, Ny, Nt_cum); boundary tick is index Nt_cum-1.
-    base_indices = (currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt_cum
+    # response_cum: (n_long, Nx, Ny, Nt_cum); boundary tick is index Nt_cum-1.
+    # Must include long-diff index (idx) in the flat offset.
+    base_indices = idx * Nx * Ny * Nt_cum + (currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt_cum
     integrated_start = response_cum.take(jnp.ravel(base_indices + Nt_cum - 1))
     real_start = response_cum.take(jnp.ravel(base_indices + cathode_ticks))
     difference = (integrated_start - real_start)*nelectrons
@@ -626,9 +640,8 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     t0_neighbors = jnp.take(t0_neigh, elec_ids, mode='fill', fill_value=0)
 
     cathode_ticks_neigh = jnp.clip((t0_neighbors/params.t_sampling).astype(int), 0, Nt_cum - 1)
-    #WARNING: Assuming here that response_template[0] corresponds to no diff
-    # Pass the trimmed response_template[0] and the precomputed response_cum[0] separately.
-    wfs = accumulate_signals(wfs, currents_idx_neigh, nelectrons_neigh, response_template[0], response_cum[0], pix_renumbering_neigh, cathode_ticks_neigh, params.signal_length)
+    # Neighbors use zero-diffusion template: long[0], tran[0] -> (Nx, Ny, Nt_sig)
+    wfs = accumulate_signals(wfs, currents_idx_neigh, nelectrons_neigh, response_template[0, 0], response_cum[0], pix_renumbering_neigh, cathode_ticks_neigh, params.signal_length)
 
     return wfs
 
@@ -724,7 +737,7 @@ def simulate_wfs(params, response_template, tracks, fields):
               the simulation, with shape (Npixels,).
     """
 
-    main_pixels, pixels, nelectrons, t0_after_diff, long_diff, currents_idx, pIDs_neigh, currents_idx_neigh, nelectrons_neigh, t0_neigh = simulate_drift_new(params, tracks, fields)
+    main_pixels, pixels, nelectrons, t0_after_diff, long_diff, tran_diff, currents_idx, pIDs_neigh, currents_idx_neigh, nelectrons_neigh, t0_neigh = simulate_drift_new(params, tracks, fields)
 
     ################################################
     ################################################
@@ -746,7 +759,7 @@ def simulate_wfs(params, response_template, tracks, fields):
     ###############################################
     ###############################################
 
-    wfs = simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh)
+    wfs = simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, tran_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh)
 
 
     return wfs[:, 1:], unique_pixels
