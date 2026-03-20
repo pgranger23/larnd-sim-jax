@@ -8,7 +8,7 @@ import logging
 # from jax.experimental import checkify
 
 # from larndsim.consts_jax import consts
-from larndsim.detsim_jax import generate_electrons, get_pixels, id2pixel, accumulate_signals, accumulate_signals_parametrized, current_lut, get_pixel_coordinates, current_mc, apply_tran_diff, get_hit_z, pixel2id, get_bin_shifts, density_2d
+from larndsim.detsim_jax import generate_electrons, get_pixels, id2pixel, accumulate_signals, accumulate_signals_parametrized, current_lut, get_pixel_coordinates, current_mc, apply_tran_diff, get_hit_z, pixel2id, get_bin_shifts
 from larndsim.quenching_jax import quench
 from larndsim.drifting_jax import drift
 from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise_vmap
@@ -152,7 +152,6 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     response_cum = params.response_cum   # (n_long, Nx, Ny, Nt_cum)
     Nt_cum = response_cum.shape[-1]      # = original_Nt - sig_len + 1
     long_stride = n_tran * Nx * Ny * Nt_sig  # flat stride for one longitudinal-template step
-    # Nearest-bin lookup for transverse diffusion
     tran_diff_vals = params.tran_diff_template   # (n_tran,) sigma values used at template build time
     tran_idx = jnp.clip(jnp.searchsorted(tran_diff_vals, tran_diff), 0, n_tran - 1)
 
@@ -402,71 +401,56 @@ def simulate_drift_new(params, tracks, fields):
     new_tracks = quench(params, new_tracks, fields)
     new_tracks = drift(params, new_tracks, fields)
 
-    #Getting the pixels where the electrons are
     main_electrons = new_tracks
+    n_electrons_base = main_electrons[:, n_electrons_idx]   # (N,)
 
+    # Sub-pixel bin position for each electron: (N, 2)
     bins_pitches = get_bin_shifts(params, main_electrons, fields)
 
-    #Doing some tran diff fake stuff
-
-    nb_tran_diff_bins = params.nb_tran_diff_bins
-    nb_tran_diff_bins_sym = (nb_tran_diff_bins - 1) // 2
-    width = params.pixel_pitch/params.nb_sampling_bins_per_pixel
-    bins = jnp.linspace(-nb_tran_diff_bins_sym * width,
-                        (nb_tran_diff_bins_sym + 1) * width,
-                        nb_tran_diff_bins + 1)
-    
-    borders = jnp.take(params.tpc_borders, main_electrons[:, pixel_plane_idx].astype(int), axis=0)
-    x0 = (main_electrons[:, x_idx] - borders[:, 0, 0]) % width
-    y0 = (main_electrons[:, y_idx] - borders[:, 1, 0]) % width
-    sigma = main_electrons[:, tran_diff_idx]
-    tran_diff_weights = density_2d(bins, x0, y0, sigma)
-
-    # Optimize broadcasting operations - combine into single operation
-    n_electrons_base = main_electrons[:, n_electrons_idx]
-    shape_2d = (main_electrons.shape[0], nb_tran_diff_bins, nb_tran_diff_bins)
-    
-    # More efficient broadcasting
-    nelectrons = (tran_diff_weights * n_electrons_base[:, None, None]).reshape(-1)
+    # Electron charge — no longer split across a tran-diff grid; the template handles spreading.
+    nelectrons = n_electrons_base  # (N,)
 
     z_cathode = jnp.take(params.tpc_borders, main_electrons[:, pixel_plane_idx].astype(int), axis=0)[..., 2, 1]
-    t0 = (jnp.abs(main_electrons[:, z_idx] - z_cathode)) / get_vdrift(params) #Getting t0 as the equivalent time to cathode
-    t0_after_diff = jnp.broadcast_to(t0[:, None, None], shape_2d).reshape(-1) # More efficient than ones * t0
+    t0 = jnp.abs(main_electrons[:, z_idx] - z_cathode) / get_vdrift(params)  # (N,)
+    t0_after_diff = t0  # (N,)
 
-    #Need to convert long_diff into a tick number
+    # Longitudinal diffusion in ticks: (N,)
     long_diff = main_electrons[:, long_diff_idx] / get_vdrift(params) / params.t_sampling
-    long_diff = jnp.broadcast_to(long_diff[:, None, None], shape_2d).reshape(-1) # More efficient broadcasting
 
+    # Transverse diffusion sigma — used for template index lookup: (N,)
+    tran_diff = main_electrons[:, tran_diff_idx]
 
-    bin_shifts = jnp.mgrid[-nb_tran_diff_bins_sym:nb_tran_diff_bins_sym+1, -nb_tran_diff_bins_sym:nb_tran_diff_bins_sym+1]
+    # Pixel assignment from sub-pixel bin position
+    pix_pitches = bins_pitches // params.nb_sampling_bins_per_pixel  # (N, 2)
+    main_pixels = pixel2id(params, pix_pitches[..., 0], pix_pitches[..., 1],
+                           main_electrons[:, pixel_plane_idx].astype(int),
+                           main_electrons[:, eventID_idx].astype(int))  # (N,)
 
-    bins_pitches_new = jnp.moveaxis(bins_pitches[..., jnp.newaxis, jnp.newaxis] + bin_shifts, 1, -1)
-    pix_pitches = bins_pitches_new // params.nb_sampling_bins_per_pixel
-    pixels = pixel2id(params, pix_pitches[..., 0], pix_pitches[..., 1], 
-                     main_electrons[:, pixel_plane_idx][:, None, None].astype(int), 
-                     main_electrons[:, eventID_idx][:, None, None].astype(int))
-    main_pixels = pixels[:, nb_tran_diff_bins_sym, nb_tran_diff_bins_sym] #Getting the main pixel, not considering pixels that would only see some diffusion charge
-    currents_idx = jnp.abs(bins_pitches_new % params.nb_sampling_bins_per_pixel - params.nb_sampling_bins_per_pixel//2 + 0.5).reshape(-1, 2).astype(int)
-
+    # In-pixel (x, y) bin index for response template lookup: (N, 2)
+    currents_idx = jnp.abs(
+        bins_pitches % params.nb_sampling_bins_per_pixel
+        - params.nb_sampling_bins_per_pixel // 2 + 0.5
+    ).astype(int)
 
     #########################################################
     #################Adding neighbors########################
     #########################################################
-    pix_grid = jnp.mgrid[-params.number_pix_neighbors:params.number_pix_neighbors+1, -params.number_pix_neighbors:params.number_pix_neighbors+1]
+    pix_grid = jnp.mgrid[-params.number_pix_neighbors:params.number_pix_neighbors+1,
+                         -params.number_pix_neighbors:params.number_pix_neighbors+1]
     bin_shifts_neighbors = pix_grid * params.nb_sampling_bins_per_pixel
-    currents_idx_neigh = jnp.moveaxis(jnp.abs(bins_pitches[:, :, None, None] % params.nb_sampling_bins_per_pixel - params.nb_sampling_bins_per_pixel//2 + 0.5 - bin_shifts_neighbors).astype(int), 1, -1).reshape(-1, 2)
+    currents_idx_neigh = jnp.moveaxis(
+        jnp.abs(bins_pitches[:, :, None, None] % params.nb_sampling_bins_per_pixel
+                - params.nb_sampling_bins_per_pixel // 2 + 0.5
+                - bin_shifts_neighbors).astype(int), 1, -1).reshape(-1, 2)
 
-    principal_pitches = pix_pitches[:, nb_tran_diff_bins_sym, nb_tran_diff_bins_sym, :] #Getting the main pixel
-    new_pitches = jnp.moveaxis((principal_pitches[:, :, None, None] + pix_grid), 1, -1)
-    pIDs = pixel2id(params, new_pitches[..., 0], new_pitches[..., 1], 
-                   main_electrons[:, pixel_plane_idx][:, None, None].astype(int), 
-                   main_electrons[:, eventID_idx][:, None, None].astype(int))
-    pIDs_neigh = pIDs.at[:, params.number_pix_neighbors, params.number_pix_neighbors].set(-999) # Getting rid of the main pixel, which is already in the main_pixels
-    nelectrons_neigh = n_electrons_base  # Use cached value
+    new_pitches = jnp.moveaxis((pix_pitches[:, :, None, None] + pix_grid), 1, -1)  # (N, 2n+1, 2n+1, 2)
+    pIDs = pixel2id(params, new_pitches[..., 0], new_pitches[..., 1],
+                    main_electrons[:, pixel_plane_idx][:, None, None].astype(int),
+                    main_electrons[:, eventID_idx][:, None, None].astype(int))
+    pIDs_neigh = pIDs.at[:, params.number_pix_neighbors, params.number_pix_neighbors].set(-999)
+    nelectrons_neigh = n_electrons_base
     t0_neigh = t0
-    # Broadcast tran_diff (sigma_T) to match the nb_tran_diff_bins^2 expansion
-    tran_diff_broadcast = jnp.broadcast_to(main_electrons[:, tran_diff_idx, None, None], shape_2d).reshape(-1)
-    return main_pixels, pixels, nelectrons, t0_after_diff, long_diff, tran_diff_broadcast, currents_idx, pIDs_neigh, currents_idx_neigh, nelectrons_neigh, t0_neigh
+    return main_pixels, nelectrons, t0_after_diff, long_diff, tran_diff, currents_idx, pIDs_neigh, currents_idx_neigh, nelectrons_neigh, t0_neigh
 
 @jit
 def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, tran_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
@@ -603,7 +587,7 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     b_broadcast = jnp.broadcast_to(b[:, None], signal_shape).reshape(-1)
     c_broadcast = jnp.broadcast_to(c[:, None], signal_shape).reshape(-1)
 
-    # 5D template: flat index = long*long_stride + tran*(Nx*Ny*Nt_sig) + x*(Ny*Nt_sig) + y*Nt_sig + t
+    # 5D template flat index: long*long_stride + tran*(Nx*Ny*Nt_sig) + x*(Ny*Nt_sig) + y*Nt_sig + t
     signal_indices = jnp.ravel(
         (idx[..., None] * n_tran * Nx * Ny + tran_idx[..., None] * Nx * Ny +
          currents_idx[..., 0, None] * Ny + currents_idx[..., 1, None]) * Nt_sig + jnp.arange(Nt_sig))
@@ -737,7 +721,7 @@ def simulate_wfs(params, response_template, tracks, fields):
               the simulation, with shape (Npixels,).
     """
 
-    main_pixels, pixels, nelectrons, t0_after_diff, long_diff, tran_diff, currents_idx, pIDs_neigh, currents_idx_neigh, nelectrons_neigh, t0_neigh = simulate_drift_new(params, tracks, fields)
+    main_pixels, nelectrons, t0_after_diff, long_diff, tran_diff, currents_idx, pIDs_neigh, currents_idx_neigh, nelectrons_neigh, t0_neigh = simulate_drift_new(params, tracks, fields)
 
     ################################################
     ################################################
@@ -759,7 +743,7 @@ def simulate_wfs(params, response_template, tracks, fields):
     ###############################################
     ###############################################
 
-    wfs = simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, tran_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh)
+    wfs = simulate_signals(params, unique_pixels, main_pixels, t0_after_diff, response_template, nelectrons, long_diff, tran_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh)
 
 
     return wfs[:, 1:], unique_pixels
