@@ -299,6 +299,12 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
         "long_diff_template": jnp.linspace(0.001, 10, 100), # Placeholder for long diffusion template
         "long_diff_extent": 20,
+        # Default transverse-diffusion bin edges (cm).
+        # Covers sigma 0 → 0.12 cm in 6 equal bins; midpoints 0.01, 0.03, ..., 0.11 cm.
+        # load_lut prepends sigma=0 automatically, giving n_tran = 7.
+        # Physical range: max sigma ≈ sqrt(2 * tran_diff * drift_length / vdrift)
+        #                           ≈ sqrt(2 * 8.8e-6 * 60 / 0.16) ≈ 0.081 cm at full drift.
+        "tran_diff_bin_edges": np.linspace(0, 0.12, 7),
         "max_tran_extent": None
     }
 
