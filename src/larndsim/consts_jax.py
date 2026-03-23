@@ -299,7 +299,12 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
         "long_diff_template": jnp.linspace(0.001, 20, 50), # Placeholder for long diffusion template
         "long_diff_extent": 20,
-        "tran_diff_template": jnp.linspace(0.001, 20, 50), # Tran_diff template values in cm
+        # sigma_T values in cm for transverse diffusion templates.
+        # Range 0 → 0.11 cm covers: max sigma ≈ sqrt(2 * tran_diff * drift / vdrift)
+        #                                     ≈ sqrt(2 * 8.8e-6 * 60 / 0.16) ≈ 0.081 cm at full drift.
+        # sigma=0 must always be first (identity template).
+        "tran_diff_template": np.array([0.0, 0.01, 0.03, 0.05, 0.07, 0.09, 0.11]),
+        "max_tran_extent": None,
     }
 
     mm2cm = 0.1
@@ -431,34 +436,51 @@ def load_lut(lut_file, params):
     else:
         raise ValueError("Unsupported response format. Expected npz or numpy array.")
 
+    # tran_diff_template is the primary parameter: an array of sigma_T values in cm.
+    # sigma=0 must be the first entry (identity / no-diffusion template).
     tran_sigma = updated_params.tran_diff_template
+    if tran_sigma is None:
+        tran_sigma = jnp.array([0.0])
+    else:
+        tran_sigma = jnp.asarray(tran_sigma, dtype=jnp.float32)
+        if not jnp.isclose(tran_sigma[0], 0.0):
+            tran_sigma = jnp.concatenate([jnp.array([0.0], dtype=tran_sigma.dtype), tran_sigma])
 
-    width = updated_params.pixel_pitch / updated_params.nb_sampling_bins_per_pixel
-    max_sigma = jnp.max(tran_sigma)
-    extent = jnp.ceil(4.0 * max_sigma / width).astype(int) + 1
-    x = jnp.arange(-extent, extent + 1) * width
-    X, Y = jnp.meshgrid(x, x)
+    if len(tran_sigma) == 1:
+        # Single sigma=0: no spatial convolution needed.
+        response_tran = response[None, ...]  # (1, Nx, Ny, Nt_full)
+    else:
+        # Build one 2D Gaussian kernel per sigma value.
+        # Bin width = one sub-pixel sampling step (same units as pixel_pitch, i.e. cm).
+        width = updated_params.pixel_pitch / updated_params.nb_sampling_bins_per_pixel
+        max_sigma = jnp.max(tran_sigma)
+        extent = jnp.ceil(4.0 * max_sigma / width).astype(int) + 1
+        if updated_params.max_tran_extent is not None:
+            extent = jnp.minimum(extent, int(updated_params.max_tran_extent))
+        x = jnp.arange(-extent, extent + 1) * width
+        X, Y = jnp.meshgrid(x, x)
 
-    sig = tran_sigma[:, None, None]
-    kernels = jnp.exp(-(X**2 + Y**2) / (2.0 * sig**2))
-    kernels = kernels / jnp.sum(kernels, axis=(1, 2), keepdims=True)
-    delta = jnp.zeros_like(kernels)
-    delta = delta.at[:, extent, extent].set(1.0)
-    kernels = jnp.where(sig == 0.0, delta, kernels)
+        sig = tran_sigma[:, None, None]
+        kernels = jnp.exp(-(X**2 + Y**2) / (2.0 * sig**2))
+        kernels = kernels / jnp.sum(kernels, axis=(1, 2), keepdims=True)
+        # Replace sigma=0 kernel with a Kronecker delta (identity convolution).
+        delta = jnp.zeros_like(kernels)
+        delta = delta.at[:, extent, extent].set(1.0)
+        kernels = jnp.where(sig == 0.0, delta, kernels)
 
-    def _conv_spatial(template, kernel):
-        def _conv_one(tplane):
-            return convolve2d(tplane, kernel, mode="same", boundary="fill")
-        return jax.vmap(_conv_one, in_axes=2, out_axes=2)(template)
+        def _conv_spatial(template, kernel):
+            def _conv_one(tplane):
+                return convolve2d(tplane, kernel, mode="same", boundary="fill")
+            return jax.vmap(_conv_one, in_axes=2, out_axes=2)(template)
 
-    def _apply_one_kernel(kernel):
-        return _conv_spatial(response, kernel)
+        def _apply_one_kernel(kernel):
+            return _conv_spatial(response, kernel)
 
-    # Map over kernels to avoid a single huge batched convolution
-    response_tran = jax.lax.map(_apply_one_kernel, kernels)
-    response_tran = response_tran.at[0].set(response)
+        # Map over kernels to avoid a single huge batched convolution.
+        response_tran = jax.lax.map(_apply_one_kernel, kernels)  # (n_tran, Nx, Ny, Nt)
+        response_tran = response_tran.at[0].set(response)         # sigma=0 → exact LUT
 
-    # Store sigma values in params so simulation functions can do tran_idx lookup.
+    # Keep params up to date with the (possibly prepended) sigma array.
     updated_params = updated_params.replace(tran_diff_template=tran_sigma)
 
     gaus = norm.pdf(jnp.arange(-params.long_diff_extent, params.long_diff_extent + 1, 1), scale=params.long_diff_template[:, None])
