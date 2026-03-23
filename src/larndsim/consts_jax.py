@@ -297,15 +297,9 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "response_full_drift_t": 190.61638,
         "nb_tran_diff_bins": 5,
         "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
-        "long_diff_template": jnp.linspace(0.001, 10, 100), # Placeholder for long diffusion template
+        "long_diff_template": jnp.linspace(0.001, 20, 50), # Placeholder for long diffusion template
         "long_diff_extent": 20,
-        # Default transverse-diffusion bin edges (cm).
-        # Covers sigma 0 → 0.12 cm in 6 equal bins; midpoints 0.01, 0.03, ..., 0.11 cm.
-        # load_lut prepends sigma=0 automatically, giving n_tran = 7.
-        # Physical range: max sigma ≈ sqrt(2 * tran_diff * drift_length / vdrift)
-        #                           ≈ sqrt(2 * 8.8e-6 * 60 / 0.16) ≈ 0.081 cm at full drift.
-        "tran_diff_bin_edges": np.linspace(0, 0.12, 7),
-        "max_tran_extent": None
+        "tran_diff_template": jnp.linspace(0.001, 20, 50), # Tran_diff template values in cm
     }
 
     mm2cm = 0.1
@@ -437,43 +431,32 @@ def load_lut(lut_file, params):
     else:
         raise ValueError("Unsupported response format. Expected npz or numpy array.")
 
-    tran_edges = updated_params.tran_diff_bin_edges
-    if tran_edges is not None:
-        tran_edges = jnp.asarray(tran_edges)
-        tran_sigma = 0.5 * (tran_edges[:-1] + tran_edges[1:])
-        if not jnp.isclose(tran_sigma[0], 0.0):
-            tran_sigma = jnp.concatenate([jnp.array([0.0], dtype=tran_sigma.dtype), tran_sigma])
+    tran_sigma = updated_params.tran_diff_template
 
-        width = updated_params.pixel_pitch / updated_params.nb_sampling_bins_per_pixel
-        max_sigma = jnp.max(tran_sigma)
-        extent = jnp.ceil(4.0 * max_sigma / width).astype(int) + 1
-        if updated_params.max_tran_extent is not None:
-            extent = jnp.minimum(extent, int(updated_params.max_tran_extent))
-        x = jnp.arange(-extent, extent + 1) * width
-        X, Y = jnp.meshgrid(x, x)
+    width = updated_params.pixel_pitch / updated_params.nb_sampling_bins_per_pixel
+    max_sigma = jnp.max(tran_sigma)
+    extent = jnp.ceil(4.0 * max_sigma / width).astype(int) + 1
+    x = jnp.arange(-extent, extent + 1) * width
+    X, Y = jnp.meshgrid(x, x)
 
-        sig = tran_sigma[:, None, None]
-        kernels = jnp.exp(-(X**2 + Y**2) / (2.0 * sig**2))
-        kernels = kernels / jnp.sum(kernels, axis=(1, 2), keepdims=True)
-        delta = jnp.zeros_like(kernels)
-        delta = delta.at[:, extent, extent].set(1.0)
-        kernels = jnp.where(sig == 0.0, delta, kernels)
+    sig = tran_sigma[:, None, None]
+    kernels = jnp.exp(-(X**2 + Y**2) / (2.0 * sig**2))
+    kernels = kernels / jnp.sum(kernels, axis=(1, 2), keepdims=True)
+    delta = jnp.zeros_like(kernels)
+    delta = delta.at[:, extent, extent].set(1.0)
+    kernels = jnp.where(sig == 0.0, delta, kernels)
 
-        def _conv_spatial(template, kernel):
-            def _conv_one(tplane):
-                return convolve2d(tplane, kernel, mode="same", boundary="fill")
-            return jax.vmap(_conv_one, in_axes=2, out_axes=2)(template)
+    def _conv_spatial(template, kernel):
+        def _conv_one(tplane):
+            return convolve2d(tplane, kernel, mode="same", boundary="fill")
+        return jax.vmap(_conv_one, in_axes=2, out_axes=2)(template)
 
-        def _apply_one_kernel(kernel):
-            return _conv_spatial(response, kernel)
+    def _apply_one_kernel(kernel):
+        return _conv_spatial(response, kernel)
 
-        # Map over kernels to avoid a single huge batched convolution
-        response_tran = jax.lax.map(_apply_one_kernel, kernels)
-        response_tran = response_tran.at[0].set(response)
-    else:
-        # No transverse templating: single sigma=0 bin — keeps code path uniform.
-        tran_sigma = jnp.array([0.0])
-        response_tran = response[None, ...]  # (1, Nx, Ny, Nt_full)
+    # Map over kernels to avoid a single huge batched convolution
+    response_tran = jax.lax.map(_apply_one_kernel, kernels)
+    response_tran = response_tran.at[0].set(response)
 
     # Store sigma values in params so simulation functions can do tran_idx lookup.
     updated_params = updated_params.replace(tran_diff_template=tran_sigma)
@@ -486,40 +469,46 @@ def load_lut(lut_file, params):
     batched_conv_kernels = jax.vmap(batched_conv_last_axis, in_axes=(None, 0))
 
     sig_len = updated_params.signal_length
-    Nt_full = response_tran.shape[-1]
-    Nt_cum = Nt_full - sig_len + 1  # cumsum prefix length: ticks [0 .. Nt_full-sig_len] inclusive
+    Nt_full_orig = response_tran.shape[-1]
+    # Zero-pad each waveform by long_diff_extent ticks at the end so that the
+    # Gaussian tail from longitudinal diffusion is never truncated: a waveform
+    # that hasn't decayed to zero by Nt_full_orig will get the correct tail up
+    # to long_diff_extent additional ticks.
+    padding = params.long_diff_extent
+    Nt_full_padded = Nt_full_orig + padding
+    Nt_cum = Nt_full_padded - sig_len + 1  # cumsum prefix length
 
     # Always build 5D response_template (n_long, n_tran, Nx, Ny, sig_len).
-    # response_tran has shape (n_tran, Nx, Ny, Nt_full) for any n_tran >= 1.
+    # response_tran has shape (n_tran, Nx, Ny, Nt_full_orig) for any n_tran >= 1.
     n_tran = response_tran.shape[0]
 
-    # --- tran[0]: always processed at full Nt_full to obtain the 4D cumsum (n_long, Nx, Ny, Nt_cum).
+    # --- tran[0]: processed at Nt_full_padded to obtain the 4D cumsum (n_long, Nx, Ny, Nt_cum).
     # Keeping response_cum 4D (tran[0] only) avoids materialising n_tran copies of Nt_cum.
-    # Peak memory for this step: (n_long, Nx, Ny, Nt_full) ~ 1.5 GB for n_long=100.
-    tran0 = response_tran[0]                                    # (Nx, Ny, Nt_full)
-    inp0 = jnp.reshape(tran0, (-1, Nt_full))                    # (Nx*Ny, Nt_full)
-    out0 = batched_conv_kernels(inp0, gaus)                      # (n_long, Nx*Ny, Nt_full)
-    res0 = jnp.reshape(out0, (gaus.shape[0], *tran0.shape))     # (n_long, Nx, Ny, Nt_full)
-    res0 = res0.at[0].set(tran0)                                 # long[0] = no diffusion
+    tran0 = response_tran[0]                                                       # (Nx, Ny, Nt_full_orig)
+    tran0_pad = jnp.pad(tran0, ((0, 0), (0, 0), (0, padding)))                    # (Nx, Ny, Nt_full_padded)
+    inp0 = jnp.reshape(tran0_pad, (-1, Nt_full_padded))                           # (Nx*Ny, Nt_full_padded)
+    out0 = batched_conv_kernels(inp0, gaus)                                        # (n_long, Nx*Ny, Nt_full_padded)
+    res0 = jnp.reshape(out0, (gaus.shape[0], *tran0_pad.shape))                   # (n_long, Nx, Ny, Nt_full_padded)
+    res0 = res0.at[0].set(tran0_pad)                                               # long[0] = no diffusion
 
-    response_cum = jnp.cumsum(res0, axis=-1)[..., :Nt_cum]      # (n_long, Nx, Ny, Nt_cum)
-    sig0 = res0[..., -sig_len:]                                  # (n_long, Nx, Ny, sig_len)
+    response_cum = jnp.cumsum(res0, axis=-1)[..., :Nt_cum]                        # (n_long, Nx, Ny, Nt_cum)
+    sig0 = res0[..., -sig_len:]                                                    # (n_long, Nx, Ny, sig_len)
 
     if n_tran == 1:
         # Single tran bin: no lax.map needed — promote to 5D with a trivial axis.
-        response_template = sig0[:, None, ...]                   # (n_long, 1, Nx, Ny, sig_len)
+        response_template = sig0[:, None, ...]                                     # (n_long, 1, Nx, Ny, sig_len)
     else:
         # tran[1:]: trim to sig_len INSIDE the map to avoid materialising the full tensor.
-        # Peak per lax.map step: (n_long, Nx, Ny, Nt_full) ~ 1.5 GB.
         def _apply_long_trimmed(tran_slice):
-            # tran_slice: (Nx, Ny, Nt_full)
-            inp = jnp.reshape(tran_slice, (-1, Nt_full))
-            out = batched_conv_kernels(inp, gaus)                 # (n_long, Nx*Ny, Nt_full)
-            res = jnp.reshape(out, (gaus.shape[0], *tran_slice.shape))
-            res = res.at[0].set(tran_slice)
-            return res[..., -sig_len:]                            # trim before returning
+            # tran_slice: (Nx, Ny, Nt_full_orig) — pad before convolving.
+            tran_slice_pad = jnp.pad(tran_slice, ((0, 0), (0, 0), (0, padding)))  # (Nx, Ny, Nt_full_padded)
+            inp = jnp.reshape(tran_slice_pad, (-1, Nt_full_padded))
+            out = batched_conv_kernels(inp, gaus)                                  # (n_long, Nx*Ny, Nt_full_padded)
+            res = jnp.reshape(out, (gaus.shape[0], *tran_slice_pad.shape))
+            res = res.at[0].set(tran_slice_pad)
+            return res[..., -sig_len:]                                             # trim before returning
 
-        sigs_rest = jax.lax.map(_apply_long_trimmed, response_tran[1:])  # (n_tran-1, n_long, Nx, Ny, sig_len)
+        sigs_rest = jax.lax.map(_apply_long_trimmed, response_tran[1:])            # (n_tran-1, n_long, Nx, Ny, sig_len)
 
         # (n_tran, n_long, Nx, Ny, sig_len) -> swapaxes -> (n_long, n_tran, Nx, Ny, sig_len)
         response_template = jnp.concatenate([sig0[None], sigs_rest], axis=0)
