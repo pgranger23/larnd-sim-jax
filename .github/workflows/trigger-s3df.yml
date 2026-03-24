@@ -1,0 +1,40 @@
+name: Trigger S3DF Test
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  add-test-label:
+    name: Add Label on /test
+    # This condition ensures the workflow ONLY runs if the comment is on a Pull Request 
+    # (GitHub treats PRs as issues under the hood) AND the comment starts with /test
+    if: ${{ github.event.issue.pull_request && startsWith(github.event.comment.body, '/test') }}
+    runs-on: ubuntu-latest
+    
+    # We need permission to modify the PR to add the label
+    permissions:
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Apply the trigger label
+        env:
+          # GITHUB_TOKEN is automatically provided by GitHub Actions, no setup needed!
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.issue.html_url }}
+        run: |
+          # Using the pre-installed GitHub CLI to add the label
+          gh pr edit $PR_URL --add-label "needs-s3df-test"
+          
+      - name: React to the comment (Optional but fun)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Adds a "rocket" reaction to the developer's comment to acknowledge it
+            github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
