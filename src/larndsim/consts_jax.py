@@ -470,7 +470,7 @@ def load_lut(lut_file, params):
 
         def _conv_spatial(template, kernel):
             def _conv_one(tplane):
-                return convolve2d(tplane, kernel, mode="same", boundary="fill")
+                return convolve2d(tplane, kernel, mode="same", boundary="symm")
             return jax.vmap(_conv_one, in_axes=2, out_axes=2)(template)
 
         def _apply_one_kernel(kernel):
