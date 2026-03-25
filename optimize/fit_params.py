@@ -343,7 +343,11 @@ class ParamFitter:
 
         self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
         # self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
-        self.norm_params = ref_params.replace(**{key: 0. for key in self.relevant_params_list})
+        # self.norm_params = ref_params.replace(**{key: 0. for key in self.relevant_params_list})
+        self.norm_params = ref_params.replace(**{
+            key: float(map_phys_to_norm(getattr(self.current_params, key), key))
+            for key in self.relevant_params_list
+        })
 
         #Only do it now to not inpact current_params (ref_params?)
         #FIXME It's a problem if the noise parameters are to be fitted
@@ -793,6 +797,7 @@ class GradientDescentFitter(ParamFitter):
                                     self.training_history[param + '_iter'].append(getattr(self.current_params, param).item())
 
                             self.training_history['size_history'].append(get_size_history())
+
                             if 'cuda' in jax.devices():
                                 self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
 
@@ -824,8 +829,8 @@ class GradientDescentFitter(ParamFitter):
                                 self.training_history[param + '_iter'].append(getattr(self.current_params, param).item())
 
                         self.training_history['size_history'].append(get_size_history())
-                        if 'cuda' in jax.devices():
-                            self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
+                        if jax.devices()[0].platform == 'gpu':
+                            self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
 
                         if iterations is not None:
                             if total_iter % print_freq == 0:
