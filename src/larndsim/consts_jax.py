@@ -11,10 +11,16 @@ from jax.scipy.stats import norm
 import dataclasses
 from types import MappingProxyType
 from collections import defaultdict
+from enum import Enum
 
 import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+class RecombinationMode(Enum):
+    BOX = 1
+    BIRKS = 2
+    ELLIPSOID = 3
 
 @dataclasses.dataclass
 class Params_template:
@@ -30,7 +36,7 @@ class Params_template:
         long_diff (float): Longitudinal diffusion coefficient.
         tran_diff (float): Transverse diffusion coefficient.
         tpc_borders (jax.Array): TPC border coordinates.
-        box (int): Box model flag (1 for Box, 0 for Birks).
+        recombination_mode (RecombinationMode): Recombination mode flag (BOX, BIRKS, ELLIPSOID).
         birks (int): Birks model flag (1 for Birks, 0 for Box).
         lArDensity (float): Liquid argon density in g/cm^3.
         alpha (float): Alpha parameter for recombination.
@@ -80,11 +86,11 @@ class Params_template:
     long_diff: float = struct.field(pytree_node=False)
     tran_diff: float = struct.field(pytree_node=False)
     tpc_borders: jax.Array = struct.field(pytree_node=False)
-    box: int = struct.field(pytree_node=False)
-    birks: int = struct.field(pytree_node=False)
+    recombination_mode: RecombinationMode = struct.field(pytree_node=False)
     lArDensity: float = struct.field(pytree_node=False)
     alpha: float = struct.field(pytree_node=False)
     beta: float = struct.field(pytree_node=False)
+    R_param: float = struct.field(pytree_node=False)
     MeVToElectrons: float = struct.field(pytree_node=False)
     pixel_pitch: float = struct.field(pytree_node=False)
     # n_pixels: tuple = struct.field(pytree_node=False)
@@ -247,11 +253,11 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "shift_x": 0.,
         "shift_y": 0.,
         "shift_z": 0.,
-        "box": 1,
-        "birks": 2,
+        "recombination_mode": RecombinationMode.ELLIPSOID,
         "lArDensity": 1.38,
         "alpha": 0.93,
-        "beta": 0.207,
+        "beta": 0.212,
+        "R_param": 1.25,
         "MeVToElectrons": 4.237e+04,
         "temperature": 87.17,
         "max_active_pixels": 0,
