@@ -8,6 +8,7 @@ from flax import struct
 import jax
 import jax.numpy as jnp
 from jax.scipy.stats import norm
+from jax.scipy.special import erf as jax_erf
 import dataclasses
 from types import MappingProxyType
 from collections import defaultdict
@@ -161,7 +162,7 @@ class Params_template:
     hit_prob_threshold: float = struct.field(pytree_node=False, default=1e-5)  # Threshold for hit probability
     tran_diff_bin_edges: jax.Array = struct.field(pytree_node=False, default=None) # Bin edges for transverse diffusion
     max_tran_extent: int = struct.field(pytree_node=False, default=None)
-    response_cum: jax.Array = struct.field(pytree_node=False, default=None)  # Pre-computed cumsum for boundary corrections, shape (Ntemplates, Nx, Ny, Nt_cum)
+    response_cum: jax.Array = struct.field(pytree_node=False, default=None)  # Pre-computed cumsum for boundary corrections, shape (Nx, Ny, Nt_cum), zero diffusion (no σ_T, no σ_L)
 
 def build_params_class(params_with_grad):
     """
@@ -457,20 +458,34 @@ def load_lut(lut_file, params):
         extent = jnp.ceil(4.0 * max_sigma / width).astype(int) + 1
         if updated_params.max_tran_extent is not None:
             extent = jnp.minimum(extent, int(updated_params.max_tran_extent))
-        x = jnp.arange(-extent, extent + 1) * width
-        X, Y = jnp.meshgrid(x, x)
-
-        sig = tran_sigma[:, None, None]
-        kernels = jnp.exp(-(X**2 + Y**2) / (2.0 * sig**2))
+        # Build bin-integrated 1D kernel for each sigma using exact bin probabilities.
+        # With reflect padding, plane[0] appears once and plane[k>0] appears twice, so:
+        #   g1d_half[0] = P(bin 0),  g1d_half[k>0] = P(k)/2
+        # giving effective weight P(k) for every bin k, matching MC floor-binning exactly.
+        k_idx = jnp.arange(0, extent + 1, dtype=jnp.float32)        # (extent+1,)
+        sigma_pix = tran_sigma[:, None] / width                      # (n_sigma, 1)
+        # Clamp sigma=0 to avoid NaN; delta kernel is forced below.
+        sigma_pix_safe = jnp.where(sigma_pix == 0.0, 1.0, sigma_pix)
+        p = (jax_erf((k_idx + 1) / (jnp.sqrt(2.0) * sigma_pix_safe))
+             - jax_erf(k_idx / (jnp.sqrt(2.0) * sigma_pix_safe)))   # (n_sigma, extent+1)
+        g1d_half = p / jnp.where(k_idx > 0, 2.0, 1.0)[None, :]
+        # Full symmetric 1D kernel: mirror the tail (excluding centre) prepended
+        g1d = jnp.concatenate([g1d_half[:, extent:0:-1], g1d_half], axis=1)  # (n_sigma, 2*extent+1)
+        kernels = g1d[:, :, None] * g1d[:, None, :]                  # (n_sigma, 2*extent+1, 2*extent+1)
         kernels = kernels / jnp.sum(kernels, axis=(1, 2), keepdims=True)
         # Replace sigma=0 kernel with a Kronecker delta (identity convolution).
         delta = jnp.zeros_like(kernels)
         delta = delta.at[:, extent, extent].set(1.0)
-        kernels = jnp.where(sig == 0.0, delta, kernels)
+        kernels = jnp.where(tran_sigma[:, None, None] == 0.0, delta, kernels)
 
         def _conv_spatial(template, kernel):
             def _conv_one(tplane):
-                return convolve2d(tplane, kernel, mode="same", boundary="symm")
+                # jax.scipy convolve2d only supports boundary='fill', so we
+                # manually apply reflect padding and use mode='valid'.
+                # 'reflect' mirrors without repeating the boundary element,
+                # matching the bin-integrated kernel's fold factor for k>0.
+                tplane_padded = jnp.pad(tplane, extent, mode="reflect")
+                return convolve2d(tplane_padded, kernel, mode="valid")
             return jax.vmap(_conv_one, in_axes=2, out_axes=2)(template)
 
         def _apply_one_kernel(kernel):
@@ -504,16 +519,21 @@ def load_lut(lut_file, params):
     # response_tran has shape (n_tran, Nx, Ny, Nt_full_orig) for any n_tran >= 1.
     n_tran = response_tran.shape[0]
 
-    # --- tran[0]: processed at Nt_full_padded to obtain the 4D cumsum (n_long, Nx, Ny, Nt_cum).
-    # Keeping response_cum 4D (tran[0] only) avoids materialising n_tran copies of Nt_cum.
+    # --- tran[0]: processed at Nt_full_padded.
+    # response_cum uses NO diffusion at all (σ_T=0, σ_L=0): it is the raw LUT
+    # cumulative sum.  The cumsum boundary correction is insensitive to diffusion
+    # shape, so simplifying to zero-diffusion saves memory and compute.
     tran0 = response_tran[0]                                                       # (Nx, Ny, Nt_full_orig)
     tran0_pad = jnp.pad(tran0, ((0, 0), (0, 0), (0, padding)))                    # (Nx, Ny, Nt_full_padded)
+
+    # Cumsum with zero diffusion: 3D (Nx, Ny, Nt_cum)
+    response_cum = jnp.cumsum(tran0_pad, axis=-1)[..., :Nt_cum]                   # (Nx, Ny, Nt_cum)
+
+    # Signal template still needs longitudinal convolution.
     inp0 = jnp.reshape(tran0_pad, (-1, Nt_full_padded))                           # (Nx*Ny, Nt_full_padded)
     out0 = batched_conv_kernels(inp0, gaus)                                        # (n_long, Nx*Ny, Nt_full_padded)
     res0 = jnp.reshape(out0, (gaus.shape[0], *tran0_pad.shape))                   # (n_long, Nx, Ny, Nt_full_padded)
     res0 = res0.at[0].set(tran0_pad)                                               # long[0] = no diffusion
-
-    response_cum = jnp.cumsum(res0, axis=-1)[..., :Nt_cum]                        # (n_long, Nx, Ny, Nt_cum)
     sig0 = res0[..., -sig_len:]                                                    # (n_long, Nx, Ny, sig_len)
 
     if n_tran == 1:
