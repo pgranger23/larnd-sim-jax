@@ -461,12 +461,16 @@ def simulate_drift_new(params, tracks, fields):
 
     # In-pixel (x, y) bin index for response template lookup: (N, 2)
     # Keep the float value for sub-bin Catmull-Rom position interpolation.
+    # currents_xi ∈ [0.5, Nx-0.5]: absolute LUT-bin coordinate where 0.5 = centre of bin 0,
+    # 1.5 = centre of bin 1, etc.  Subtract 0.5 to get Catmull-Rom coordinate xi_cr where
+    # integers fall at bin centres (frac=0 → exact template, no blending needed).
     currents_xi = jnp.abs(
         bins_pitches % params.nb_sampling_bins_per_pixel
         - params.nb_sampling_bins_per_pixel // 2 + 0.5
-    )  # (N, 2), continuous bin coord: 0.0 = centre of bin 0, 1.0 = centre of bin 1, ...
-    currents_idx  = currents_xi.astype(int)       # (N, 2), integer bin index
-    currents_frac = currents_xi - currents_idx     # (N, 2), fractional offset ∈ [0, 1)
+    )  # (N, 2), minimum 0.5 (at pixel centre = bin-0 centre)
+    _xi_cr       = currents_xi - 0.5                          # 0.0 at bin-0 centre, 1.0 at bin-1 centre
+    currents_idx  = jnp.floor(_xi_cr).astype(int)            # (N, 2), integer bin index
+    currents_frac = _xi_cr - jnp.floor(_xi_cr)               # (N, 2), fractional offset ∈ [0, 1)
 
     #########################################################
     #################Adding neighbors########################
@@ -478,11 +482,11 @@ def simulate_drift_new(params, tracks, fields):
         bins_pitches[:, :, None, None] % params.nb_sampling_bins_per_pixel
         - params.nb_sampling_bins_per_pixel // 2 + 0.5
         - bin_shifts_neighbors
-    )  # (N, 2, 2n+1, 2n+1), float
-    currents_idx_neigh  = jnp.moveaxis(currents_xi_neigh.astype(int), 1, -1).reshape(-1, 2)
-    currents_frac_neigh = jnp.moveaxis(
-        currents_xi_neigh - currents_xi_neigh.astype(int), 1, -1
-    ).reshape(-1, 2)
+    )  # (N, 2, 2n+1, 2n+1), absolute LUT-bin coordinate per neighbor pixel
+    _xi_cr_neigh        = currents_xi_neigh - 0.5             # Catmull-Rom coord: 0.0 at bin-0 centre
+    _floor_neigh        = jnp.floor(_xi_cr_neigh)
+    currents_idx_neigh  = jnp.moveaxis(_floor_neigh.astype(int), 1, -1).reshape(-1, 2)
+    currents_frac_neigh = jnp.moveaxis(_xi_cr_neigh - _floor_neigh, 1, -1).reshape(-1, 2)
 
     new_pitches = jnp.moveaxis((pix_pitches[:, :, None, None] + pix_grid), 1, -1)  # (N, 2n+1, 2n+1, 2)
     pIDs = pixel2id(params, new_pitches[..., 0], new_pitches[..., 1],
