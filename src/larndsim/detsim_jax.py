@@ -27,8 +27,16 @@ def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID,
     # Get the number of pixels and ticks
     Npixels, Nticks = wfs.shape
 
-    # Compute indices for updating wfs, taking into account start_ticks
-    start_ticks = response.shape[-1] - signal_length - cathode_ticks
+    # response is the trimmed signal template: shape (Nx, Ny, Nt_sig) where Nt_sig == signal_length.
+    # response_cum is the pre-computed cumsum prefix: shape (Nx, Ny, Nt_cum)
+    # where Nt_cum = original_Nt - signal_length + 1.
+    # cathode_ticks must already be clipped to [0, Nt_cum-1] by the caller.
+    Nx, Ny, Nt_sig = response.shape
+    Nt_cum = response_cum.shape[-1]
+
+    # Signal placement: start_ticks = Nt_cum - 1 - cathode_ticks
+    # (was: response.shape[-1] - signal_length - cathode_ticks with the full template)
+    start_ticks = Nt_cum - 1 - cathode_ticks
     time_ticks = start_ticks[..., None] + jnp.arange(signal_length)
 
     # either end of start_ticks or start_ticks + signal_length can be out of the readout range, which is non physical, but it can still have values from the response. They are assigned to time_tick 0, and is meant to be removed.
@@ -41,16 +49,12 @@ def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID,
     # Flatten the indices, which is not necessarily unique
     flat_indices = jnp.ravel(end_indices)
 
-    Nx, Ny, Nt = response.shape
-
-    signal_indices = jnp.ravel((currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt + jnp.arange(response.shape[-1] - signal_length, response.shape[-1]))
-    # baseline_indices = jnp.ravel(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length))
-    # print(jnp.repeat((currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt + cathode_ticks, signal_length, axis=0))
+    # Trimmed template: indices are 0..Nt_sig-1 within each (x,y) block
+    signal_indices = jnp.ravel((currents_idx[..., 0, None]*Ny + currents_idx[..., 1, None])*Nt_sig + jnp.arange(Nt_sig))
 
     # Update wfs with accumulated signals - Optimize broadcasting
     wfs = wfs.ravel()
-    # wfs = wfs.at[(flat_indices,)].add((response.take(signal_indices) - response.take(baseline_indices))*jnp.repeat(charge, signal_length))
-    
+
     # More efficient broadcasting - use broadcast_to instead of repeat
     # Pre-compute shape for better performance
     charge_shape = (charge.shape[0], signal_length)
@@ -62,9 +66,9 @@ def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID,
     wfs = wfs.at[(flat_indices,)].add(accumulated_values)
 
     #Now correct for the missed ticks at the beginning
-    # Cache the common base index calculation to avoid recomputation
-    base_curr_indices = (currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt
-    integrated_start = response_cum.take(jnp.ravel(base_curr_indices + response.shape[-1] - signal_length))
+    # integrated_start is cumsum at the boundary tick (index Nt_cum-1 = original Nt - signal_length).
+    base_curr_indices = (currents_idx[..., 0]*Ny + currents_idx[..., 1])*Nt_cum
+    integrated_start = response_cum.take(jnp.ravel(base_curr_indices + Nt_cum - 1))
     real_start = response_cum.take(jnp.ravel(base_curr_indices + cathode_ticks))
     difference = (integrated_start - real_start)*charge
 
