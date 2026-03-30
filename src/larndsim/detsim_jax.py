@@ -12,6 +12,7 @@ from jax.scipy.stats import norm
 from functools import partial
 from larndsim.consts_jax import get_vdrift
 from jax.scipy.special import erfc, erf
+import jax
 
 import logging
 
@@ -96,23 +97,21 @@ def accumulate_signals_parametrized(wfs, signals, pixID, start_ticks):
     wfs = wfs.at[(flat_indices,)].add(signals.ravel())
     return wfs.reshape((Npixels, Nticks))
 
-
 @annotate_function
 @jit
 def pixel2id(params, pixel_x, pixel_y, pixel_plane, eventID):
-    """
-    Convert the x,y,plane tuple to a unique identifier
-
-    Args:
-        pixel_x (int): number of pixel pitches in x-dimension
-        pixel_y (int): number of pixel pitches in y-dimension
-        pixel_plane (int): pixel plane number
-
-    Returns:
-        unique integer id
-    """
     outside = (pixel_x >= params.n_pixels_x) | (pixel_y >= params.n_pixels_y) | (pixel_x < 0) | (pixel_y < 0)
-    return jnp.where(outside, -1, pixel_x + params.n_pixels_x * (pixel_y + params.n_pixels_y * (pixel_plane + params.tpc_borders.shape[0]*eventID)))
+
+    # Cast only the inputs that participate in the large multiplication
+    # Use np (not jnp) for the scalar params so they don't inherit x64 setting
+    nx = int(params.n_pixels_x)      # plain Python int — never overflows in JAX tracing
+    ny = int(params.n_pixels_y)
+    ntpc = int(params.tpc_borders.shape[0])
+
+    pid = (eventID.astype(jnp.int64) * ntpc + pixel_plane.astype(jnp.int64)) * ny + pixel_y.astype(jnp.int64)
+    pid = pid * nx + pixel_x.astype(jnp.int64)
+
+    return jnp.where(outside, jnp.array(-1, dtype=jnp.int64), pid)
 
 @jit
 def bin2id(params, bin_x, bin_y, pixel_plane, eventID):
@@ -176,7 +175,6 @@ def get_pixel_coordinates(params, xpitch, ypitch, plane):
     pix_y = ypitch * params.pixel_pitch + borders[..., 1, 0] + params.pixel_pitch/2
     return jnp.stack([pix_x, pix_y], axis=-1)
 
-#@jit
 @partial(jit, static_argnames=['fixed_v'])
 def get_hit_z(params, ticks, plane, fixed_v=False):
     """

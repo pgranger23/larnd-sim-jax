@@ -10,23 +10,14 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 class DataLoader:
-    def __init__(self, dataset, batch_size, shuffle=False, seed=42):
+    def __init__(self, dataset, batch_size):
         self.dataset = dataset
         self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.seed = seed
         self.index = 0
         self.indices = np.arange(len(dataset))
-        if self.shuffle:
-            # use NumPy RNG for permutation (keep data loader host-side)
-            rng = np.random.default_rng(self.seed)
-            self.indices = rng.permutation(self.indices)
 
     def __iter__(self):
         self.index = 0
-        if self.shuffle:
-            rng = np.random.default_rng(self.seed)
-            self.indices = rng.permutation(self.indices)
         return self
 
     def __getitem__(self, idx):
@@ -98,36 +89,11 @@ def chop_tracks(tracks, fields, precision=0.001):
     eps = 1e-10
     direction = segment / (length[:, None] + eps)
     nsteps = np.maximum(np.ceil(length / precision), 1).astype(int).flatten()
-    # step_size = length/nsteps
     new_tracks = np.vstack([split_track(tracks[i], nsteps[i], length[i], direction[i], i) for i in range(tracks.shape[0])])
     return new_tracks
 
-def pad_sequence(sequences: List[np.ndarray],
-                 padding_value: Union[float, int] = 0.0) -> List[np.ndarray]:
-    logger.info(f"Padding sequences with padding value: {padding_value}")
-    # Input Validation
-    if not isinstance(sequences, (list, tuple)):
-        raise TypeError(f"Input 'sequences' must be a list or tuple of arrays, got {type(sequences)}")
-
-    if not sequences:
-        return []
-
-    shapes = [s.shape for s in sequences]
-
-    max_len = max(s[0] for s in shapes)
-
-    padded_sequences = []
-    for seq in sequences:
-        current_len = seq.shape[0]
-        pad_len = max_len - current_len
-        padded_seq = np.pad(seq, ((0, pad_len), (0, 0)), mode='constant', constant_values=padding_value)
-        padded_sequences.append(np.asarray(padded_seq, dtype=np.float32))
-
-    return padded_sequences
-
-
 class TracksDataset:
-    def __init__(self, filename, ntrack, max_nbatch=None, swap_xz=True, seed=3, random_ntrack=False, track_len_sel=2., 
+    def __init__(self, filename, nevents, max_nbatch=None, swap_xz=True, random_nevents=False, data_seed=42, track_len_sel=2., 
                  max_abs_costheta_sel=0.966, min_abs_segz_sel=15., track_z_bound=28., max_batch_len=50, print_input=False,
                  chopped=True, pad=True, electron_sampling_resolution=0.001, live_selection=False):
 
@@ -163,10 +129,19 @@ class TracksDataset:
 
         # Only load useful tracks
         # assuming tracks are in orders as a unit of trajectory
+        # Trim at event boundaries so no event is split during initial load.
         if max_batch_len is not None and max_nbatch is not None and max_nbatch > 0:
             length_load_threshold = max_batch_len * (max_nbatch + 2)
-            loaded_tracks = tracks[np.cumsum(tracks['dx']) < length_load_threshold]
-            tracks = loaded_tracks
+
+            cum_dx = np.cumsum(tracks['dx'])
+            cutoff = int(np.searchsorted(cum_dx, length_load_threshold, side='left'))
+            if cutoff < len(tracks):
+                cutoff_event_id = tracks['eventID'][cutoff]
+                # Find the last row belonging to a *different* event before the cutoff
+                mask = tracks['eventID'][:cutoff + 1] != cutoff_event_id
+                if mask.any():
+                    last_complete_row = int(np.where(mask)[0][-1])
+                    tracks = tracks[:last_complete_row + 1]
         
         ##############################
         # Build traj-seg 2D mapping
@@ -225,14 +200,30 @@ class TracksDataset:
         for val, s, e in zip(unique_vals, start_idx, end_idx):
             traj_row_indices[int(val)] = sorted_idx[s:e]
 
-        if random_ntrack:
-            rng = np.random.default_rng(seed=42)
-            if ntrack > 0 and ntrack <= len(traj_row_indices):
-                rnd_idx = rng.choice(len(traj_row_indices), size=ntrack, replace=False).astype(int)
-            else:
-                rnd_idx = rng.permutation(len(traj_row_indices)).astype(int)
+        trajectory_row_indices = traj_row_indices # default order
 
-            trajectory_row_indices = [traj_row_indices[idx] for idx in rnd_idx]
+        if random_nevents:
+            rng = np.random.default_rng(seed=data_seed)
+
+            # Get eventID for the first row of each trajectory to identify which event it belongs to
+            event_ids = np.array([
+                self.tracks_struct[trajectory_row_indices[i][0]]['eventID']
+                for i in range(len(trajectory_row_indices))
+            ])
+
+            # Find unique events and which trajectory indices belong to each
+            unique_events, event_inv = np.unique(event_ids, return_inverse=True)
+            n_unique_events = len(unique_events)
+
+            # Randomly select nevents (or all if nevents > n_unique_events or nevents is None)
+            if nevents is not None and nevents > 0 and nevents <= n_unique_events:
+                selected_event_indices = rng.choice(n_unique_events, size=nevents, replace=False)
+            else:
+                selected_event_indices = np.arange(n_unique_events)
+
+            # Get all trajectory indices belonging to selected events
+            rnd_idx = np.where(np.isin(event_inv, selected_event_indices))[0]
+            trajectory_row_indices = [trajectory_row_indices[idx] for idx in rnd_idx]
 
         ##################################
 
@@ -249,9 +240,25 @@ class TracksDataset:
             if lengths_ft.size == 0:
                 raise ValueError("All tracks are longer than the batch size! Please check.")
 
-            cumsum_lengths = np.cumsum(lengths_ft)
-            split_points = np.where(np.diff(np.floor_divide(cumsum_lengths, max_batch_len)) > 0)[0] + 1
-            split_points = np.append(split_points, len(cumsum_lengths))
+            # Group valid trajectories by eventID so no event is split across batches.
+            valid_event_ids = np.array([
+                self.tracks_struct[trajectory_row_indices[vi][0]]['eventID']
+                for vi in valid_traj_indices
+            ])
+            unique_evt_ids, evt_inv = np.unique(valid_event_ids, return_inverse=True)
+            n_evts = len(unique_evt_ids)
+
+            evt_traj_groups = [[] for _ in range(n_evts)]
+            evt_lengths = np.zeros(n_evts)
+            for pos, (evt_idx, length) in enumerate(zip(evt_inv, lengths_ft)):
+                evt_traj_groups[evt_idx].append(valid_traj_indices[pos])
+                evt_lengths[evt_idx] += length
+
+            # Pack whole events into batches using the same floor-divide strategy.
+            cumsum_evt_lengths = np.cumsum(evt_lengths)
+            split_points = np.where(np.diff(np.floor_divide(cumsum_evt_lengths, max_batch_len)) > 0)[0] + 1
+            split_points = np.append(split_points, len(cumsum_evt_lengths))
+
             split_points = np.insert(split_points, 0, 0)
             if max_nbatch and max_nbatch > 0:
                 split_points = split_points[:(max_nbatch+1)]
@@ -259,9 +266,14 @@ class TracksDataset:
             # Build batch -> trajectory index lists
             batches_traj_indices = []
             for i in range(len(split_points)-1):
-                batches_traj_indices.append(valid_traj_indices[split_points[i]:split_points[i+1]])
-            self.batch_traj_indices = [list(arr) for arr in batches_traj_indices]
-            tot_data_length = cumsum_lengths[split_points[-1]-1]
+                batch_traj = []
+                for evt_idx in range(split_points[i], split_points[i+1]):
+                    batch_traj.extend(evt_traj_groups[evt_idx])
+                batches_traj_indices.append(batch_traj)
+
+            self.batch_traj_indices = batches_traj_indices
+            tot_data_length = cumsum_evt_lengths[split_points[-1]-1]
+
         else:
             # If no max_batch_len and no precomputed batch mapping, make one trajectory per batch
             if not hasattr(self, 'batch_traj_indices'):
@@ -321,7 +333,9 @@ class TracksDataset:
             if cur_len < self.max_batch_nsteps:
                 pad_len = self.max_batch_nsteps - cur_len
                 batch_arr = np.pad(batch_arr, ((0, pad_len), (0, 0)), mode='constant', constant_values=0)
-                batch_arr = [t.at[:, self.track_fields.index("eventID")].set(jnp.where(t[:, self.track_fields.index("dEdx")] == 0, -1, t[:, self.track_fields.index("eventID")])) for t in batch_arr]  # Set eventID to -1 for padded segments
+                # Mark padded rows with eventID=-1 (rows appended at the tail by np.pad)
+                evt_col = self.track_fields.index("eventID")
+                batch_arr[cur_len:, evt_col] = -1
 
         if self.print_input:
             logger.info(f"Yielding simulation batch {idx} shape {batch_arr.shape}")
@@ -499,9 +513,12 @@ class TgtTracksDataset:
             batch_arr = chop_tracks(batch_arr, self.tgt_track_fields, precision=self.electron_sampling_resolution)
 
         if self.pad and self.max_batch_nsteps > 0 and batch_arr.shape[0] < self.max_batch_nsteps:
-            pad_len = self.max_batch_nsteps - batch_arr.shape[0]
+            cur_len = batch_arr.shape[0]
+            pad_len = self.max_batch_nsteps - cur_len
             batch_arr = np.pad(batch_arr, ((0, pad_len), (0, 0)), mode='constant', constant_values=0)
-            batch_arr = [t.at[:, self.tgt_track_fields.index("eventID")].set(jnp.where(t[:, self.tgt_track_fields.index("dEdx")] == 0, -1, t[:, self.tgt_track_fields.index("eventID")])) for t in batch_arr]  # Set eventID to -1 for padded segments
+            # Mark padded rows with eventID=-1 (rows appended at the tail by np.pad)
+            evt_col = self.tgt_track_fields.index("eventID")
+            batch_arr[cur_len:, evt_col] = -1
 
         if self.print_input:
             logger.info(f"Yielding target batch {idx} shape {batch_arr.shape}")
