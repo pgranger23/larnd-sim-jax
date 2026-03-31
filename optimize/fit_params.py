@@ -789,7 +789,6 @@ class GradientDescentFitter(ParamFitter):
                 if terminate_fit:
                     break
                 logger.info(f"epoch {epoch}")
-                # if epoch == 2: libcudart.cudaProfilerStart()
 
                 # shuffle batches
                 indices = np.arange(len(dataloader_sim))
@@ -849,8 +848,8 @@ class GradientDescentFitter(ParamFitter):
 
                             self.training_history['size_history'].append(get_size_history())
 
-                            if 'cuda' in jax.devices():
-                                self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
+                            if jax.devices()[0].platform == 'gpu':
+                                self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
 
                             if iterations is not None:
                                 if total_iter % print_freq == 0:
@@ -1002,8 +1001,8 @@ class LikelihoodProfiler(ParamFitter):
                             self.training_history[par + '_iter'].append(getattr(self.current_params, par).item())
 
                     self.training_history['size_history'].append(get_size_history())
-                    if 'cuda' in jax.devices():
-                        self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
+                    if jax.devices()[0].platform == 'gpu':
+                        self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
 
                 with open(f'fit_result/{self.test_name}/history_{param}_batch{i}_{self.out_label}.pkl', "wb") as f_history:
                     pickle.dump(self.training_history, f_history)
@@ -1057,8 +1056,8 @@ class MinuitFitter(ParamFitter):
             "valid": result.valid,
         }
         self.training_history["minuit_result"].append(result_dict)
-        if 'cuda' in jax.devices():
-            self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
+        if jax.devices()[0].platform == 'gpu':
+            self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
 
     def fit(self, dataloader_sim, target, **kwargs):
         self.prepare_fit()
