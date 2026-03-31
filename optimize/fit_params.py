@@ -6,7 +6,7 @@ sys.path.insert(0, larndsim_dir)
 import shutil
 import pickle
 import numpy as np
-from .ranges import ranges, param_type
+from .ranges import ranges
 from larndsim.sim_jax import get_size_history
 from larndsim.losses_jax import mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge, nll_loss, llhd_loss #, sinkhorn_loss
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
