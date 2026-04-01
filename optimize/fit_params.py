@@ -76,6 +76,14 @@ def serialize_value(v):
         # Already Python type
         return v
 
+def serialize_param_state(params, relevant):
+    """Serialize selected fields from params container into plain Python values."""
+    return {par: serialize_value(getattr(params, par)) for par in relevant}
+
+def restore_param_state(ref_params, state_dict):
+    """Restore params container from serialized field dictionary."""
+    return ref_params.replace(**{key: float(val) for key, val in state_dict.items()})
+
 
 def normalize_param(param_val, param_name, scheme="divide", undo_norm=False):
     if scheme == "divide":
@@ -193,7 +201,7 @@ class ParamFitter:
                  mc_diff = False,
                  read_target=False,
                  probabilistic_sim=False,
-                 sz_mini_bt=1, shuffle_bt=False, shuffle_seed=42,
+                 sz_mini_bt=1, shuffle_bt=False, shuffle_seed=42, resume_from=None,
                  config = {}):
 
         self.read_target = read_target
@@ -201,6 +209,9 @@ class ParamFitter:
         self.set_params = set_params
         self.detector_props = detector_props
         self.pixel_layouts = pixel_layouts
+        self.resume_from = resume_from
+        self.resumed = False
+        self.total_iter = 0
         self.readout_noise_target = readout_noise_target
         self.readout_noise_guess = readout_noise_guess
         self.vary_init = vary_init
@@ -392,12 +403,12 @@ class ParamFitter:
         self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
         # self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
         # start in the middle of the range, to avoid starting with zero gradients for sigmoid mapping, ignoring the yaml specified initial params
-        self.norm_params = ref_params.replace(**{key: 0. for key in self.relevant_params_list})
+        # self.norm_params = ref_params.replace(**{key: 0. for key in self.relevant_params_list})
         # start at the yaml specified initial params, but mapped to norm space for sigmoid mapping (this is the default)
-        # self.norm_params = ref_params.replace(**{
-        #     key: float(map_phys_to_norm(getattr(self.current_params, key), key))
-        #     for key in self.relevant_params_list
-        # })
+        self.norm_params = ref_params.replace(**{
+            key: float(map_phys_to_norm(getattr(self.current_params, key), key))
+            for key in self.relevant_params_list
+        })
 
         #Only do it now to not inpact current_params (ref_params?)
         #FIXME It's a problem if the noise parameters are to be fitted
@@ -527,6 +538,61 @@ class ParamFitter:
 
         return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id
 
+    def load_checkpoint(self, checkpoint_path):
+        with open(checkpoint_path, "rb") as f:
+            loaded = pickle.load(f)
+
+        if not isinstance(loaded, dict):
+            raise ValueError(f"Checkpoint {checkpoint_path} does not contain a history dict")
+
+        self.training_history = loaded
+        self.total_iter = int(loaded.get('total_iter', 0))
+
+        norm_state = loaded.get('norm_params_state')
+        current_state = loaded.get('current_params_state')
+        opt_state = loaded.get('opt_state')
+
+        if norm_state is None:
+            raise ValueError(
+                f"Checkpoint {checkpoint_path} has no norm_params_state; "
+                "old history-only pickle cannot be resumed exactly"
+            )
+
+        self.norm_params = restore_param_state(self.ref_params, norm_state)
+
+        if current_state is not None:
+            self.current_params = restore_param_state(self.ref_params, current_state)
+        else:
+            self.update_params()
+
+        if opt_state is None:
+            raise ValueError(
+                f"Checkpoint {checkpoint_path} has no opt_state; "
+                "old history-only pickle cannot resume Adam/SGD state"
+            )
+
+        self.opt_state = opt_state
+        self.resumed = True
+
+    def save_checkpoint(self, total_iter):
+        """Persist history plus resume-critical optimizer/parameter state."""
+        self.total_iter = int(total_iter)
+        self.training_history['checkpoint_version'] = 1
+        self.training_history['total_iter'] = self.total_iter
+        self.training_history['norm_params_state'] = serialize_param_state(
+            self.norm_params, self.relevant_params_list
+        )
+        self.training_history['current_params_state'] = serialize_param_state(
+            self.current_params, self.relevant_params_list
+        )
+        if hasattr(self, 'opt_state'):
+            self.training_history['opt_state'] = self.opt_state
+        if self.resume_from is not None:
+            self.training_history['resumed_from'] = self.resume_from
+
+        with open(f'fit_result/{self.test_name}/history_iter{self.total_iter}_{self.out_label}.pkl', "wb") as f_history:
+            pickle.dump(self.training_history, f_history)
+
     def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True, with_hess=False, epoch=0, use_physical_params=False):
         if self.probabilistic_sim:
             rngkey = None
@@ -599,13 +665,17 @@ class ParamFitter:
     
     def prepare_fit(self):
         # make a folder for the pixel target
-        if os.path.exists('target_' + self.out_label):
-            shutil.rmtree('target_' + self.out_label, ignore_errors=True)
-        os.makedirs('target_' + self.out_label)
 
-        # make a folder for the fit result
+        target_dir = 'target_' + self.out_label
+        if os.path.exists(target_dir):
+            shutil.rmtree(target_dir, ignore_errors=True)
+        os.makedirs(target_dir, exist_ok=True)
+
         if not os.path.exists(f'fit_result/{self.test_name}'):
             os.makedirs(f'fit_result/{self.test_name}')
+
+        if self.resume_from is not None and self.resumed:
+            return
 
         for param in self.relevant_params_list:
             self.training_history[param] = []
@@ -622,7 +692,7 @@ class ParamFitter:
                 if not self.read_target:
                     self.training_history[param+'_target'].append(getattr(self.target_params, param))
             if len(self.training_history[param+"_iter"]) == 0:
-                self.training_history[param+"_iter"].append(float(map_norm_to_phys(0., param)))
+                self.training_history[param+"_iter"].append(getattr(self.current_params, param))
         if not self.read_target:
             for param in self.shift_no_fit:
                 if len(self.training_history[param+'_target']) == 0:
@@ -630,6 +700,8 @@ class ParamFitter:
 
     def fit(self, *args, **kwargs):
         raise NotImplementedError("Fit method not implemented. Use a derived class")
+
+
         
 
 class GradientDescentFitter(ParamFitter):
@@ -701,6 +773,10 @@ class GradientDescentFitter(ParamFitter):
     
         self.opt_state = self.optimizer.init(extract_relevant_params(self.norm_params, self.relevant_params_list))
 
+        if self.resume_from is not None:
+            logger.info(f"Resuming from checkpoint {self.resume_from}")
+            self.load_checkpoint(self.resume_from)
+
         self.training_history['optimizer_fn_name'] = self.optimizer_fn_name
 
     def clip_values(self, mini=0.01, maxi=100):
@@ -768,10 +844,22 @@ class GradientDescentFitter(ParamFitter):
 
         self.prepare_fit()
 
+        start_iter = self.total_iter if self.resume_from is not None else 0
+
         if iterations is not None:
             pbar_total = iterations
         else:
             pbar_total = len(dataloader_sim) * epochs
+
+        total_iter = start_iter
+        target_iter = start_iter + iterations if iterations is not None else None
+
+        # self.prepare_fit()
+
+        # if iterations is not None:
+        #     pbar_total = iterations
+        # else:
+        #     pbar_total = len(dataloader_sim) * epochs
 
         if not self.read_target:
             # If explicit number of iterations, scale epochs accordingly
@@ -782,7 +870,7 @@ class GradientDescentFitter(ParamFitter):
             epochs = iterations // len(dataloader_sim) + 1
 
         # The training loop
-        total_iter = 0
+        # total_iter = 0
         terminate_fit = False
         with tqdm(total=pbar_total) as pbar:
             for epoch in range(epochs):
@@ -889,19 +977,18 @@ class GradientDescentFitter(ParamFitter):
                             
                     if iterations is not None:
                         if total_iter % save_freq == 0:
-                            with open(f'fit_result/{self.test_name}/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
-                                pickle.dump(self.training_history, f_history)
+                            self.save_checkpoint(total_iter)
 
                             if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
                                 os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
 
                     total_iter += 1
+                    self.total_iter = total_iter
                     pbar.update(1)
                     
-                    if iterations is not None:
-                        if total_iter >= iterations:
-                            with open(f'fit_result/{self.test_name}/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
-                                pickle.dump(self.training_history, f_history)
+                    if target_iter is not None:
+                        if total_iter >= target_iter:
+                            self.save_checkpoint(total_iter)
 
                             if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
                                 os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
@@ -912,8 +999,7 @@ class GradientDescentFitter(ParamFitter):
                             terminate_fit = True
                             break
 
-            with open(f'fit_result/{self.test_name}/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
-                pickle.dump(self.training_history, f_history)
+            self.save_checkpoint(total_iter)
 
             if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
                 os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')

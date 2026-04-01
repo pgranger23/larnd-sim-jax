@@ -56,6 +56,9 @@ def main(config):
     iterations = config.iterations
     max_nbatch = config.max_nbatch
 
+    if config.resume_from is not None and config.fit_type != "chain":
+        raise ValueError("--resume_from is only supported for fit_type=chain")
+
     if iterations is not None:
         if max_nbatch is None or iterations < max_nbatch or max_nbatch <= 0:
             max_nbatch = iterations
@@ -122,7 +125,8 @@ def main(config):
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 probabilistic_sim=config.probabilistic_sim,
-                                sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt, shuffle_seed=config.shuffle_seed)
+                                sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt, shuffle_seed=config.shuffle_seed,
+                                resume_from=config.resume_from)
     elif config.fit_type == "scan":
         param_fit = LikelihoodProfiler(relevant_params=param_list,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
@@ -195,6 +199,7 @@ def main(config):
             logger.warning("Falling back to jax.profiler.start_trace(profile_dir) for this JAX version")
             jax.profiler.start_trace(profile_dir)
             trace_started = True
+        jax.profiler.save_device_memory_profile("memory.prof")
 
     if config.read_target:
         param_fit.fit(tracks_dataloader_sim, config.input_file_tgt, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
@@ -324,7 +329,7 @@ if __name__ == '__main__':
     parser.add_argument('--profile', default=False, action='store_true', help='Should run some xprof execution profiling')
     parser.add_argument('--no_chop', default=False, action='store_true', help='Disable chopping in data loading')
     parser.add_argument('--no_pad', default=False, action='store_true', help='Disable padding in data loading')
-
+    parser.add_argument("--resume_from", dest="resume_from", default=None, type=str, help="Resume chain fit from a saved history_iter*.pkl checkpoint")
 
     try:
         args = parser.parse_args()
