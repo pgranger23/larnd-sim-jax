@@ -1,10 +1,7 @@
 import h5py
 import numpy as np
 from numpy.lib import recfunctions as rfn
-import random
 import logging
-from typing import List, Union, Tuple
-from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -226,11 +223,11 @@ class TracksDataset:
             trajectory_row_indices = [trajectory_row_indices[idx] for idx in rnd_idx]
 
         ##################################
+        self.trajectory_row_indices = trajectory_row_indices
 
         if max_batch_len is not None:
             # If not already computed, compute per-trajectory lengths
             traj_len = np.array([self.tracks_struct[rows]['dx'].sum() for rows in trajectory_row_indices])
-            self.trajectory_row_indices = trajectory_row_indices
 
             # Filter out trajectories longer than max_batch_len upfront
             valid_traj_mask = traj_len <= max_batch_len
@@ -424,7 +421,7 @@ class TgtTracksDataset:
                 continue
 
             key_ids = np.unique(self._pack_evt_trk_ids(keys['eventID'], keys['trackID']))
-            row_idx = self._rows_for_key_ids(key_ids)  # helper function for your current searchsorted logic
+            row_idx = self._rows_for_key_ids(key_ids) 
             self.batch_row_indices.append(row_idx)
 
             if row_idx.size == 0:
@@ -479,10 +476,19 @@ class TgtTracksDataset:
                 f"extra_sample={self._format_key_pairs_from_ids(extra)}"
             )
             raise ValueError(msg)
-        
+    
     def _rows_for_key_ids(self, key_ids):
         left = np.searchsorted(self._target_unique_key_ids, key_ids, side='left')
         right = np.searchsorted(self._target_unique_key_ids, key_ids, side='right')
+
+        missing_mask = left == right
+        if missing_mask.any():
+            missing_key_ids = key_ids[missing_mask]
+            pairs = self._format_key_pairs_from_ids(missing_key_ids, max_items=16)
+            raise ValueError(
+                f"{missing_mask.sum()} of {len(key_ids)} sim key(s) are absent from the target file. "
+                f"Missing (eventID, trackID) sample: {pairs}"
+            )
 
         chunks = []
         for l, r in zip(left, right):

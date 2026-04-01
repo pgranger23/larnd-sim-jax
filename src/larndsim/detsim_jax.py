@@ -12,7 +12,6 @@ from jax.scipy.stats import norm
 from functools import partial
 from larndsim.consts_jax import get_vdrift
 from jax.scipy.special import erfc, erf
-import jax
 
 import logging
 
