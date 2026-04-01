@@ -163,30 +163,39 @@ def remove_noise_from_params(params):
 #         sigma = (ranges[key]['up'] - ranges[key]['down']) / 2.0
 #         return (val - nom) / sigma
 
-# sigmoid parameter normalization mapping for all parameters, with hard min/max bounds from ranges.py and nominal value at sigmoid(0)
-def map_norm_to_phys(val, key):
-    """Map an unconstrained (normalised) value to physical space via sigmoid.
+# Parameter normalization mappings.
+def map_norm_to_phys(val, key, scheme="sigmoid", scale=1.0):
+    if scheme == "sigmoid":
+        low, high = ranges[key]['min'], ranges[key]['max']
+        return low + (high - low) * jax.nn.sigmoid(scale * val)
 
-    Physical = low + (high - low) * sigmoid(val)
+    if scheme == "exp_log":
+        nom = ranges[key]['nom']
+        if nom <= 0:
+            raise ValueError(f"exp_log normalization requires positive nominal value for '{key}', got {nom}")
+        return nom * jnp.exp(scale * val)
 
-    This keeps the physical parameter strictly inside [low, high] for any
-    finite *val*, making boundary handling implicit rather than explicit.
-    """
-    low, high = ranges[key]['min'], ranges[key]['max']
-    return low + (high - low) * jax.nn.sigmoid(val)
+    raise ValueError(f"Unsupported normalization scheme in map_norm_to_phys: {scheme}")
 
-def map_phys_to_norm(val, key):
-    """Inverse of :func:`map_norm_to_phys` — map a physical value to unconstrained space.
 
-    norm = logit((val - low) / (high - low))
+def map_phys_to_norm(val, key, scheme="sigmoid", scale=1.0):
+    if scale <= 0:
+        raise ValueError(f"Normalization scale must be > 0 for scheme '{scheme}', got {scale}")
 
-    Useful for initialising the optimiser from a known physical starting point.
-    The fraction is clamped to (eps, 1-eps) to avoid infinite results at the boundaries.
-    """
-    low, high = ranges[key]['min'], ranges[key]['max']
-    eps = jnp.finfo(jnp.float32).eps
-    frac = jnp.clip((val - low) / (high - low), eps, 1.0 - eps)
-    return jnp.log(frac / (1.0 - frac))
+    if scheme == "sigmoid":
+        low, high = ranges[key]['min'], ranges[key]['max']
+        eps = jnp.finfo(jnp.float32).eps
+        frac = jnp.clip((val - low) / (high - low), eps, 1.0 - eps)
+        return jnp.log(frac / (1.0 - frac)) / scale
+
+    if scheme == "exp_log":
+        nom = ranges[key]['nom']
+        if nom <= 0:
+            raise ValueError(f"exp_log normalization requires positive nominal value for '{key}', got {nom}")
+        eps = jnp.finfo(jnp.float32).tiny
+        return jnp.log(jnp.maximum(val, eps) / nom) / scale
+
+    raise ValueError(f"Unsupported normalization scheme in map_phys_to_norm: {scheme}")
 
 class ParamFitter:
     def __init__(self, relevant_params, set_init_params, sim_track_fields, tgt_track_fields,
@@ -201,6 +210,9 @@ class ParamFitter:
                  mc_diff = False,
                  read_target=False,
                  probabilistic_sim=False,
+                 normalization_scheme="sigmoid",
+                 normalization_scale_sigmoid=1.0,
+                 normalization_scale_exp_log=1.0,
                  sz_mini_bt=1, shuffle_bt=False, shuffle_seed=42, resume_from=None,
                  config = {}):
 
@@ -215,6 +227,9 @@ class ParamFitter:
         self.readout_noise_target = readout_noise_target
         self.readout_noise_guess = readout_noise_guess
         self.vary_init = vary_init
+        self.normalization_scheme = normalization_scheme
+        self.normalization_scale_sigmoid = float(normalization_scale_sigmoid)
+        self.normalization_scale_exp_log = float(normalization_scale_exp_log)
         self.target_seed = target_seed
         self.target_fixed_range = target_fixed_range
         self.diffusion_in_current_sim = diffusion_in_current_sim
@@ -236,6 +251,16 @@ class ParamFitter:
         self.sim_track_fields = sim_track_fields
         self.tgt_track_fields = tgt_track_fields
 
+        if self.normalization_scheme not in ("sigmoid", "exp_log", "divide"):
+            raise ValueError(
+                f"Unknown normalization_scheme '{self.normalization_scheme}'. "
+                "Use one of: sigmoid, exp_log, divide"
+            )
+
+        if self.normalization_scale_sigmoid <= 0:
+            raise ValueError(f"normalization_scale_sigmoid must be > 0, got {self.normalization_scale_sigmoid}")
+        if self.normalization_scale_exp_log <= 0:
+            raise ValueError(f"normalization_scale_exp_log must be > 0, got {self.normalization_scale_exp_log}")
         if 'eventID' in self.sim_track_fields:
             self.evt_id = 'eventID'
         else:
@@ -342,6 +367,13 @@ class ParamFitter:
         if keep_in_memory:
             self.targets = {}
 
+    def _norm_scale_for_scheme(self):
+        if self.normalization_scheme == "sigmoid":
+            return self.normalization_scale_sigmoid
+        if self.normalization_scheme == "exp_log":
+            return self.normalization_scale_exp_log
+        return 1.0
+
     def setup_params(self):
         Params = build_params_class(self.relevant_params_list)
         ref_params = load_detector_properties(Params, self.detector_props, self.pixel_layouts)
@@ -382,9 +414,16 @@ class ParamFitter:
         if self.vary_init:
             logger.info("Running with random initial guess")
             for param in self.relevant_params_list:
-                # based on the sigmoid mapping, the norm_val of 0 corresponds to the nominal value, and norm_val of ±3 corresponds to values close to the min/max bounds, so we sample in a wider range to allow for more variation in the initial parameters
-                norm_val = np.random.uniform(low=-3.0, high=3.0)
-                init_val = float(map_norm_to_phys(norm_val, param))
+                if self.normalization_scheme == "divide":
+                    init_val = float(np.random.uniform(low=ranges[param]['down'], high=ranges[param]['up']))
+                    norm_val = 1.0
+                elif self.normalization_scheme == "exp_log":
+                    norm_val = np.random.uniform(low=-1.0, high=1.0)
+                    init_val = float(map_norm_to_phys(norm_val, param, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme()))
+                else:
+                    # For sigmoid, ±3 is close to bounds but avoids hard saturation.
+                    norm_val = np.random.uniform(low=-3.0, high=3.0)
+                    init_val = float(map_norm_to_phys(norm_val, param, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme()))
                 initial_params[param] = init_val
                 logger.info(f"vary_init: {param} = {init_val:.4f} (norm={norm_val:.3f})")
 
@@ -401,14 +440,13 @@ class ParamFitter:
         self.ref_params = ref_params
 
         self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
-        # self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
-        # start in the middle of the range, to avoid starting with zero gradients for sigmoid mapping, ignoring the yaml specified initial params
-        # self.norm_params = ref_params.replace(**{key: 0. for key in self.relevant_params_list})
-        # start at the yaml specified initial params, but mapped to norm space for sigmoid mapping (this is the default)
-        self.norm_params = ref_params.replace(**{
-            key: float(map_phys_to_norm(getattr(self.current_params, key), key))
-            for key in self.relevant_params_list
-        })
+        if self.normalization_scheme == "divide":
+            self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
+        else:
+            self.norm_params = ref_params.replace(**{
+                key: float(map_phys_to_norm(getattr(self.current_params, key), key, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme()))
+                for key in self.relevant_params_list
+            })
 
         #Only do it now to not inpact current_params (ref_params?)
         #FIXME It's a problem if the noise parameters are to be fitted
@@ -419,12 +457,17 @@ class ParamFitter:
             self.norm_params = remove_noise_from_params(self.norm_params)
 
     def update_params(self):
-        new_physical_params = {
-            key: map_norm_to_phys(getattr(self.norm_params, key), key)
-            for key in self.relevant_params_list
-        }
+        if self.normalization_scheme == "divide":
+            new_physical_params = {
+                key: getattr(self.norm_params, key) * getattr(self.params_normalization, key)
+                for key in self.relevant_params_list
+            }
+        else:
+            new_physical_params = {
+                key: map_norm_to_phys(getattr(self.norm_params, key), key, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme())
+                for key in self.relevant_params_list
+            }
         self.current_params = self.ref_params.replace(**new_physical_params)
-        # self.current_params = self.norm_params.replace(**{key: getattr(self.norm_params, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list})
 
     def make_target_sim(self):
         np.random.seed(self.target_seed)
@@ -547,6 +590,12 @@ class ParamFitter:
 
         self.training_history = loaded
         self.total_iter = int(loaded.get('total_iter', 0))
+        ckpt_norm_scheme = loaded.get('normalization_scheme')
+        if ckpt_norm_scheme is not None and ckpt_norm_scheme != self.normalization_scheme:
+            raise ValueError(
+                f"Checkpoint normalization_scheme ({ckpt_norm_scheme}) does not match current setting "
+                f"({self.normalization_scheme})"
+            )
 
         norm_state = loaded.get('norm_params_state')
         current_state = loaded.get('current_params_state')
@@ -579,6 +628,9 @@ class ParamFitter:
         self.total_iter = int(total_iter)
         self.training_history['checkpoint_version'] = 1
         self.training_history['total_iter'] = self.total_iter
+        self.training_history['normalization_scheme'] = self.normalization_scheme
+        self.training_history['normalization_scale_sigmoid'] = self.normalization_scale_sigmoid
+        self.training_history['normalization_scale_exp_log'] = self.normalization_scale_exp_log
         self.training_history['norm_params_state'] = serialize_param_state(
             self.norm_params, self.relevant_params_list
         )
@@ -641,10 +693,16 @@ class ParamFitter:
         else:
             def loss_wrapper(norm_params_input):
                 # Map from unconstrained space to physical space internally
-                new_phys = {
-                    key: map_norm_to_phys(getattr(norm_params_input, key), key)
-                    for key in self.relevant_params_list
-                }
+                if self.normalization_scheme == "divide":
+                    new_phys = {
+                        key: getattr(norm_params_input, key) * getattr(self.params_normalization, key)
+                        for key in self.relevant_params_list
+                    }
+                else:
+                    new_phys = {
+                        key: map_norm_to_phys(getattr(norm_params_input, key), key, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme())
+                        for key in self.relevant_params_list
+                    }
                 physical_params = self.ref_params.replace(**new_phys)
                 prediction = self.sim_strategy.predict(physical_params, tracks, self.sim_track_fields, rngkey)
                 return self.loss_strategy.compute(physical_params, prediction, target_data)
@@ -700,9 +758,6 @@ class ParamFitter:
 
     def fit(self, *args, **kwargs):
         raise NotImplementedError("Fit method not implemented. Use a derived class")
-
-
-        
 
 class GradientDescentFitter(ParamFitter):
     def __init__(self, optimizer_fn="Adam", max_clip_norm_val=False, clip_from_range=False,
@@ -793,10 +848,6 @@ class GradientDescentFitter(ParamFitter):
         setattr(self, params, getattr(self, params).replace(**{key: getattr(getattr(self, params), key) + val for key, val in update.items()}))
 
     def process_grads(self, grads):
-        # REMOVE scaling by params_normalization. 
-        # With Sigmoid mapping, the gradient 'grads' is already the correct 
-        # derivative with respect to the unconstrained values.
-        
         # We extract only the relevant parameters to pass to the optimizer
         relevant_grads = extract_relevant_params(grads, self.relevant_params_list)
 
@@ -805,16 +856,20 @@ class GradientDescentFitter(ParamFitter):
             logger.warning("Got NaN gradients! Skipping update for this batch")
             return relevant_grads
 
+        if self.normalization_scheme == "divide":
+            relevant_grads = {
+                key: relevant_grads[key] * getattr(self.params_normalization, key)
+                for key in self.relevant_params_list
+            }
+
         # Update the optimizer state and get the updates for norm_params
         updates, self.opt_state = self.optimizer.update(relevant_grads, self.opt_state)
         
         # Apply the updates directly to the unconstrained norm_params
         self.apply_updates('norm_params', updates)
-        
-        # IMPORTANT: Disable manual range clipping. 
-        # The Sigmoid mapping in update_params() handles boundaries naturally.
-        # if self.clip_from_range:
-        #     self.clip_values_from_range()
+
+        if self.normalization_scheme == "divide" and self.clip_from_range:
+            self.clip_values_from_range()
 
         # Re-map unconstrained values to physical values for the next simulation step
         self.update_params()

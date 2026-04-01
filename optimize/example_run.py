@@ -125,6 +125,9 @@ def main(config):
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 probabilistic_sim=config.probabilistic_sim,
+                                normalization_scheme=config.normalization_scheme,
+                                normalization_scale_sigmoid=config.normalization_scale_sigmoid,
+                                normalization_scale_exp_log=config.normalization_scale_exp_log,
                                 sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt, shuffle_seed=config.shuffle_seed,
                                 resume_from=config.resume_from)
     elif config.fit_type == "scan":
@@ -141,7 +144,10 @@ def main(config):
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
-                                scan_tgt_nom=config.scan_tgt_nom, probabilistic_sim=config.probabilistic_sim)
+                                scan_tgt_nom=config.scan_tgt_nom, probabilistic_sim=config.probabilistic_sim,
+                                normalization_scheme=config.normalization_scheme,
+                                normalization_scale_sigmoid=config.normalization_scale_sigmoid,
+                                normalization_scale_exp_log=config.normalization_scale_exp_log)
     elif config.fit_type == "minuit":
         param_fit = MinuitFitter(relevant_params=param_list,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
@@ -156,7 +162,10 @@ def main(config):
                                 mc_diff=config.mc_diff,
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
-                                minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits, probabilistic_sim=config.probabilistic_sim)
+                                minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits, probabilistic_sim=config.probabilistic_sim,
+                                normalization_scheme=config.normalization_scheme,
+                                normalization_scale_sigmoid=config.normalization_scale_sigmoid,
+                                normalization_scale_exp_log=config.normalization_scale_exp_log)
 
     elif config.fit_type == "hess":
         param_fit = HessianCalculator(relevant_params=param_list, set_init_params=config.set_init_params,
@@ -173,6 +182,9 @@ def main(config):
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 probabilistic_sim=config.probabilistic_sim,
+                                normalization_scheme=config.normalization_scheme,
+                                normalization_scale_sigmoid=config.normalization_scale_sigmoid,
+                                normalization_scale_exp_log=config.normalization_scale_exp_log,
                                 compute_target_hessian=True)
 
     else:
@@ -326,6 +338,12 @@ if __name__ == '__main__':
     parser.add_argument('--probabilistic_sim', '--probabilistic-sim', default=False, action="store_true", help='Use probabilistic sim')
     parser.add_argument('--shuffle_bt', default=False, action="store_true", help='shuffle the batch order within an epoch')
     parser.add_argument('--sz_mini_bt', type=int, default=1, help='Number of mini-batch for one update')
+    parser.add_argument('--normalization_scheme', type=str, default='sigmoid', choices=['sigmoid', 'exp_log', 'divide'],
+                        help='Parameter normalization scheme used during fitting')
+    parser.add_argument('--normalization_scale_sigmoid', type=float, default=1.0,
+                        help='Sigmoid normalization slope scale (<1 makes mapping flatter)')
+    parser.add_argument('--normalization_scale_exp_log', type=float, default=1.0,
+                        help='exp_log normalization slope scale (<1 makes mapping flatter in norm space)')
     parser.add_argument('--profile', default=False, action='store_true', help='Should run some xprof execution profiling')
     parser.add_argument('--no_chop', default=False, action='store_true', help='Disable chopping in data loading')
     parser.add_argument('--no_pad', default=False, action='store_true', help='Disable padding in data loading')
