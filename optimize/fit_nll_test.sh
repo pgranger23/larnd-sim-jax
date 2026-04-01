@@ -49,7 +49,7 @@ if [ "$LUT" = TRUE ]; then
         --test_name fit_nll \
         --seed ${TARGET_SEED} \
         --optimizer_fn Adam \
-        --random_nevents \
+        --random_ntrack \
         --iterations 100 \
         --max_batch_len ${BATCH_SIZE} \
         --lr_scheduler exponential_decay \
@@ -84,7 +84,7 @@ else
         --test_name fit_nll \
         --seed ${TARGET_SEED} \
         --optimizer_fn Adam \
-        --random_nevents \
+        --random_ntrack \
         --iterations ${ITERATIONS} \
         --max_batch_len ${BATCH_SIZE} \
         --lr_scheduler exponential_decay \

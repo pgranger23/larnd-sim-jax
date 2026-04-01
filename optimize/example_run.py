@@ -12,7 +12,7 @@ import cProfile
 import jax
 
 from .fit_params import GradientDescentFitter, LikelihoodProfiler, MinuitFitter, HessianCalculator
-from .dataio import TgtTracksDataset, TracksDataset, DataLoader
+from .dataio import TracksDataset, DataLoader
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -57,11 +57,11 @@ def main(config):
     max_nbatch = config.max_nbatch
 
     if iterations is not None:
-        if max_nbatch is None or iterations < max_nbatch or max_nbatch <= 0:
+        if max_nbatch is None or iterations < max_nbatch or max_nbatch < 0:
             max_nbatch = iterations
 
-    dataset_sim = TracksDataset(filename=config.input_file_sim, nevents=config.data_sz, max_nbatch=max_nbatch, random_nevents=config.random_nevents, data_seed=config.data_seed,
-                            track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, chopped=(not config.no_chop), pad=(not config.no_pad), electron_sampling_resolution=config.electron_sampling_resolution, live_selection=config.live_selection)
+    dataset_sim = TracksDataset(filename=config.input_file_sim, ntrack=config.data_sz, max_nbatch=max_nbatch, seed=config.data_seed, random_ntrack=config.random_ntrack, 
+                            track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, electron_sampling_resolution=config.electron_sampling_resolution, live_selection=config.live_selection)
 
     if ".np" in config.input_file_tgt:
         if not config.read_target:
@@ -72,13 +72,12 @@ def main(config):
             logger.warning("read_target is activated but target is provided as a simulation input. Changing read_target to FALSE")
             config.read_target = False
     if not config.read_target:
-        # Get the same events for target
-
-        dataset_target = TgtTracksDataset(filename=config.input_file_tgt, dataset_sim = dataset_sim, chopped=(not config.no_chop), pad=(not config.no_pad), electron_sampling_resolution=config.electron_sampling_resolution, print_input=config.print_input)
+        dataset_target = TracksDataset(filename=config.input_file_tgt, ntrack=config.data_sz, max_nbatch=max_nbatch, seed=config.data_seed, random_ntrack=config.random_ntrack,
+                                track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, electron_sampling_resolution=config.electron_sampling_resolution, live_selection=config.live_selection)
 
         # check if the track in sim and target are consistent
         if len(dataset_sim) != len(dataset_target):
-            raise Exception("target and sim inputs are different in size.")
+            raise Exception("target and sim inpputs are different in size.")
 
     batch_sz = config.batch_sz
     if config.max_batch_len is not None and batch_sz != 1:
@@ -86,6 +85,7 @@ def main(config):
         batch_sz = 1
 
     tracks_dataloader_sim = DataLoader(dataset_sim,
+                                  shuffle=config.data_shuffle, 
                                   batch_size=batch_sz)
     sim_track_fields = dataset_sim.get_track_fields()
     tgt_track_fields = dataset_sim.get_track_fields()
@@ -93,11 +93,12 @@ def main(config):
     if not config.read_target:
         tgt_track_fields = dataset_target.get_track_fields()
         tracks_dataloader_target = DataLoader(dataset_target,
+                                      shuffle=config.data_shuffle,
                                       batch_size=batch_sz)
 
         # check if tracks_dataloader_sim and tracks_dataloader_target have the same size
         if len(tracks_dataloader_sim) != len(tracks_dataloader_target):
-            raise Exception("target and sim inputs are different in size.")
+            raise Exception("target and sim inpputs are different in size.")
 
     # For readout noise: no_noise overrides if explicitly set to True. Otherwise, turn on noise
     # individually for target and guess
@@ -122,7 +123,7 @@ def main(config):
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 probabilistic_sim=config.probabilistic_sim,
-                                sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt, shuffle_seed=config.shuffle_seed)
+                                sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt)
     elif config.fit_type == "scan":
         param_fit = LikelihoodProfiler(relevant_params=param_list,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
@@ -176,25 +177,12 @@ def main(config):
 
     # with cProfile.Profile() as pr:
 
-    trace_started = False
     if config.profile:
         profile_dir = "./profiling/"
         logger.info(f"Profiling execution. Output in {profile_dir}")
-        profile_options_cls = getattr(jax.profiler, "ProfileOptions", None)
-        try:
-            if profile_options_cls is not None:
-                options = profile_options_cls()
-                options.host_tracer_level = 2
-                jax.profiler.start_trace(profile_dir, profiler_options=options)
-            else:
-                logger.warning("jax.profiler.ProfileOptions not available; using default start_trace settings")
-                jax.profiler.start_trace(profile_dir)
-            trace_started = True
-        except TypeError:
-            # Older/newer JAX variants may accept different start_trace kwargs.
-            logger.warning("Falling back to jax.profiler.start_trace(profile_dir) for this JAX version")
-            jax.profiler.start_trace(profile_dir)
-            trace_started = True
+        options = jax.profiler.ProfileOptions()
+        options.host_tracer_level = 2
+        jax.profiler.start_trace(profile_dir, profiler_options=options)
 
     if config.read_target:
         param_fit.fit(tracks_dataloader_sim, config.input_file_tgt, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
@@ -202,7 +190,7 @@ def main(config):
         param_fit.fit(tracks_dataloader_sim, tracks_dataloader_target, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
 
     
-    if config.profile and trace_started:
+    if config.profile:
         logger.info("Ending profiling")
         jax.profiler.stop_trace()
 
@@ -236,8 +224,6 @@ if __name__ == '__main__':
                         help="Random seed for target construction")
     parser.add_argument("--data_seed", dest="data_seed", default=3, type=int,
                         help="Random seed for data picking if not using the whole set")
-    parser.add_argument("--shuffle_seed", dest="shuffle_seed", default=42, type=int,
-                        help="Random seed for shuffling the batch order within an epoch")
     parser.add_argument("--vary-init", dest="vary_init", default=False, action="store_true",
                         help="Randomly sample initial guess (vs starting at nominal value)")
     parser.add_argument("--data_sz", dest="data_sz", default=None, type=int,
@@ -248,10 +234,12 @@ if __name__ == '__main__':
                         help="Flag to turn off readout noise (just target, guess has noise)")
     parser.add_argument("--no-noise-guess", dest="no_noise_guess", default=False, action="store_true",
                         help="Flag to turn off readout noise (just guess, target has noise)")
+    parser.add_argument("--data_shuffle", dest="data_shuffle", default=False, action="store_true",
+                        help="Flag of data shuffling")
     parser.add_argument("--save_freq", dest="save_freq", default=10, type=int,
                         help="Save frequency of the result")
-    parser.add_argument("--random_nevents", dest="random_nevents", default=False, action="store_true",
-                        help="Flag of whether sampling the events randomly or sequentially")
+    parser.add_argument("--random_ntrack", dest="random_ntrack", default=False, action="store_true",
+                        help="Flag of whether sampling the tracks randomly or sequentially")
     parser.add_argument("--track_len_sel", dest="track_len_sel", default=2., type=float,
                         help="Track selection requirement on track length.")
     parser.add_argument("--max_abs_costheta_sel", dest="max_abs_costheta_sel", default=0.966, type=float,
@@ -322,8 +310,6 @@ if __name__ == '__main__':
     parser.add_argument('--shuffle_bt', default=False, action="store_true", help='shuffle the batch order within an epoch')
     parser.add_argument('--sz_mini_bt', type=int, default=1, help='Number of mini-batch for one update')
     parser.add_argument('--profile', default=False, action='store_true', help='Should run some xprof execution profiling')
-    parser.add_argument('--no_chop', default=False, action='store_true', help='Disable chopping in data loading')
-    parser.add_argument('--no_pad', default=False, action='store_true', help='Disable padding in data loading')
 
 
     try:

@@ -22,7 +22,7 @@ import jax
 from tqdm import tqdm
 from numpy.lib import recfunctions as rfn
 from larndsim.sim_jax import pad_size
-from .dataio import chop_tracks
+from .dataio import chop_tracks, jax_from_structured
 import jax.numpy as jnp
 from larndsim.fee_jax import digitize
 from larndsim.losses_jax import adc2charge
