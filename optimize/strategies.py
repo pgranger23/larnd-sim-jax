@@ -9,38 +9,33 @@ import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
 
+
 @jax.jit
 def compute_occurrence_indices(ids):
     """
     Compute occurrence index (0, 1, 2, ...) for each ID in the array.
-    
+
     For sorted IDs, this counts how many times each ID has appeared so far.
     Example: [100, 100, 100, 200, 200, 300] -> [0, 1, 2, 0, 1, 0]
-    
+
     Args:
         ids: Array of IDs (should be sorted for meaningful results)
-    
+
     Returns:
         occurrence_indices: Array where each element is its occurrence count within its ID group
     """
-    # Detect where ID changes (boundaries between groups)
     id_changes = jnp.concatenate([
-        jnp.array([True]),  # First element is always a new group
+        jnp.array([True]), # First element is always a new group
         ids[1:] != ids[:-1]  # Compare consecutive elements
     ])
-    
-    # Cumulative sum creates increasing counter: [1, 2, 3, 4, 5, ...]
+
     cumsum = jnp.cumsum(jnp.ones_like(ids, dtype=jnp.int32))
-    
-    # At each ID boundary, record the cumsum value to use as reset point
     reset_values = jnp.where(id_changes, cumsum, 0)
-    
-    # Propagate the reset values forward (each group gets its starting cumsum)
-    reset_at_boundary = jnp.maximum.accumulate(reset_values)
-    
-    # Subtract to get 0-based index within each group
+
+    # JAX equivalent of np.maximum.accumulate
+    reset_at_boundary = jax.lax.associative_scan(jnp.maximum, reset_values)
+
     occurrence_indices = cumsum - reset_at_boundary
-    
     return occurrence_indices
 
 def pad_to_closest_multiple(x, dims_to_pad=None, multiple=128, pad_value=0, pad_front=False):

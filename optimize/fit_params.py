@@ -110,6 +110,52 @@ def remove_noise_from_params(params):
     noise_params = ('RESET_NOISE_CHARGE', 'UNCORRELATED_NOISE_CHARGE')
     return params.replace(**{key: 0. for key in noise_params})
 
+
+# log/exp mapping for positive-only parameters, with nominal value at exp(0) and no hard upper bound (can be extended to softplus if needed); affine mapping for real-valued parameters (shift_x/y/z), with nominal value at 0 and sigma = (up - down) / 2 from ranges.py
+# def map_norm_to_phys(val, key):
+#     """Map unconstrained norm value to physical space.
+
+#     For positive-only parameters:
+#         phys = nom * exp(val)
+#         - val=0  → phys=nom  (starts at nominal)
+#         - Jacobian = nom * exp(val) = phys  (uniform in log space, never zero)
+#         - No upper hard bound, but physically motivated params rarely need it.
+#           If hard upper bound is required, use softplus variant below.
+
+#     For real-valued parameters (shift_x/y/z):
+#         phys = nom + sigma * val
+#         - val=0  → phys=nom
+#         - Jacobian = sigma  (constant, no compression anywhere)
+#         - sigma = (up - down) / 2 from ranges.py
+#     """
+#     ptype = param_type.get(key, 'positive')
+
+#     if ptype == 'positive':
+#         nom = ranges[key]['nom']
+#         return nom * jnp.exp(val)
+
+#     else:  # 'real'
+#         nom = ranges[key]['nom']
+#         sigma = (ranges[key]['up'] - ranges[key]['down']) / 2.0
+#         return nom + sigma * val
+
+
+# def map_phys_to_norm(val, key):
+#     """Inverse of map_norm_to_phys — initialise norm from a known physical value."""
+#     ptype = param_type.get(key, 'positive')
+
+#     if ptype == 'positive':
+#         nom = ranges[key]['nom']
+#         # Guard against log(0) if val is at the min boundary
+#         val = jnp.maximum(val, jnp.finfo(jnp.float32).tiny)
+#         return jnp.log(val / nom)
+
+#     else:  # 'real'
+#         nom = ranges[key]['nom']
+#         sigma = (ranges[key]['up'] - ranges[key]['down']) / 2.0
+#         return (val - nom) / sigma
+
+# sigmoid parameter normalization mapping for all parameters, with hard min/max bounds from ranges.py and nominal value at sigmoid(0)
 def map_norm_to_phys(val, key):
     """Map an unconstrained (normalised) value to physical space via sigmoid.
 
@@ -147,7 +193,7 @@ class ParamFitter:
                  mc_diff = False,
                  read_target=False,
                  probabilistic_sim=False,
-                 sz_mini_bt=1, shuffle_bt=False,
+                 sz_mini_bt=1, shuffle_bt=False, shuffle_seed=42,
                  config = {}):
 
         self.read_target = read_target
@@ -175,15 +221,14 @@ class ParamFitter:
         self.probabilistic_sim = probabilistic_sim
         self.sz_mini_bt = sz_mini_bt
         self.shuffle_bt = shuffle_bt
-
+        self.shuffle_seed = shuffle_seed
         self.sim_track_fields = sim_track_fields
         self.tgt_track_fields = tgt_track_fields
+
         if 'eventID' in self.sim_track_fields:
             self.evt_id = 'eventID'
-            self.trj_id = 'trackID'
         else:
             self.evt_id = 'event_id'
-            self.trj_id = 'traj_id'
 
         if type(relevant_params) == dict:
             self.relevant_params_list = list(relevant_params.keys())
@@ -326,9 +371,11 @@ class ParamFitter:
         if self.vary_init:
             logger.info("Running with random initial guess")
             for param in self.relevant_params_list:
-                init_val = np.random.uniform(low=ranges[param]['down'], 
-                                            high=ranges[param]['up'])
+                # based on the sigmoid mapping, the norm_val of 0 corresponds to the nominal value, and norm_val of ±3 corresponds to values close to the min/max bounds, so we sample in a wider range to allow for more variation in the initial parameters
+                norm_val = np.random.uniform(low=-3.0, high=3.0)
+                init_val = float(map_norm_to_phys(norm_val, param))
                 initial_params[param] = init_val
+                logger.info(f"vary_init: {param} = {init_val:.4f} (norm={norm_val:.3f})")
 
         elif len(self.set_init_params) > 0:
             if len(self.set_init_params) % 2 != 0:
@@ -344,7 +391,13 @@ class ParamFitter:
 
         self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
         # self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
+        # start in the middle of the range, to avoid starting with zero gradients for sigmoid mapping, ignoring the yaml specified initial params
         self.norm_params = ref_params.replace(**{key: 0. for key in self.relevant_params_list})
+        # start at the yaml specified initial params, but mapped to norm space for sigmoid mapping (this is the default)
+        # self.norm_params = ref_params.replace(**{
+        #     key: float(map_phys_to_norm(getattr(self.current_params, key), key))
+        #     for key in self.relevant_params_list
+        # })
 
         #Only do it now to not inpact current_params (ref_params?)
         #FIXME It's a problem if the noise parameters are to be fitted
@@ -418,7 +471,7 @@ class ParamFitter:
                 else:
                     ref_Q = adc2charge(ref_adcs, self.current_params)
     
-                # switch x and z
+                # switch x and z, to make z the drift
                 # as x is the drift in data, and z is the drift in sim
                 ref_pixel_x = loaded['z'][mask]
                 ref_pixel_y = loaded['y'][mask]
@@ -569,7 +622,7 @@ class ParamFitter:
                 if not self.read_target:
                     self.training_history[param+'_target'].append(getattr(self.target_params, param))
             if len(self.training_history[param+"_iter"]) == 0:
-                self.training_history[param+"_iter"].append(getattr(self.current_params, param))
+                self.training_history[param+"_iter"].append(float(map_norm_to_phys(0., param)))
         if not self.read_target:
             for param in self.shift_no_fit:
                 if len(self.training_history[param+'_target']) == 0:
@@ -725,7 +778,6 @@ class GradientDescentFitter(ParamFitter):
             if len(dataloader_sim) != len(target):
                 raise Exception("Sim and target inputs do not match in size. Panic.")
 
-
         if iterations is not None:
             epochs = iterations // len(dataloader_sim) + 1
 
@@ -737,12 +789,12 @@ class GradientDescentFitter(ParamFitter):
                 if terminate_fit:
                     break
                 logger.info(f"epoch {epoch}")
-                # if epoch == 2: libcudart.cudaProfilerStart()
 
                 # shuffle batches
                 indices = np.arange(len(dataloader_sim))
                 if self.shuffle_bt:
-                    np.random.shuffle(indices)
+                    rng = np.random.default_rng(self.shuffle_seed + epoch)
+                    rng.shuffle(indices)
 
                 for i_bt, i in enumerate(indices):
                     start_time = time()
@@ -795,8 +847,9 @@ class GradientDescentFitter(ParamFitter):
                                     self.training_history[param + '_iter'].append(getattr(self.current_params, param).item())
 
                             self.training_history['size_history'].append(get_size_history())
-                            if 'cuda' in jax.devices():
-                                self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
+
+                            if jax.devices()[0].platform == 'gpu':
+                                self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
 
                             if iterations is not None:
                                 if total_iter % print_freq == 0:
@@ -826,8 +879,8 @@ class GradientDescentFitter(ParamFitter):
                                 self.training_history[param + '_iter'].append(getattr(self.current_params, param).item())
 
                         self.training_history['size_history'].append(get_size_history())
-                        if 'cuda' in jax.devices():
-                            self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
+                        if jax.devices()[0].platform == 'gpu':
+                            self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
 
                         if iterations is not None:
                             if total_iter % print_freq == 0:
@@ -948,8 +1001,8 @@ class LikelihoodProfiler(ParamFitter):
                             self.training_history[par + '_iter'].append(getattr(self.current_params, par).item())
 
                     self.training_history['size_history'].append(get_size_history())
-                    if 'cuda' in jax.devices():
-                        self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
+                    if jax.devices()[0].platform == 'gpu':
+                        self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
 
                 with open(f'fit_result/{self.test_name}/history_{param}_batch{i}_{self.out_label}.pkl', "wb") as f_history:
                     pickle.dump(self.training_history, f_history)
@@ -1003,8 +1056,8 @@ class MinuitFitter(ParamFitter):
             "valid": result.valid,
         }
         self.training_history["minuit_result"].append(result_dict)
-        if 'cuda' in jax.devices():
-            self.training_history['memory'].append(jax.devices('cuda')[0].memory_stats())
+        if jax.devices()[0].platform == 'gpu':
+            self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
 
     def fit(self, dataloader_sim, target, **kwargs):
         self.prepare_fit()

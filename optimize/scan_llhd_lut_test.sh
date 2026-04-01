@@ -49,7 +49,7 @@ python3 -m optimize.example_run \
     --out_label scan_test${MAX_CLIP_NORM_VAL}_bt${BATCH_SIZE}_tgtsd${TARGET_SEED}_dtsd${DATA_SEED}_adam_${LOSS}_target_prob \
     --test_name scan_llhd \
     --seed ${TARGET_SEED} \
-    --random_ntrack \
+    --random_nevents \
     --iterations ${ITERATIONS} \
     --max_batch_len ${BATCH_SIZE} \
     --track_z_bound 28 \

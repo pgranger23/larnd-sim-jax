@@ -33,7 +33,7 @@ python3 -m optimize.example_run \
     --test_name fit_noise \
     --seed ${TARGET_SEED} \
     --optimizer_fn Adam \
-    --random_ntrack \
+    --random_nevents \
     --iterations ${ITERATIONS} \
     --max_batch_len ${BATCH_SIZE} \
     --track_z_bound 28 \
