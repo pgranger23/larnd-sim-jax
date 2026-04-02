@@ -44,6 +44,22 @@ def np_from_structured(tracks):
     tracks_np = rfn.structured_to_unstructured(tracks, copy=True, dtype=np.float32)
     return np.asarray(tracks_np, dtype=np.float32)
 
+def remap_event_ids_to_local(batch_arr, source_event_ids, batch_event_ids, fields):
+    evt_col = fields.index("eventID")
+    source_event_ids = np.asarray(source_event_ids, dtype=np.int64)
+    batch_event_ids = np.asarray(batch_event_ids, dtype=np.int64)
+
+    if source_event_ids.size == 0:
+        return batch_arr
+
+    local_event_ids = np.searchsorted(batch_event_ids, source_event_ids)
+    if np.any(local_event_ids >= batch_event_ids.size) or not np.array_equal(batch_event_ids[local_event_ids], source_event_ids):
+        missing = np.setdiff1d(np.unique(source_event_ids), batch_event_ids, assume_unique=False)
+        raise ValueError(f"Failed to remap eventID to local indices. Missing global eventID values: {missing[:16].tolist()}")
+
+    batch_arr[:, evt_col] = local_event_ids.astype(np.float32)
+    return batch_arr
+
 def chop_tracks(tracks, fields, precision=0.001):
     def split_track(track, nsteps, length, direction, i):
         new_tracks = track.reshape(1, track.shape[0]).repeat(nsteps, axis=0)
@@ -294,6 +310,21 @@ class TracksDataset:
             row_nsteps = np.maximum(np.ceil(dx_vals / electron_sampling_resolution), 1).astype(int)
             self.batch_nsteps.append(int(np.sum(row_nsteps)))
 
+        self.batch_row_keys = []
+        self.batch_event_global_ids = []
+        for batch_idxs in self.batch_traj_indices:
+            rows_list = [self.trajectory_row_indices[t] for t in batch_idxs]
+            if len(rows_list) == 0:
+                self.batch_row_keys.append(np.empty((0,), dtype=self.traj_keys.dtype))
+                self.batch_event_global_ids.append(np.empty((0,), dtype=np.int64))
+                continue
+
+            rows = np.concatenate(rows_list)
+            batch_keys = np.ascontiguousarray(np.unique(self.tracks_struct[rows][['eventID', 'trackID']]))
+            batch_event_ids = np.asarray(np.unique(batch_keys['eventID']), dtype=np.int64)
+            self.batch_row_keys.append(batch_keys)
+            self.batch_event_global_ids.append(batch_event_ids)
+
         self.max_batch_nsteps = int(max(self.batch_nsteps)) if len(self.batch_nsteps) > 0 else 0
 
         self.chopped = chopped
@@ -320,6 +351,7 @@ class TracksDataset:
         # select structured rows and convert to 2D float array
         selected_struct = self.tracks_struct[rows]
         batch_arr = np_from_structured(selected_struct)
+        batch_arr = remap_event_ids_to_local(batch_arr, selected_struct['eventID'], self.batch_event_global_ids[idx], self.track_fields)
 
         if self.chopped:
             batch_arr = chop_tracks(batch_arr, self.track_fields, precision=self.electron_sampling_resolution)
@@ -343,22 +375,14 @@ class TracksDataset:
     def get_track_fields(self):
         return self.track_fields
 
+    def get_batch_global_event_ids(self, idx=None):
+        if idx is None:
+            return self.batch_event_global_ids
+        return self.batch_event_global_ids[idx]
+
     def get_batch_row_keys(self):
         """Return row-level (eventID, trackID) keys for all rows used in batch idx."""
-
-        all_batch_keys = []
-
-        for idx in range(len(self.batch_traj_indices)):
-            traj_indices = self.batch_traj_indices[idx]
-            rows_list = [self.trajectory_row_indices[t] for t in traj_indices]
-            if len(rows_list) == 0:
-                return np.empty((0,), dtype=self.traj_keys.dtype)
-
-            rows = np.concatenate(rows_list)
-            batch_keys = np.ascontiguousarray(np.unique(self.tracks_struct[rows][['eventID', 'trackID']]))
-            all_batch_keys.append(batch_keys)
-
-        return all_batch_keys
+        return self.batch_row_keys
 
 class TgtTracksDataset:
     def __init__(self, filename, dataset_sim, swap_xz=True, chopped=True, pad=True, electron_sampling_resolution=0.001, print_input=False):
@@ -409,6 +433,7 @@ class TgtTracksDataset:
 
         # Precompute a small per-batch key list from dataset_sim (int)
         self.batch_keys = dataset_sim.get_batch_row_keys()
+        self.batch_event_global_ids = dataset_sim.get_batch_global_event_ids()
 
         self.batch_row_indices = []
         self.batch_nsteps = []
@@ -514,6 +539,7 @@ class TgtTracksDataset:
 
         selected_rows = self.tracks_struct[row_idx]
         batch_arr = np_from_structured(selected_rows)
+        batch_arr = remap_event_ids_to_local(batch_arr, selected_rows['eventID'], self.batch_event_global_ids[idx], self.tgt_track_fields)
 
         if self.chopped and batch_arr.size:
             batch_arr = chop_tracks(batch_arr, self.tgt_track_fields, precision=self.electron_sampling_resolution)
@@ -534,3 +560,8 @@ class TgtTracksDataset:
 
     def get_track_fields(self):
         return self.tgt_track_fields
+
+    def get_batch_global_event_ids(self, idx=None):
+        if idx is None:
+            return self.batch_event_global_ids
+        return self.batch_event_global_ids[idx]

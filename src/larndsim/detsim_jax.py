@@ -3,6 +3,7 @@ Module that calculates the current induced by edep-sim track segments
 on the pixels
 """
 
+import numpy as np
 import jax.numpy as jnp
 from jax.profiler import annotate_function
 from jax import jit, lax, random, debug
@@ -19,6 +20,136 @@ logging.basicConfig()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
 logger.info("DETSIM MODULE PARAMETERS")
+
+_INT64_MAX = np.iinfo(np.int64).max
+
+def _pixel_id_stride(params):
+    return int(params.n_pixels_x) * int(params.n_pixels_y) * int(params.tpc_borders.shape[0])
+
+def _bin_id_stride(params):
+    nbx = int(params.n_pixels_x) * int(params.nb_sampling_bins_per_pixel)
+    nby = int(params.n_pixels_y) * int(params.nb_sampling_bins_per_pixel)
+    return nbx * nby * int(params.tpc_borders.shape[0])
+
+def max_safe_event_id_for_pixel_packing(params):
+    stride = _pixel_id_stride(params)
+    return (_INT64_MAX - (stride - 1)) // stride
+
+def max_safe_event_id_for_bin_packing(params):
+    stride = _bin_id_stride(params)
+    return (_INT64_MAX - (stride - 1)) // stride
+
+def max_possible_pixel_id(params, max_event_id):
+    nx = int(params.n_pixels_x)
+    ny = int(params.n_pixels_y)
+    ntpc = int(params.tpc_borders.shape[0])
+    return ((int(max_event_id) * ntpc + (ntpc - 1)) * ny + (ny - 1)) * nx + (nx - 1)
+
+def max_possible_bin_id(params, max_event_id):
+    nbx = int(params.n_pixels_x) * int(params.nb_sampling_bins_per_pixel)
+    nby = int(params.n_pixels_y) * int(params.nb_sampling_bins_per_pixel)
+    ntpc = int(params.tpc_borders.shape[0])
+    return ((int(max_event_id) * ntpc + (ntpc - 1)) * nby + (nby - 1)) * nbx + (nbx - 1)
+
+def validate_event_ids_for_packing(params, event_ids, kind="pixel", context=""):
+    event_ids = np.asarray(event_ids, dtype=np.int64)
+    if event_ids.size == 0:
+        return
+
+    invalid_negative = event_ids < -1
+    if np.any(invalid_negative):
+        sample = np.unique(event_ids[invalid_negative])[:16].tolist()
+        raise ValueError(f"{context} found eventID values below -1: {sample}")
+
+    valid_mask = event_ids >= 0
+    if not np.any(valid_mask):
+        return
+
+    max_event_id = int(np.max(event_ids[valid_mask]))
+    if kind == "pixel":
+        max_safe_event_id = max_safe_event_id_for_pixel_packing(params)
+        max_possible_id = max_possible_pixel_id(params, max_event_id)
+    elif kind == "bin":
+        max_safe_event_id = max_safe_event_id_for_bin_packing(params)
+        max_possible_id = max_possible_bin_id(params, max_event_id)
+    else:
+        raise ValueError(f"Unknown packing kind '{kind}'")
+
+    if max_event_id > max_safe_event_id:
+        raise OverflowError(
+            f"{context} eventID {max_event_id} exceeds the int64-safe limit {max_safe_event_id} for {kind} packing"
+        )
+    if max_possible_id > _INT64_MAX:
+        raise OverflowError(
+            f"{context} maximum packed {kind} id {max_possible_id} exceeds int64 max {_INT64_MAX}"
+        )
+
+def validate_packed_ids_for_decoding(params, packed_ids, kind="pixel", context=""):
+    packed_ids = np.asarray(packed_ids, dtype=np.int64)
+    if packed_ids.size == 0:
+        return
+
+    invalid_negative = packed_ids < -1
+    if np.any(invalid_negative):
+        sample = np.unique(packed_ids[invalid_negative])[:16].tolist()
+        raise ValueError(f"{context} found packed ids below -1: {sample}")
+
+    valid_mask = packed_ids >= 0
+    if not np.any(valid_mask):
+        return
+
+    if kind == "pixel":
+        stride = _pixel_id_stride(params)
+        max_safe_event_id = max_safe_event_id_for_pixel_packing(params)
+    elif kind == "bin":
+        stride = _bin_id_stride(params)
+        max_safe_event_id = max_safe_event_id_for_bin_packing(params)
+    else:
+        raise ValueError(f"Unknown decoding kind '{kind}'")
+
+    event_ids = packed_ids[valid_mask] // stride
+    max_event_id = int(np.max(event_ids))
+    if max_event_id > max_safe_event_id:
+        raise OverflowError(
+            f"{context} decoded eventID {max_event_id} exceeds the int64-safe limit {max_safe_event_id} for {kind} packing"
+        )
+
+def validate_local_event_ids(event_ids, context=""):
+    """Validate that event IDs form a valid local namespace: exactly {-1} ∪ {0..N-1} with no gaps.
+
+    Args:
+        event_ids: array of event ID values (should be -1 for padding, 0..N-1 for valid events)
+        context: string prefix for error messages
+
+    Raises:
+        ValueError: if event IDs violate local namespace invariant
+    """
+    event_ids = np.asarray(event_ids, dtype=np.int64)
+    if event_ids.size == 0:
+        return
+
+    # Check no values below -1
+    invalid_negative = event_ids < -1
+    if np.any(invalid_negative):
+        sample = np.unique(event_ids[invalid_negative])[:16].tolist()
+        raise ValueError(f"{context} found eventID values below -1 (non-local namespace): {sample}")
+
+    # Extract unique non-padding event IDs
+    valid_mask = event_ids >= 0
+    if not np.any(valid_mask):
+        # All padding (-1) is valid
+        return
+
+    unique_valid_ids = np.unique(event_ids[valid_mask])
+    n_unique = len(unique_valid_ids)
+
+    # Check that unique IDs form contiguous range 0..N-1
+    expected_ids = np.arange(n_unique, dtype=np.int64)
+    if not np.array_equal(unique_valid_ids, expected_ids):
+        raise ValueError(
+            f"{context} eventID values do not form contiguous local namespace [0, {n_unique-1}]. "
+            f"Found unique IDs: {unique_valid_ids.tolist()}, expected: {expected_ids.tolist()}"
+        )
 
 
 @annotate_function

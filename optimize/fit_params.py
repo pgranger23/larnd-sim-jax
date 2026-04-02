@@ -10,6 +10,7 @@ from .ranges import ranges
 from larndsim.sim_jax import get_size_history
 from larndsim.losses_jax import mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge, nll_loss, llhd_loss #, sinkhorn_loss
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
+from larndsim.detsim_jax import validate_event_ids_for_packing, validate_local_event_ids
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
 import logging
@@ -581,6 +582,24 @@ class ParamFitter:
 
         return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id
 
+    def get_batch_global_event_ids(self, dataloader, batch_idx, selected_tracks=None):
+        dataset = getattr(dataloader, 'dataset', None)
+        if dataset is not None and hasattr(dataset, 'get_batch_global_event_ids'):
+            return jnp.asarray(dataset.get_batch_global_event_ids(batch_idx), dtype=jnp.int64)
+
+        if selected_tracks is None:
+            return jnp.empty((0,), dtype=jnp.int64)
+
+        evt_idx = self.sim_track_fields.index(self.evt_id)
+        return jnp.unique(selected_tracks[:, evt_idx]).astype(jnp.int64)
+
+    def validate_track_batch_event_ids(self, track_batch, track_fields, context):
+        evt_idx = track_fields.index(self.evt_id)
+        event_ids = np.asarray(track_batch[:, evt_idx], dtype=np.int64)
+        validate_local_event_ids(event_ids, context=context)
+        validate_event_ids_for_packing(self.current_params, event_ids, kind="pixel", context=context)
+        validate_event_ids_for_packing(self.current_params, event_ids, kind="bin", context=context)
+
     def load_checkpoint(self, checkpoint_path):
         with open(checkpoint_path, "rb") as f:
             loaded = pickle.load(f)
@@ -944,12 +963,14 @@ class GradientDescentFitter(ParamFitter):
 
                     # sim
                     selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+                    self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                    evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+                    evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
                     # target
                     if not self.read_target:
                         selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                        self.validate_track_batch_event_ids(selected_tracks_bt_tgt, self.tgt_track_fields, f"target batch {i}")
                         this_target = jax.device_put(selected_tracks_bt_tgt)
                     else:
                         this_target = target
@@ -1103,12 +1124,14 @@ class LikelihoodProfiler(ParamFitter):
 
             # sim
             selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+            self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
             selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-            evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+            evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
             # target
             if not self.read_target:
                 selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                self.validate_track_batch_event_ids(selected_tracks_bt_tgt, self.tgt_track_fields, f"target batch {i}")
                 this_target = jax.device_put(selected_tracks_bt_tgt)
             else:
                 this_target = target
@@ -1223,12 +1246,14 @@ class MinuitFitter(ParamFitter):
 
                 # sim
                 selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+                self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
                 selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+                evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
                 # target
                 if not self.read_target:
                     selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                    self.validate_track_batch_event_ids(selected_tracks_bt_tgt, self.tgt_track_fields, f"target batch {i}")
                     this_target = jax.device_put(selected_tracks_bt_tgt)
                 else:
                     this_target = target
@@ -1264,8 +1289,9 @@ class MinuitFitter(ParamFitter):
                 for i in range(len(dataloader_sim)):
                     # sim
                     selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+                    self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                    evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+                    evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
                     # target
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = get_target(self, i, evts_sim, target)
@@ -1283,8 +1309,9 @@ class MinuitFitter(ParamFitter):
                 for i in range(len(dataloader_sim)):
                     # sim
                     selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+                    self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                    evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+                    evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
                     # target
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = get_target(self, i, evts_sim, target)
@@ -1323,12 +1350,14 @@ class HessianCalculator(ParamFitter):
 
             # sim
             selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+            self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
             selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-            evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+            evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
             # target
             if not self.read_target:
                 selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                self.validate_track_batch_event_ids(selected_tracks_bt_tgt, self.tgt_track_fields, f"target batch {i}")
                 this_target = jax.device_put(selected_tracks_bt_tgt)
             else:
                 this_target = target
