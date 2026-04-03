@@ -14,3 +14,4 @@ target*/
 logs/
 /src/larndsim/version.py
 /.idea/
+tests/taylor/IGNORE/
