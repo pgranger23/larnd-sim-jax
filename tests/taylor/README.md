@@ -26,37 +26,41 @@ The Jacobian is computed via `jax.jacfwd` through this pipeline. The Hessian use
 
 | File | Description |
 |------|-------------|
-| `scan_utils.py` | Core library: `setup_params_and_tracks`, `compute_event_scan`, `compute_validity_range`, `save_results`/`load_results` |
-| `run_taylor_scan.py` | Standalone script: loops over parameters x events, computes J/H and perturbation scan, saves to pickle. For SLURM. |
-| `submit_taylor_scan.sh` | SLURM submission wrapper. Submit from repo root: `sbatch tests/taylor/submit_taylor_scan.sh` |
-| `plot_taylor_scan.ipynb` | Loads pickle results, plots per-parameter event grids and validity range summaries. No GPU needed. |
-
-## Configuration
-
-Edit the top of `run_taylor_scan.py` (or the equivalent notebook):
-
-- `PARAMS`: list of parameter names to scan (e.g. `['Ab', 'kb', 'eField', 'long_diff', 'tran_diff', 'lifetime']`)
-- `REL_DELTAS`: perturbation grid (e.g. `np.linspace(-0.5, 0.5, 21)`)
-- `INPUT_FILE`: track data file
-- `OUTPUT_FILE`: where to save results pickle
-
-In `plot_taylor_scan.ipynb`:
-
-- `THRESHOLDS`: list of ADC error thresholds for validity range (e.g. `[0.1, 0.5]`)
+| `scan_utils.py` | Core library: `setup_params_and_tracks`, `compute_event_scan`, `save_results` |
+| `run_taylor_scan.py` | Standalone script: loops over parameters x events for one input file. Accepts `--input_id`. |
+| `submit_taylor_scan.sh` | SLURM submission: `bash submit_taylor_scan.sh <id>` for one input, `bash submit_taylor_scan.sh all` for all 22 inputs. |
+| `plot_taylor_scan.ipynb` | Loads all `results/taylor_scan_*.pkl`, merges events, plots per-parameter grids and validity ranges. No GPU needed. |
+| `results/` | Output directory for pickle files (one per input file, gitignored) |
+| `logs/` | SLURM log files (gitignored) |
 
 ## Running
 
 ```bash
-# From repo root
-sbatch tests/taylor/submit_taylor_scan.sh
+# From repo root:
 
-# Monitor progress
-tail -f tests/taylor/logs/taylor_scan-<jobid>.out
+# Single input file
+bash tests/taylor/submit_taylor_scan.sh 0
 
-# Results saved incrementally to tests/taylor/taylor_scan_results.pkl
-# Plot results (no GPU needed)
+# All input files (submits 22 jobs)
+bash tests/taylor/submit_taylor_scan.sh all
+
+# Monitor
+tail -f tests/taylor/logs/taylor_scan_0-<jobid>.out
+
+# Plot (no GPU needed, loads from results/)
 jupyter notebook tests/taylor/plot_taylor_scan.ipynb
 ```
+
+## Configuration
+
+In `run_taylor_scan.py`:
+- `--input_id`: which `prepared_data/input_<id>.h5` to process
+- `--params`: list of parameters (default: Ab kb eField long_diff tran_diff lifetime)
+- `REL_DELTAS`: perturbation grid (edit in script)
+
+In `plot_taylor_scan.ipynb`:
+- `RESULTS_DIR`: path to results folder
+- `THRESHOLDS`: ADC error thresholds for validity range computation
 
 ## Key codebase dependency
 
