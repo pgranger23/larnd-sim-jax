@@ -10,46 +10,47 @@ from functools import partial
 import jax.scipy.special as jss
 import jax
 
+def _soft_max(x, lo, sharpness=100.0):
+    """Smooth approximation to jnp.maximum(x, lo).
+
+    Uses softplus: max(x, lo) ≈ lo + softplus((x - lo) * s) / s.
+    Unlike jnp.maximum, this is C∞ and supports higher-order differentiation.
+    """
+    return lo + jax.nn.softplus((x - lo) * sharpness) / sharpness
+
+
+def _soft_where(condition_val, true_val, false_val, sharpness=100.0):
+    """Smooth approximation to jnp.where(condition_val > 0, true_val, false_val).
+
+    Uses sigmoid blending instead of hard switching, enabling higher-order
+    differentiation without NaN.
+    """
+    w = jax.nn.sigmoid(condition_val * sharpness)
+    return w * true_val + (1 - w) * false_val
+
+
 def log_diff_ndtr(a, b):
     """
     Compute log(Φ(a) - Φ(b)) where Φ is standard normal CDF.
-    
-    Uses numerically stable formulation to avoid NaN in gradients.
-    The key issue: when a ≈ b, expm1(lb - la) can have numerical errors
-    causing -expm1() to be non-positive, leading to log(<=0) = NaN.
-    
-    Solution: Clip the argument to log() and add safety checks.
+
+    Uses numerically stable formulation with smooth clamping (softplus/sigmoid)
+    to support higher-order automatic differentiation without NaN.
     """
-    # 1. Physics: If a <= b, probability is 0 (log is -inf)
-    mask = a > b
-    
-    # 2. Get the log-CDFs
     la = jss.log_ndtr(a)
     lb = jss.log_ndtr(b)
-    
-    # 3. Compute the difference in log-space
-    # For numerical stability, we compute: log(exp(la) - exp(lb))
-    # = la + log(1 - exp(lb - la)) = la + log(-expm1(lb - la))
-    safe_diff = jnp.where(mask, lb - la, -1.0)  # -1.0 is dummy for invalid branch
-    
-    # 4. The problematic part: -expm1(safe_diff) should be positive,
-    # but can become negative/zero due to numerical errors when safe_diff ≈ 0
-    # Solution: Clip to a reasonable epsilon to prevent log(<=0)
-    # Using 1e-30 instead of 1e-45 to avoid underflow issues
-    eps = 1e-30
+
+    safe_diff = jnp.where(a > b, lb - la, -1.0)
+
     neg_expm1 = -jnp.expm1(safe_diff)
-    neg_expm1_safe = jnp.maximum(neg_expm1, eps)
-    
-    # 5. Additional safety: if the result would be extremely negative (< -100),
-    # clamp it to avoid gradient issues
+    eps = 1e-30
+    neg_expm1_safe = _soft_max(neg_expm1, eps, sharpness=1e10)
+
     log_term = jnp.log(neg_expm1_safe)
-    log_term_safe = jnp.maximum(log_term, -100.0)  # Prevent extreme values
-    
+    log_term_safe = _soft_max(log_term, -100.0, sharpness=10.0)
+
     log_prob = la + log_term_safe
-    
-    # 6. Return -1000 (effectively zero probability) where interval was invalid
-    # Using -1000 instead of -jnp.inf to avoid NaN in scan gradients
-    return jnp.where(mask, log_prob, -1000.0)
+
+    return _soft_where(a - b, log_prob, -1000.0, sharpness=1000.0)
 
 @annotate_function
 @jit
@@ -332,68 +333,54 @@ def get_adc_values(params, pixels_signals, noise_rng_key):
 
 def _find_one_hit_step(q_sum, prev_charges, previous_log_prob, sigma, threshold, interval, Nvalues):
     Nticks = q_sum.shape[0]
-    # We remove the sqrt(2) from the internal scaling because ndtr 
-    # effectively handles the erf-to-CDF conversion (argument is x/sigma)
-    z_scale = 1.0 / sigma 
-    
+    z_scale = 1.0 / sigma
+
     shifted_ticks = jnp.arange(Nticks - 1) + interval + 1
     shifted_ticks = jnp.clip(shifted_ticks, 0, Nticks - 1)
     q_sum_loc = q_sum - prev_charges[..., None]
 
-    # 1. Stable log-probability of a hit starting (Log-equivalent of 'guess')
+    # 1. Log-probability of a hit starting
     q_max_future = lax.cummax(q_sum_loc, axis=1)
     log_guess = log_diff_ndtr(
         (q_max_future[..., 1:] - threshold) * z_scale,
         (q_max_future[..., :-1] - threshold) * z_scale
     )
 
-    # 2. Stable log-probability of a hit being collected in the shifted window
+    # 2. Log-probability of a hit being collected in the shifted window
     log_prob_event = log_diff_ndtr(
         (q_sum_loc[..., shifted_ticks] - threshold) * z_scale,
         (q_sum_loc[..., :-1] - threshold) * z_scale
     )
-    # log-space equivalent of jnp.clip(p, 0, guess) is jnp.minimum(log_p, log_guess)
     log_prob_event = jnp.minimum(log_prob_event, log_guess)
-    log_prob_event = jnp.maximum(log_prob_event, -1000)
+    log_prob_event = _soft_max(log_prob_event, -1000.0, sharpness=1.0)
 
-    # Thresholding small probabilities in log-space (e.g., -50 is 1e-22)
-    # Use -1000 instead of -jnp.inf to avoid NaN in logsumexp gradient when all values are below threshold
-    # -1000 represents probability ~ exp(-1000) ~ 1e-434, effectively zero but gradients are well-defined
     esperance_value = q_sum[..., shifted_ticks] + threshold - 0.5 * (q_sum[..., 1:] + q_sum[..., :-1])
-    log_prob_event = jnp.where(esperance_value < threshold, -1000.0, log_prob_event)
+    log_prob_event = _soft_where(
+        esperance_value - threshold, log_prob_event, -1000.0, sharpness=10.0
+    )
 
-    # esperance_value = q_sum_loc[0, shifted_ticks]
-    # log_prob_event = jnp.where(q_sum_loc[..., shifted_ticks] < threshold, -1000.0, log_prob_event)
-
-
-    # jax.debug.print("log_prob_event={log_prob_event}", log_prob_event=log_prob_event)
-    # jax.debug.print("esperance_value={esperance_value}", esperance_value=esperance_value)
-    # 3. Aggregate Results (Multiplication -> Addition; Sum -> LogSumExp)
+    # 3. Aggregate Results
     log_prob_distrib = log_prob_event + previous_log_prob[:, None]
-    
-    # log P(hit | tick) = log(sum_paths exp(log_prob_distrib))
-    log_total_hit_dist_tick = jax.nn.logsumexp(log_prob_distrib, axis=0)    
-    # log P(any_hit | tick)
+    log_total_hit_dist_tick = jax.nn.logsumexp(log_prob_distrib, axis=0)
     log_total_dist_tick = jax.nn.logsumexp(log_guess + previous_log_prob[:, None], axis=0)
 
-    # 4. Path Selection logic in Log-Space
+    # 4. Path Selection
     next_q_sum = q_sum_loc[:, jnp.clip(shifted_ticks + 1, 0, Nticks - 1)]
     max_future_signal = lax.cummax(q_sum_loc, axis=1, reverse=True)
     future_hit_earliest_end = jnp.clip(shifted_ticks + interval + 1, 0, Nticks - 1)
-    
-    # 0.5 * (1 + erf(x)) is simply ndtr(x*sqrt(2))
-    log_future_hit_prob = jss.log_ndtr((max_future_signal[:, future_hit_earliest_end] - next_q_sum - threshold) * z_scale)
-    
-    # Selection metric: log(guess * future_prob * prev_prob)
+    log_future_hit_prob = jss.log_ndtr(
+        (max_future_signal[:, future_hit_earliest_end] - next_q_sum - threshold) * z_scale
+    )
     log_selection_prob = log_guess + log_future_hit_prob + previous_log_prob[:, None]
     log_total_sel_prob_tick = jax.nn.logsumexp(log_selection_prob, axis=0)
 
-    # 5. Construct State for Next Iteration
+    # 5. Construct State for Next Iteration (stop_gradient on discrete indices)
     _, top_k_ticks = lax.top_k(log_total_sel_prob_tick, k=Nvalues)
+    top_k_ticks = lax.stop_gradient(top_k_ticks)
     new_log_prob = log_total_dist_tick[top_k_ticks]
     best_path_next_ticks = jnp.clip(shifted_ticks[top_k_ticks] + 1, 0, Nticks - 1)
     charges_new = q_sum[best_path_next_ticks]
-    
+
     return (charges_new, new_log_prob), (log_total_hit_dist_tick, esperance_value)
 
 @partial(jit, static_argnums=(2))
