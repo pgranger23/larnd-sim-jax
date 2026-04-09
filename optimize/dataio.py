@@ -312,11 +312,13 @@ class TracksDataset:
 
         self.batch_row_keys = []
         self.batch_event_global_ids = []
+        self.batch_row_indices = []
         for batch_idxs in self.batch_traj_indices:
             rows_list = [self.trajectory_row_indices[t] for t in batch_idxs]
             if len(rows_list) == 0:
                 self.batch_row_keys.append(np.empty((0,), dtype=self.traj_keys.dtype))
                 self.batch_event_global_ids.append(np.empty((0,), dtype=np.int64))
+                self.batch_row_indices.append(np.empty((0,), dtype=np.int64))
                 continue
 
             rows = np.concatenate(rows_list)
@@ -324,6 +326,7 @@ class TracksDataset:
             batch_event_ids = np.asarray(np.unique(batch_keys['eventID']), dtype=np.int64)
             self.batch_row_keys.append(batch_keys)
             self.batch_event_global_ids.append(batch_event_ids)
+            self.batch_row_indices.append(np.asarray(rows, dtype=np.int64))
 
         self.max_batch_nsteps = int(max(self.batch_nsteps)) if len(self.batch_nsteps) > 0 else 0
 
@@ -383,6 +386,12 @@ class TracksDataset:
     def get_batch_row_keys(self):
         """Return row-level (eventID, trackID) keys for all rows used in batch idx."""
         return self.batch_row_keys
+
+    def get_batch_row_indices(self, idx=None):
+        """Return source row indices in the original segments table for each batch."""
+        if idx is None:
+            return self.batch_row_indices
+        return self.batch_row_indices[idx]
 
 class TgtTracksDataset:
     def __init__(self, filename, dataset_sim, swap_xz=True, chopped=True, pad=True, electron_sampling_resolution=0.001, print_input=False):

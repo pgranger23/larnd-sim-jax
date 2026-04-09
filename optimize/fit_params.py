@@ -214,6 +214,11 @@ class ParamFitter:
                  normalization_scheme="sigmoid",
                  normalization_scale_sigmoid=1.0,
                  normalization_scale_exp_log=1.0,
+                 fit_segment_de=False,
+                 segment_de_mode="segment-only",
+                 segment_de_lr=1e-2,
+                 segment_reg_l2=0.0,
+                 segment_reg_smooth=0.0,
                  sz_mini_bt=1, shuffle_bt=False, shuffle_seed=42, resume_from=None,
                  config = {}):
 
@@ -251,6 +256,22 @@ class ParamFitter:
         self.shuffle_seed = shuffle_seed
         self.sim_track_fields = sim_track_fields
         self.tgt_track_fields = tgt_track_fields
+
+        self.fit_segment_de = bool(fit_segment_de)
+        self.segment_de_mode = segment_de_mode
+        self.segment_de_lr = float(segment_de_lr)
+        self.segment_reg_l2 = float(segment_reg_l2)
+        self.segment_reg_smooth = float(segment_reg_smooth)
+        self.segment_de_latents = None
+
+        if self.segment_de_mode not in ("segment-only", "joint"):
+            raise ValueError("segment_de_mode must be one of: segment-only, joint")
+        if self.segment_de_lr <= 0:
+            raise ValueError(f"segment_de_lr must be > 0, got {self.segment_de_lr}")
+        if self.segment_reg_l2 < 0 or self.segment_reg_smooth < 0:
+            raise ValueError("segment regularization weights must be >= 0")
+        if self.fit_segment_de and self.segment_de_mode == "joint":
+            raise NotImplementedError("joint detector+segment fitting is not implemented yet; use segment-only")
 
         if self.normalization_scheme not in ("sigmoid", "exp_log", "divide"):
             raise ValueError(
@@ -593,6 +614,50 @@ class ParamFitter:
         evt_idx = self.sim_track_fields.index(self.evt_id)
         return jnp.unique(selected_tracks[:, evt_idx]).astype(jnp.int64)
 
+    def get_batch_row_indices(self, dataloader, batch_idx, n_rows_fallback=0):
+        dataset = getattr(dataloader, 'dataset', None)
+        if dataset is not None and hasattr(dataset, 'get_batch_row_indices'):
+            return jnp.asarray(dataset.get_batch_row_indices(batch_idx), dtype=jnp.int64)
+
+        return jnp.arange(n_rows_fallback, dtype=jnp.int64)
+
+    def initialize_segment_de_latents(self, dataloader):
+        if self.segment_de_latents is not None:
+            return
+
+        dataset = getattr(dataloader, 'dataset', None)
+        if dataset is None or not hasattr(dataset, 'tracks_struct'):
+            raise ValueError("fit_segment_de requires a dataloader dataset exposing tracks_struct")
+
+        n_rows = int(dataset.tracks_struct.shape[0])
+        self.segment_de_latents = jnp.zeros((n_rows,), dtype=jnp.float32)
+        logger.info(f"Initialized per-segment dE latent vector with {n_rows} entries")
+
+    def apply_segment_de_latents_to_tracks(self, tracks, batch_row_indices, segment_latents):
+        dE_idx = self.sim_track_fields.index("dE")
+        dEdx_idx = self.sim_track_fields.index("dEdx") if "dEdx" in self.sim_track_fields else None
+
+        latent_vals = segment_latents[jnp.asarray(batch_row_indices, dtype=jnp.int32)]
+        # log-scale parameterization keeps multiplicative dE scale positive.
+        scales = jnp.exp(jnp.clip(latent_vals, -5.0, 5.0))
+
+        tracks_mod = tracks.at[:, dE_idx].set(tracks[:, dE_idx] * scales)
+        if dEdx_idx is not None:
+            tracks_mod = tracks_mod.at[:, dEdx_idx].set(tracks[:, dEdx_idx] * scales)
+
+        return tracks_mod, scales
+
+    def apply_segment_de_updates(self, batch_row_indices, batch_grads):
+        if self.segment_de_latents is None:
+            raise RuntimeError("segment_de_latents not initialized")
+
+        batch_row_indices = jnp.asarray(batch_row_indices, dtype=jnp.int32)
+        batch_grads = jnp.asarray(batch_grads, dtype=jnp.float32)
+
+        current_vals = self.segment_de_latents[batch_row_indices]
+        updated_vals = current_vals - self.segment_de_lr * batch_grads
+        self.segment_de_latents = self.segment_de_latents.at[batch_row_indices].set(updated_vals)
+
     def validate_track_batch_event_ids(self, track_batch, track_fields, context):
         evt_idx = track_fields.index(self.evt_id)
         event_ids = np.asarray(track_batch[:, evt_idx], dtype=np.int64)
@@ -619,6 +684,7 @@ class ParamFitter:
         norm_state = loaded.get('norm_params_state')
         current_state = loaded.get('current_params_state')
         opt_state = loaded.get('opt_state')
+        segment_state = loaded.get('segment_de_latents')
 
         if norm_state is None:
             raise ValueError(
@@ -640,6 +706,8 @@ class ParamFitter:
             )
 
         self.opt_state = opt_state
+        if self.fit_segment_de and segment_state is not None:
+            self.segment_de_latents = jnp.asarray(segment_state, dtype=jnp.float32)
         self.resumed = True
 
     def save_checkpoint(self, total_iter):
@@ -658,13 +726,16 @@ class ParamFitter:
         )
         if hasattr(self, 'opt_state'):
             self.training_history['opt_state'] = self.opt_state
+        if self.fit_segment_de and self.segment_de_latents is not None:
+            # self.training_history['segment_de_latents'].append(jnp.asarray(self.segment_de_latents))
+            self.training_history['segment_de_latents'] = np.asarray(self.segment_de_latents)
         if self.resume_from is not None:
             self.training_history['resumed_from'] = self.resume_from
 
         with open(f'fit_result/{self.test_name}/history_iter{self.total_iter}_{self.out_label}.pkl', "wb") as f_history:
             pickle.dump(self.training_history, f_history)
 
-    def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True, with_hess=False, epoch=0, use_physical_params=False):
+    def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True, with_hess=False, epoch=0, use_physical_params=False, batch_row_indices=None):
         if self.probabilistic_sim:
             rngkey = None
         else:
@@ -694,6 +765,49 @@ class ParamFitter:
             'event': ref_event,
             'pixel_id': ref_pixel_id
         }
+
+        if self.fit_segment_de:
+            if batch_row_indices is None:
+                raise ValueError("batch_row_indices are required when fit_segment_de is enabled")
+            if self.segment_de_latents is None:
+                raise RuntimeError("segment_de_latents are not initialized")
+
+            batch_row_indices = jnp.asarray(batch_row_indices, dtype=jnp.int64)
+
+            def seg_loss_wrapper(segment_latents):
+                tracks_mod, scales = self.apply_segment_de_latents_to_tracks(tracks, batch_row_indices, segment_latents)
+                prediction = self.sim_strategy.predict(self.current_params, tracks_mod, self.sim_track_fields, rngkey)
+                data_loss, aux = self.loss_strategy.compute(self.current_params, prediction, target_data)
+
+                reg_l2 = self.segment_reg_l2 * jnp.mean((scales - 1.0) ** 2)
+                reg_smooth = jnp.array(0.0, dtype=jnp.float32)
+                if self.segment_reg_smooth > 0 and scales.shape[0] > 1:
+                    ordered = scales[jnp.argsort(batch_row_indices)]
+                    reg_smooth = self.segment_reg_smooth * jnp.mean((ordered[1:] - ordered[:-1]) ** 2)
+
+                loss = data_loss + reg_l2 + reg_smooth
+                aux = dict(aux)
+                aux['segment_reg_l2'] = reg_l2
+                aux['segment_reg_smooth'] = reg_smooth
+                aux['segment_scale_mean'] = jnp.mean(scales)
+                aux['segment_scale_std'] = jnp.std(scales)
+                return loss, aux
+
+            if with_loss and with_grad:
+                (loss_val, aux), grads = value_and_grad(seg_loss_wrapper, has_aux=True)(self.segment_de_latents)
+            elif with_loss:
+                loss_val, aux = seg_loss_wrapper(self.segment_de_latents)
+                grads = None
+            elif with_grad:
+                grads, aux = grad(seg_loss_wrapper, has_aux=True)(self.segment_de_latents)
+
+            if grads is not None:
+                grads = grads[jnp.asarray(batch_row_indices, dtype=jnp.int32)]
+
+            if with_hess:
+                hess, aux_hess = None, None
+
+            return loss_val, grads, aux, hess, aux_hess
 
         if use_physical_params:
             def loss_wrapper(physical_params):
@@ -761,6 +875,11 @@ class ParamFitter:
         self.training_history['step_time'] = []
         self.training_history['losses_iter'] = []
         self.training_history['aux_iter'] = []
+        if self.fit_segment_de:
+            self.training_history['segment_grad_norm_iter'] = []
+            self.training_history['segment_scale_mean_iter'] = []
+            self.training_history['segment_scale_std_iter'] = []
+            self.training_history['segment_de_latents'] = []
 
         # Include initial value in training history (if haven't loaded a checkpoint)
         for param in self.relevant_params_list:
@@ -940,6 +1059,9 @@ class GradientDescentFitter(ParamFitter):
             if len(dataloader_sim) != len(target):
                 raise Exception("Sim and target inputs do not match in size. Panic.")
 
+        if self.fit_segment_de:
+            self.initialize_segment_de_latents(dataloader_sim)
+
         if iterations is not None:
             epochs = iterations // len(dataloader_sim) + 1
 
@@ -965,6 +1087,7 @@ class GradientDescentFitter(ParamFitter):
                     selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
                     self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
+                    batch_row_indices = self.get_batch_row_indices(dataloader_sim, i, n_rows_fallback=selected_tracks_bt_sim.shape[0])
                     evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
                     # target
@@ -977,7 +1100,46 @@ class GradientDescentFitter(ParamFitter):
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = self.get_simulated_target(this_target, i, evts_sim, regen=False)
 
                     # loss
-                    loss_val, grads, aux, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, epoch=epoch, with_loss=True, with_grad=True)
+                    loss_val, grads, aux, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, epoch=epoch, with_loss=True, with_grad=True, batch_row_indices=batch_row_indices)
+
+                    if self.fit_segment_de:
+                        if grads is None:
+                            raise RuntimeError("Expected segment gradients in fit_segment_de mode")
+
+                        self.apply_segment_de_updates(batch_row_indices, grads)
+                        stop_time = time()
+
+                        self.training_history['step_time'].append(stop_time - start_time)
+                        self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
+                        aux_serializable = {k: serialize_value(v) for k, v in aux.items()} if aux is not None else {}
+                        self.training_history['aux_iter'].append(aux_serializable) # type: ignore
+                        self.training_history['segment_grad_norm_iter'].append(float(jnp.linalg.norm(grads)))
+                        self.training_history['segment_scale_mean_iter'].append(float(aux.get('segment_scale_mean', 1.0)))
+                        self.training_history['segment_scale_std_iter'].append(float(aux.get('segment_scale_std', 0.0)))
+
+                        self.training_history['size_history'].append(get_size_history())
+                        if jax.devices()[0].platform == 'gpu':
+                            self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
+
+                        if iterations is not None and total_iter % save_freq == 0:
+                            self.save_checkpoint(total_iter)
+                            if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
+                                os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
+
+                        total_iter += 1
+                        self.total_iter = total_iter
+                        pbar.update(1)
+
+                        if target_iter is not None and total_iter >= target_iter:
+                            self.save_checkpoint(total_iter)
+                            if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
+                                os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
+                            if os.path.exists('target_' + self.out_label):
+                                shutil.rmtree('target_' + self.out_label, ignore_errors=True)
+                            terminate_fit = True
+                            break
+
+                        continue
 
                     # split the code, ugly, but no additional operation if there's no averaging
                     if self.sz_mini_bt > 1:

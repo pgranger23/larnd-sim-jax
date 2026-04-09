@@ -63,6 +63,16 @@ def main(config):
         if max_nbatch is None or iterations < max_nbatch or max_nbatch <= 0:
             max_nbatch = iterations
 
+    if config.fit_segment_de:
+        if config.fit_type != "chain":
+            raise ValueError("--fit_segment_de currently supports only --fit_type chain")
+        if not config.no_chop:
+            raise ValueError("--fit_segment_de currently requires --no_chop so segment identities remain stable")
+        if not config.no_pad:
+            raise ValueError("--fit_segment_de currently requires --no_pad so padded rows do not interfere with segment mapping")
+        if config.sz_mini_bt != 1:
+            raise ValueError("--fit_segment_de currently requires --sz_mini_bt 1")
+
     dataset_sim = TracksDataset(filename=config.input_file_sim, nevents=config.data_sz, max_nbatch=max_nbatch, random_nevents=config.random_nevents, data_seed=config.data_seed,
                             track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, chopped=(not config.no_chop), pad=(not config.no_pad), electron_sampling_resolution=config.electron_sampling_resolution, live_selection=config.live_selection)
 
@@ -128,6 +138,11 @@ def main(config):
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
                                 normalization_scale_exp_log=config.normalization_scale_exp_log,
+                                fit_segment_de=config.fit_segment_de,
+                                segment_de_mode=config.segment_de_mode,
+                                segment_de_lr=config.segment_de_lr,
+                                segment_reg_l2=config.segment_reg_l2,
+                                segment_reg_smooth=config.segment_reg_smooth,
                                 sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt, shuffle_seed=config.shuffle_seed,
                                 resume_from=config.resume_from)
     elif config.fit_type == "scan":
@@ -147,7 +162,12 @@ def main(config):
                                 scan_tgt_nom=config.scan_tgt_nom, probabilistic_sim=config.probabilistic_sim,
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
-                                normalization_scale_exp_log=config.normalization_scale_exp_log)
+                                normalization_scale_exp_log=config.normalization_scale_exp_log,
+                                fit_segment_de=config.fit_segment_de,
+                                segment_de_mode=config.segment_de_mode,
+                                segment_de_lr=config.segment_de_lr,
+                                segment_reg_l2=config.segment_reg_l2,
+                                segment_reg_smooth=config.segment_reg_smooth)
     elif config.fit_type == "minuit":
         param_fit = MinuitFitter(relevant_params=param_list,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
@@ -165,7 +185,12 @@ def main(config):
                                 minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits, probabilistic_sim=config.probabilistic_sim,
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
-                                normalization_scale_exp_log=config.normalization_scale_exp_log)
+                                normalization_scale_exp_log=config.normalization_scale_exp_log,
+                                fit_segment_de=config.fit_segment_de,
+                                segment_de_mode=config.segment_de_mode,
+                                segment_de_lr=config.segment_de_lr,
+                                segment_reg_l2=config.segment_reg_l2,
+                                segment_reg_smooth=config.segment_reg_smooth)
 
     elif config.fit_type == "hess":
         param_fit = HessianCalculator(relevant_params=param_list, set_init_params=config.set_init_params,
@@ -185,6 +210,11 @@ def main(config):
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
                                 normalization_scale_exp_log=config.normalization_scale_exp_log,
+                                fit_segment_de=config.fit_segment_de,
+                                segment_de_mode=config.segment_de_mode,
+                                segment_de_lr=config.segment_de_lr,
+                                segment_reg_l2=config.segment_reg_l2,
+                                segment_reg_smooth=config.segment_reg_smooth,
                                 compute_target_hessian=True)
 
     else:
@@ -347,6 +377,16 @@ if __name__ == '__main__':
     parser.add_argument('--profile', default=False, action='store_true', help='Should run some xprof execution profiling')
     parser.add_argument('--no_chop', default=False, action='store_true', help='Disable chopping in data loading')
     parser.add_argument('--no_pad', default=False, action='store_true', help='Disable padding in data loading')
+    parser.add_argument('--fit_segment_de', default=False, action='store_true',
+                        help='Fit per-segment dE latent scales instead of detector parameters')
+    parser.add_argument('--segment_de_mode', type=str, default='segment-only', choices=['segment-only', 'joint'],
+                        help='Optimization mode for per-segment dE latents')
+    parser.add_argument('--segment_de_lr', type=float, default=1e-2,
+                        help='Learning rate for per-segment dE latent updates')
+    parser.add_argument('--segment_reg_l2', type=float, default=0.0,
+                        help='L2 regularization weight on per-segment dE latents')
+    parser.add_argument('--segment_reg_smooth', type=float, default=0.0,
+                        help='Smoothness regularization weight on neighboring per-segment dE latents')
     parser.add_argument("--resume_from", dest="resume_from", default=None, type=str, help="Resume chain fit from a saved history_iter*.pkl checkpoint")
 
     try:
