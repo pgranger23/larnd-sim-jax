@@ -141,6 +141,7 @@ def main(config):
                                 fit_segment_de=config.fit_segment_de,
                                 segment_de_mode=config.segment_de_mode,
                                 segment_de_lr=config.segment_de_lr,
+                                segment_de_optimizer=config.segment_de_optimizer,
                                 segment_reg_l2=config.segment_reg_l2,
                                 segment_reg_smooth=config.segment_reg_smooth,
                                 sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt, shuffle_seed=config.shuffle_seed,
@@ -166,6 +167,7 @@ def main(config):
                                 fit_segment_de=config.fit_segment_de,
                                 segment_de_mode=config.segment_de_mode,
                                 segment_de_lr=config.segment_de_lr,
+                                segment_de_optimizer=config.segment_de_optimizer,
                                 segment_reg_l2=config.segment_reg_l2,
                                 segment_reg_smooth=config.segment_reg_smooth)
     elif config.fit_type == "minuit":
@@ -189,6 +191,7 @@ def main(config):
                                 fit_segment_de=config.fit_segment_de,
                                 segment_de_mode=config.segment_de_mode,
                                 segment_de_lr=config.segment_de_lr,
+                                segment_de_optimizer=config.segment_de_optimizer,
                                 segment_reg_l2=config.segment_reg_l2,
                                 segment_reg_smooth=config.segment_reg_smooth)
 
@@ -213,6 +216,7 @@ def main(config):
                                 fit_segment_de=config.fit_segment_de,
                                 segment_de_mode=config.segment_de_mode,
                                 segment_de_lr=config.segment_de_lr,
+                                segment_de_optimizer=config.segment_de_optimizer,
                                 segment_reg_l2=config.segment_reg_l2,
                                 segment_reg_smooth=config.segment_reg_smooth,
                                 compute_target_hessian=True)
@@ -383,6 +387,8 @@ if __name__ == '__main__':
                         help='Optimization mode for per-segment dE latents')
     parser.add_argument('--segment_de_lr', type=float, default=1e-2,
                         help='Learning rate for per-segment dE latent updates')
+    parser.add_argument('--segment_de_optimizer', type=str, default='SGD', choices=['SGD', 'Adam', 'RMSprop'],
+                        help='Optimizer for per-segment dE latent updates (SGD, Adam, or RMSprop)')
     parser.add_argument('--segment_reg_l2', type=float, default=0.0,
                         help='L2 regularization weight on per-segment dE latents')
     parser.add_argument('--segment_reg_smooth', type=float, default=0.0,

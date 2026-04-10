@@ -217,6 +217,7 @@ class ParamFitter:
                  fit_segment_de=False,
                  segment_de_mode="segment-only",
                  segment_de_lr=1e-2,
+                 segment_de_optimizer="SGD",
                  segment_reg_l2=0.0,
                  segment_reg_smooth=0.0,
                  sz_mini_bt=1, shuffle_bt=False, shuffle_seed=42, resume_from=None,
@@ -260,9 +261,11 @@ class ParamFitter:
         self.fit_segment_de = bool(fit_segment_de)
         self.segment_de_mode = segment_de_mode
         self.segment_de_lr = float(segment_de_lr)
+        self.segment_de_optimizer = segment_de_optimizer
         self.segment_reg_l2 = float(segment_reg_l2)
         self.segment_reg_smooth = float(segment_reg_smooth)
         self.segment_de_latents = None
+        self.segment_opt_state = None
 
         if self.segment_de_mode not in ("segment-only", "joint"):
             raise ValueError("segment_de_mode must be one of: segment-only, joint")
@@ -270,6 +273,8 @@ class ParamFitter:
             raise ValueError(f"segment_de_lr must be > 0, got {self.segment_de_lr}")
         if self.segment_reg_l2 < 0 or self.segment_reg_smooth < 0:
             raise ValueError("segment regularization weights must be >= 0")
+        if self.segment_de_optimizer not in ("SGD", "Adam", "RMSprop"):
+            raise ValueError(f"segment_de_optimizer must be one of: SGD, Adam, RMSprop, got {self.segment_de_optimizer}")
         if self.fit_segment_de and self.segment_de_mode == "joint":
             raise NotImplementedError("joint detector+segment fitting is not implemented yet; use segment-only")
 
@@ -632,6 +637,20 @@ class ParamFitter:
         n_rows = int(dataset.tracks_struct.shape[0])
         self.segment_de_latents = jnp.zeros((n_rows,), dtype=jnp.float32)
         logger.info(f"Initialized per-segment dE latent vector with {n_rows} entries")
+        
+        # Initialize optimizer for segment latents
+        if self.segment_de_optimizer == "SGD":
+            segment_optimizer_fn = optax.sgd(self.segment_de_lr)
+        elif self.segment_de_optimizer == "Adam":
+            segment_optimizer_fn = optax.adam(self.segment_de_lr)
+        elif self.segment_de_optimizer == "RMSprop":
+            segment_optimizer_fn = optax.rmsprop(self.segment_de_lr)
+        else:
+            raise ValueError(f"Unknown segment_de_optimizer: {self.segment_de_optimizer}")
+        
+        self.segment_optimizer = segment_optimizer_fn
+        self.segment_opt_state = self.segment_optimizer.init(self.segment_de_latents)
+        logger.info(f"Initialized segment dE optimizer: {self.segment_de_optimizer} with lr={self.segment_de_lr}")
 
     def apply_segment_de_latents_to_tracks(self, tracks, batch_row_indices, segment_latents):
         dE_idx = self.sim_track_fields.index("dE")
@@ -648,15 +667,35 @@ class ParamFitter:
         return tracks_mod, scales
 
     def apply_segment_de_updates(self, batch_row_indices, batch_grads):
+        """Apply optimizer updates to segment latents using batch-local gradients.
+        
+        This implementation uses scatter-update pattern: only the batch-local rows
+        have their full-array gradients computed, and only those rows are updated
+        via the optimizer state.
+        """
         if self.segment_de_latents is None:
             raise RuntimeError("segment_de_latents not initialized")
+        if self.segment_opt_state is None:
+            raise RuntimeError("segment optimizer state not initialized")
 
         batch_row_indices = jnp.asarray(batch_row_indices, dtype=jnp.int32)
         batch_grads = jnp.asarray(batch_grads, dtype=jnp.float32)
 
-        current_vals = self.segment_de_latents[batch_row_indices]
-        updated_vals = current_vals - self.segment_de_lr * batch_grads
-        self.segment_de_latents = self.segment_de_latents.at[batch_row_indices].set(updated_vals)
+        # Check for NaN gradients
+        if jnp.isnan(batch_grads).any():
+            logger.warning("Got NaN gradients in segment dE updates! Skipping this batch.")
+            return
+
+        # Construct full-array gradients by scattering batch gradients into zeros
+        full_grads = jnp.zeros_like(self.segment_de_latents)
+        full_grads = full_grads.at[batch_row_indices].set(batch_grads)
+
+        # Apply optimizer update
+        updates, self.segment_opt_state = self.segment_optimizer.update(full_grads, self.segment_opt_state)
+
+        # Apply updates only to batch-local rows (to avoid overwriting other rows)
+        batch_updates = updates[batch_row_indices]
+        self.segment_de_latents = self.segment_de_latents.at[batch_row_indices].add(batch_updates)
 
     def validate_track_batch_event_ids(self, track_batch, track_fields, context):
         evt_idx = track_fields.index(self.evt_id)
@@ -708,6 +747,12 @@ class ParamFitter:
         self.opt_state = opt_state
         if self.fit_segment_de and segment_state is not None:
             self.segment_de_latents = jnp.asarray(segment_state, dtype=jnp.float32)
+            segment_opt_state = loaded.get('segment_opt_state')
+            if segment_opt_state is not None:
+                self.segment_opt_state = segment_opt_state
+            else:
+                # Re-initialize optimizer state if not saved (for backward compatibility)
+                self.segment_opt_state = None
         self.resumed = True
 
     def save_checkpoint(self, total_iter):
@@ -727,8 +772,10 @@ class ParamFitter:
         if hasattr(self, 'opt_state'):
             self.training_history['opt_state'] = self.opt_state
         if self.fit_segment_de and self.segment_de_latents is not None:
-            # self.training_history['segment_de_latents'].append(jnp.asarray(self.segment_de_latents))
             self.training_history['segment_de_latents'] = np.asarray(self.segment_de_latents)
+            self.training_history['segment_de_optimizer'] = self.segment_de_optimizer
+            if self.segment_opt_state is not None:
+                self.training_history['segment_opt_state'] = self.segment_opt_state
         if self.resume_from is not None:
             self.training_history['resumed_from'] = self.resume_from
 
@@ -1061,6 +1108,17 @@ class GradientDescentFitter(ParamFitter):
 
         if self.fit_segment_de:
             self.initialize_segment_de_latents(dataloader_sim)
+            # If optimizer state wasn't restored from checkpoint, initialize it now
+            if self.segment_opt_state is None:
+                if self.segment_de_optimizer == "SGD":
+                    self.segment_optimizer = optax.sgd(self.segment_de_lr)
+                elif self.segment_de_optimizer == "Adam":
+                    self.segment_optimizer = optax.adam(self.segment_de_lr)
+                elif self.segment_de_optimizer == "RMSprop":
+                    self.segment_optimizer = optax.rmsprop(self.segment_de_lr)
+                else:
+                    raise ValueError(f"Unknown segment_de_optimizer: {self.segment_de_optimizer}")
+                self.segment_opt_state = self.segment_optimizer.init(self.segment_de_latents)
 
         if iterations is not None:
             epochs = iterations // len(dataloader_sim) + 1

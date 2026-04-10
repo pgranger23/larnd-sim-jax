@@ -56,10 +56,16 @@ def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     return adc_loss, dict()
 
 def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, sigma=1, lambda_Q=1):
-    weight_ref = ref_Q*ref_hit_prob
-    weight = Q*hit_prob
-    ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z), axis=-1)
-    stacked = jnp.stack((x + event*1e5, y, z), axis=-1)
+    # weight_ref = ref_Q*ref_hit_prob
+    # weight = Q*hit_prob
+    # ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z), axis=-1)
+    # stacked = jnp.stack((x + event*1e5, y, z), axis=-1)
+
+    weight_ref = ref_hit_prob
+    weight = hit_prob
+    ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z, ref_Q), axis=-1)
+    stacked = jnp.stack((x + event*1e5, y, z, Q), axis=-1)
+
     mmd_loss_term = mmd(stacked, ref_stacked, weight, weight_ref, sigma)
     
     ref_total_charge = jnp.sum(weight_ref)
