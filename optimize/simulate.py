@@ -15,6 +15,7 @@ if '--gpu' not in sys.argv:
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.sim_jax import simulate_stochastic, simulate_parametrized, simulate_wfs
 from larndsim.losses_jax import get_hits_space_coords
+from larndsim.detsim_jax import validate_event_ids_for_packing, validate_local_event_ids
 from pprint import pprint
 import numpy as np
 import h5py
@@ -22,59 +23,13 @@ import jax
 from tqdm import tqdm
 from numpy.lib import recfunctions as rfn
 from larndsim.sim_jax import pad_size
-from .dataio import chop_tracks
+from .dataio import TracksDataset
 import jax.numpy as jnp
 from larndsim.fee_jax import digitize
 from larndsim.losses_jax import adc2charge
 
 # from ctypes import cdll
 # libcudart = cdll.LoadLibrary('libcudart.so')
-
-
-def load_events_as_batch(filename, swap_xz=True, n_events=-1):
-    with h5py.File(filename, 'r') as f:
-        tracks = np.array(f['segments'])
-
-    if not 't0' in tracks.dtype.names:
-        tracks = rfn.append_fields(tracks, 't0', np.zeros(tracks.shape[0]), usemask=False)
-
-    track_fields = tracks.dtype.names
-
-    replace_map = {
-            'event_id': 'eventID',
-            'traj_id': 'trackID',
-        }
-    track_fields = tuple([replace_map.get(field, field) if field in replace_map else field for field in track_fields])
-    tracks.dtype.names = track_fields
-
-    if n_events > 0:
-        evID = np.unique(tracks['eventID'])[:n_events]
-        ev_msk = np.isin(tracks['eventID'], evID)
-        tracks = tracks[ev_msk]
-
-    if swap_xz:
-        x_start = np.copy(tracks['x_start'] )
-        x_end = np.copy(tracks['x_end'])
-        x = np.copy(tracks['x'])
-
-        tracks['x_start'] = np.copy(tracks['z_start'])
-        tracks['x_end'] = np.copy(tracks['z_end'])
-        tracks['x'] = np.copy(tracks['z'])
-
-        tracks['z_start'] = x_start
-        tracks['z_end'] = x_end
-        tracks['z'] = x
-
-    unique_events, first_indices = np.unique(tracks['eventID'], return_index=True)
-
-    first_indices = np.sort(first_indices)
-    last_indices = np.r_[first_indices[1:] - 1, len(tracks) - 1]
-    
-    tracks = rfn.structured_to_unstructured(tracks, copy=True, dtype=np.float32)
-
-    logger.info(f"Loaded {len(first_indices)} events from {filename} with {tracks.shape[0]} tracks")
-    
-    return [tracks[first_indices[i]:last_indices[i] + 1, :] for i in range(len(first_indices))], track_fields
 
 
 logger = logging.getLogger(__name__)
@@ -92,7 +47,7 @@ def main(config):
         os.remove(output_filename)
     if config.lut_file == "" and config.mode == 'lut':
         return 1, 'Error: LUT file is required for mode "lut"'
-    
+
     if not config.gpu:
         jax.config.update('jax_platform_name', 'cpu')
 
@@ -107,8 +62,7 @@ def main(config):
 
     if config.mode == 'lut':
         response, ref_params = load_lut(config.lut_file, ref_params)
-    
-    
+
     params_to_apply = [
         'diffusion_in_current_sim',
         'mc_diff',
@@ -119,21 +73,47 @@ def main(config):
 
 
     ref_params = ref_params.replace(**{k: getattr(config, k) for k in params_to_apply}, time_window=config.signal_length)
-    
+
     if not config.noise:
         ref_params = ref_params.replace(RESET_NOISE_CHARGE=0, UNCORRELATED_NOISE_CHARGE=0)
 
-    dataset, fields = load_events_as_batch(config.input_file, swap_xz=True, n_events=config.n_events)
+    dataset = TracksDataset(
+        filename=config.input_file,
+        nevents=config.n_events,
+        max_nbatch=None,
+        swap_xz=True,
+        random_nevents=False,
+        data_seed=config.seed if config.seed is not None else 42,
+        max_batch_len=config.max_batch_len,
+        print_input=False,
+        chopped=True,
+        pad=False,
+        electron_sampling_resolution=config.electron_sampling_resolution,
+        live_selection=False,
+    )
+    fields = dataset.get_track_fields()
 
     if config.out_np:
         l_adc, l_Q, l_ticks, l_eventID, l_pix_x, l_pix_y, l_pix_z, l_hit_prob = [], [], [], [], [], [], [], []
 
     # libcudart.cudaProfilerStart()
-    for ibatch, tracks in tqdm(enumerate(dataset), desc="Loading tracks", total=len(dataset)):
-        batch = chop_tracks(tracks, fields, config.electron_sampling_resolution)
+    for ibatch in tqdm(range(len(dataset)), desc="Loading tracks", total=len(dataset)):
+        batch = dataset[ibatch]
         size = batch.shape[0]
         size = pad_size(size, "batch_size", 0.5)
         batch = np.pad(batch, ((0, size - batch.shape[0]), (0, 0)), mode='constant', constant_values=0)
+        evt_col = fields.index("eventID")
+        event_ids = batch[:, evt_col].astype(np.int64)
+
+        # Validate local event ID namespace before overflow checks
+        validate_local_event_ids(event_ids, context=f"simulate batch {ibatch}")
+        validate_event_ids_for_packing(ref_params, event_ids, kind="pixel", context=f"simulate batch {ibatch}")
+        validate_event_ids_for_packing(ref_params, event_ids, kind="bin", context=f"simulate batch {ibatch}")
+
+        # Get mapping from local event IDs back to global IDs
+        global_event_ids = dataset.get_batch_global_event_ids(ibatch)
+        local_to_global = {i: int(gid) for i, gid in enumerate(global_event_ids)}
+
         tracks = jax.device_put(batch)
         rngseed = config.seed if config.seed is not None else 0
         if config.mode == 'lut':
@@ -153,24 +133,36 @@ def main(config):
 
         if not config.out_np:
             with h5py.File(output_filename, 'a') as f:
-                group = f.create_group(f"batch_{ibatch}")
-                group.create_dataset('adc_clean', data=adcs_clean.flatten()[mask])
-                group.create_dataset('adc', data=adcs.flatten()[mask])
-                group.create_dataset('Q', data=Q)
-                group.create_dataset('pixels', data=hit_pixels[mask])
-                group.create_dataset('ticks', data=ticks.flatten()[mask])
-                group.create_dataset('eventID', data=event[mask])
-                group.create_dataset('pix_x', data=pixel_x[mask])
-                group.create_dataset('pix_y', data=pixel_y[mask])
-                group.create_dataset('pix_z', data=pixel_z.flatten()[mask])
+                batch_group = f.create_group(f"batch_{ibatch}")
+
+                # Split output per-event using local→global ID mapping
+                for local_event_id in np.unique(event[mask]).astype(int):
+                    if local_event_id < 0:  # Skip padding
+                        continue
+
+                    global_event_id = local_to_global.get(local_event_id, local_event_id)
+                    event_mask = (event.flatten()[mask] == local_event_id)
+
+                    # Create per-event subgroup
+                    event_group = batch_group.create_group(f"event_{global_event_id}")
+                    event_group.create_dataset('adc_clean', data=adcs_clean.flatten()[mask][event_mask])
+                    event_group.create_dataset('adc', data=adcs.flatten()[mask][event_mask])
+                    event_group.create_dataset('Q', data=Q[event_mask])
+                    event_group.create_dataset('pixels', data=hit_pixels[mask][event_mask])
+                    event_group.create_dataset('ticks', data=ticks.flatten()[mask][event_mask])
+                    event_group.create_dataset('eventID', data=np.full(event_mask.sum(), global_event_id, dtype=np.int64))
+                    event_group.create_dataset('pix_x', data=pixel_x[mask][event_mask])
+                    event_group.create_dataset('pix_y', data=pixel_y[mask][event_mask])
+                    event_group.create_dataset('pix_z', data=pixel_z.flatten()[mask][event_mask])
+
+                    if config.jac:
+                        for par in pars:
+                            event_group.create_dataset(f'jac_{par}_adc', data=getattr(jac_res, par)[:, :, 0].flatten()[mask][event_mask])
+                            event_group.create_dataset(f'jac_{par}_ticks', data=getattr(jac_res, par)[:, :, 1].flatten()[mask][event_mask])
 
                 if config.save_wfs:
-                    print("yo")
-                    group.create_dataset('wfs', data=wfs)
-                if config.jac:
-                    for par in pars:
-                        group.create_dataset(f'jac_{par}_adc', data=getattr(jac_res, par)[:, :, 0].flatten()[mask])
-                        group.create_dataset(f'jac_{par}_ticks', data=getattr(jac_res, par)[:, :, 1].flatten()[mask])
+                    batch_group.create_dataset('wfs', data=wfs)
+
 
         else:
             l_adc.append(adcs.flatten()[mask])
@@ -217,6 +209,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_wfs', action='store_true', help='Save waveforms')
     parser.add_argument('--n_events', type=int, default=-1, help='Number of events to be simulated')
     parser.add_argument('--out_np', action='store_true', default=False, help='store target-like output in npz')
+    parser.add_argument('--max_batch_len', type=float, default=50., help='Maximum trajectory length budget used while preparing tracks')
 
     try:
         args = parser.parse_args()
