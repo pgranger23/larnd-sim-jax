@@ -138,11 +138,17 @@ def main(config):
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
                                 normalization_scale_exp_log=config.normalization_scale_exp_log,
+                                mmd_sigma=config.mmd_sigma,
+                                nll_sigma=config.nll_sigma,
+                                llhd_sigma=config.llhd_sigma,
+                                sobolev_sigma=config.sobolev_sigma,
+                                sobolev_lambda_grad=config.sobolev_lambda_grad,
                                 fit_segment_de=config.fit_segment_de,
                                 segment_de_mode=config.segment_de_mode,
                                 segment_de_lr=config.segment_de_lr,
                                 segment_de_optimizer=config.segment_de_optimizer,
                                 segment_reg_l2=config.segment_reg_l2,
+                                segment_reg_track_total=config.segment_reg_track_total,
                                 segment_reg_smooth=config.segment_reg_smooth,
                                 sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt, shuffle_seed=config.shuffle_seed,
                                 resume_from=config.resume_from)
@@ -164,11 +170,17 @@ def main(config):
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
                                 normalization_scale_exp_log=config.normalization_scale_exp_log,
+                                mmd_sigma=config.mmd_sigma,
+                                nll_sigma=config.nll_sigma,
+                                llhd_sigma=config.llhd_sigma,
+                                sobolev_sigma=config.sobolev_sigma,
+                                sobolev_lambda_grad=config.sobolev_lambda_grad,
                                 fit_segment_de=config.fit_segment_de,
                                 segment_de_mode=config.segment_de_mode,
                                 segment_de_lr=config.segment_de_lr,
                                 segment_de_optimizer=config.segment_de_optimizer,
                                 segment_reg_l2=config.segment_reg_l2,
+                                segment_reg_track_total=config.segment_reg_track_total,
                                 segment_reg_smooth=config.segment_reg_smooth)
     elif config.fit_type == "minuit":
         param_fit = MinuitFitter(relevant_params=param_list,
@@ -188,11 +200,17 @@ def main(config):
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
                                 normalization_scale_exp_log=config.normalization_scale_exp_log,
+                                mmd_sigma=config.mmd_sigma,
+                                nll_sigma=config.nll_sigma,
+                                llhd_sigma=config.llhd_sigma,
+                                sobolev_sigma=config.sobolev_sigma,
+                                sobolev_lambda_grad=config.sobolev_lambda_grad,
                                 fit_segment_de=config.fit_segment_de,
                                 segment_de_mode=config.segment_de_mode,
                                 segment_de_lr=config.segment_de_lr,
                                 segment_de_optimizer=config.segment_de_optimizer,
                                 segment_reg_l2=config.segment_reg_l2,
+                                segment_reg_track_total=config.segment_reg_track_total,
                                 segment_reg_smooth=config.segment_reg_smooth)
 
     elif config.fit_type == "hess":
@@ -213,11 +231,17 @@ def main(config):
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
                                 normalization_scale_exp_log=config.normalization_scale_exp_log,
+                                mmd_sigma=config.mmd_sigma,
+                                nll_sigma=config.nll_sigma,
+                                llhd_sigma=config.llhd_sigma,
+                                sobolev_sigma=config.sobolev_sigma,
+                                sobolev_lambda_grad=config.sobolev_lambda_grad,
                                 fit_segment_de=config.fit_segment_de,
                                 segment_de_mode=config.segment_de_mode,
                                 segment_de_lr=config.segment_de_lr,
                                 segment_de_optimizer=config.segment_de_optimizer,
                                 segment_reg_l2=config.segment_reg_l2,
+                                segment_reg_track_total=config.segment_reg_track_total,
                                 segment_reg_smooth=config.segment_reg_smooth,
                                 compute_target_hessian=True)
 
@@ -330,9 +354,19 @@ if __name__ == '__main__':
     parser.add_argument("--iterations", dest="iterations", default=None, type=int,
                         help="Number of iterations to run. Overrides epochs.")
     parser.add_argument("--loss_fn", dest="loss_fn", default=None,
-                        help="Loss function to use. Named options are SDTW and space_match.")
+                        help="Loss function to use. Named options: mmd (default), mmd_adc (alias), chamfer_3d, sobolev, nll, llhd, SDTW, sdtw_adc, sdtw_time, sdtw_time_adc, mmd_time, mmd_time_adc.")
     parser.add_argument("--loss_fn_kw", dest="loss_fn_kw", default=None, type=json.loads,
                         help="Loss function keyword arguments.")
+    parser.add_argument("--mmd_sigma", dest="mmd_sigma", default=1.0, type=float,
+                        help="RBF kernel bandwidth sigma for mmd (mmd_adc) loss.")
+    parser.add_argument("--nll_sigma", dest="nll_sigma", default=1.0, type=float,
+                        help="Kernel bandwidth sigma for nll loss.")
+    parser.add_argument("--llhd_sigma", dest="llhd_sigma", default=500.0, type=float,
+                        help="Charge Gaussian prior width sigma for llhd loss.")
+    parser.add_argument("--sobolev_sigma", dest="sobolev_sigma", default=1.0, type=float,
+                        help="Kernel width sigma for sobolev loss.")
+    parser.add_argument("--sobolev_lambda_grad", dest="sobolev_lambda_grad", default=0.1, type=float,
+                        help="Gradient matching weight for sobolev loss.")
     parser.add_argument("--max_batch_len", dest="max_batch_len", default=None, type=float,
                         help="Max dx [cm] per batch. If passed, will add tracks to batch until overflow, splitting where needed")
     parser.add_argument("--max_nbatch", dest="max_nbatch", default=None, type=int,
@@ -391,6 +425,8 @@ if __name__ == '__main__':
                         help='Optimizer for per-segment dE latent updates (SGD, Adam, or RMSprop)')
     parser.add_argument('--segment_reg_l2', type=float, default=0.0,
                         help='L2 regularization weight on per-segment dE latents')
+    parser.add_argument('--segment_reg_track_total', type=float, default=0.0,
+                        help='Regularization weight on relative change of total dE per track')
     parser.add_argument('--segment_reg_smooth', type=float, default=0.0,
                         help='Smoothness regularization weight on neighboring per-segment dE latents')
     parser.add_argument("--resume_from", dest="resume_from", default=None, type=str, help="Resume chain fit from a saved history_iter*.pkl checkpoint")

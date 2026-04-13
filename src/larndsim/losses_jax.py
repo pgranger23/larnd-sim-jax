@@ -38,12 +38,12 @@ def mmd(x, y, px, py, sigma):
 
     return mmd_sq
 
-def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
+def mmd_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     all_pixels = jnp.concatenate([pIDs, pIDs_ref])
     unique_pixels = jnp.sort(jnp.unique(all_pixels))
     nb_pixels = unique_pixels.shape[0]
 
-    nb_pixels = pad_size(nb_pixels, "mse_loss")
+    nb_pixels = pad_size(nb_pixels, "mmd_loss")
 
     pix_renumbering = jnp.searchsorted(unique_pixels, pIDs)
 
@@ -55,7 +55,7 @@ def mse_loss(adcs, pIDs, adcs_ref, pIDs_ref):
     adc_loss = jnp.sum(signals**2)
     return adc_loss, dict()
 
-def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, sigma=1, lambda_Q=1):
+def mmd_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, sigma=1, lambda_Q=1):
     # weight_ref = ref_Q*ref_hit_prob
     # weight = Q*hit_prob
     # ref_stacked = jnp.stack((ref_x + ref_event*1e5, ref_y, ref_z), axis=-1)
@@ -85,17 +85,69 @@ def mse_adc(params, Q, x, y, z, ticks, hit_prob, event, ref_Q, ref_x, ref_y, ref
     return mmd_loss_term + lambda_Q * charge_loss, aux
     # return mse_loss(adcs, pixels, ref, pixels_ref)
 
-def mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
+
+def mmd_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref):
     mask_ref = ref > 0
     mask = adcs > 0
     ticks = ticks.at[~mask].set(0)
     ticks_ref = ticks_ref.at[~mask_ref].set(0)
-    return mse_loss(ticks, pixels, ticks_ref, pixels_ref)
+    return mmd_loss(ticks, pixels, ticks_ref, pixels_ref)
 
-def mse_time_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, alpha=0.5):
-    loss_adc, _ = mse_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
-    loss_time, _ = mse_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
+def mmd_time_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref, alpha=0.5):
+    loss_adc, _ = mmd_adc(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
+    loss_time, _ = mmd_time(params, adcs, pixels, ticks, ref, pixels_ref, ticks_ref)
     return alpha * loss_adc + (1 - alpha) * loss_time, dict()
+
+def sobolev_adc(params, Q, x, y, z, ticks, hit_prob, event,
+                ref_Q, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event,
+                sigma=1.0, lambda_grad=0.1, lambda_Q=1.0, adc_norm=1.0):
+    """Sobolev-style discrepancy between predicted and reference hit clouds.
+
+    The loss compares both smoothed field values and smoothed field gradients on
+    a shared support (predicted + reference points), then adds a total-charge term.
+    """
+    sigma = jnp.maximum(jnp.asarray(sigma, dtype=jnp.float32), 1e-6)
+    inv_sigma2 = 1.0 / (sigma ** 2)
+
+    pred_pts = jnp.stack((x + event * 1e5, y, z, Q / adc_norm), axis=-1)
+    ref_pts = jnp.stack((ref_x + ref_event * 1e5, ref_y, ref_z, ref_Q / adc_norm), axis=-1)
+    eval_pts = jnp.concatenate([pred_pts, ref_pts], axis=0)
+
+    pred_w = hit_prob.astype(jnp.float32)
+    ref_w = ref_hit_prob.astype(jnp.float32)
+
+    pred_norm = jnp.maximum(jnp.sum(pred_w), 1e-6)
+    ref_norm = jnp.maximum(jnp.sum(ref_w), 1e-6)
+
+    # Evaluate smoothed scalar fields on shared support.
+    d_eval_pred = eval_pts[:, None, :] - pred_pts[None, :, :]
+    k_eval_pred = jnp.exp(-0.5 * jnp.sum(d_eval_pred ** 2, axis=-1) * inv_sigma2)
+    f_pred = jnp.sum(k_eval_pred * pred_w[None, :], axis=1) / pred_norm
+
+    d_eval_ref = eval_pts[:, None, :] - ref_pts[None, :, :]
+    k_eval_ref = jnp.exp(-0.5 * jnp.sum(d_eval_ref ** 2, axis=-1) * inv_sigma2)
+    f_ref = jnp.sum(k_eval_ref * ref_w[None, :], axis=1) / ref_norm
+
+    # Gradient of Gaussian-smoothed fields.
+    grad_pred = -jnp.einsum("nij,ni->nj", d_eval_pred, k_eval_pred * pred_w[None, :]) * inv_sigma2 / pred_norm
+    grad_ref = -jnp.einsum("nij,ni->nj", d_eval_ref, k_eval_ref * ref_w[None, :]) * inv_sigma2 / ref_norm
+
+    field_loss = jnp.mean((f_pred - f_ref) ** 2)
+    grad_loss = jnp.mean(jnp.sum((grad_pred - grad_ref) ** 2, axis=-1))
+
+    ref_total_charge = jnp.sum(ref_hit_prob)
+    total_charge = jnp.sum(hit_prob)
+    denom = ref_total_charge + 1e-6
+    charge_loss = ((total_charge - ref_total_charge) / denom) ** 2
+
+    total_loss = field_loss + lambda_grad * grad_loss + lambda_Q * charge_loss
+    aux = {
+        'sobolev_field_loss': field_loss,
+        'sobolev_grad_loss': grad_loss,
+        'charge_loss': charge_loss,
+        'sigma': sigma,
+    }
+    return total_loss, aux
 
 @partial(jit, static_argnames=['match_z'])
 def prepare_hits(params, adcs, pixels, ticks, match_z=False):
@@ -388,7 +440,7 @@ def adc2charge(dw, params):
     # return in ke
     return (dw / params.ADC_COUNTS * (params.V_REF - params.V_CM) + params.V_CM - params.V_PEDESTAL) / params.GAIN *1E-3
 
-def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, rngkey=None, loss_fn=mse_adc, **loss_kwargs):
+def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, rngkey=None, loss_fn=mmd_adc, **loss_kwargs):
     wfs, unique_pixels = simulate_wfs(params, response, tracks, fields)
     adcs, x, y, z, ticks, hit_prob, event, _ = simulate_stochastic(params, wfs, unique_pixels, rngseed=rngkey)
 
@@ -403,7 +455,7 @@ def params_loss(params, response, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_
 
     return loss_val, aux
 
-def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, rngkey=0, loss_fn=mse_adc, **loss_kwargs):
+def params_loss_parametrized(params, ref_adcs, ref_x, ref_y, ref_z, ref_ticks, ref_hit_prob, ref_event, tracks, fields, rngkey=0, loss_fn=mmd_adc, **loss_kwargs):
     adcs, x, y, z, ticks, hit_prob, event, _ = simulate_parametrized(params, tracks, fields, rngkey)
 
     Q = adc2charge(adcs, params)
@@ -448,6 +500,11 @@ def llhd_loss(ticks_prob_distrib, ticks_mc, no_hit_prob, charge_distrib, charge_
 
 def wasserstein_1d_loss(trainable_values, ref_quantiles, event_ids, num_quantiles=100, trim=0.0):
     """Computes the 2-Wasserstein distance between two unbinned 1D samples."""
+    # print("trim:", trim)
+    # print("1.0-trim:", 1.0 - trim)
+    # print("num_quantiles:", num_quantiles)
+    # print("len(trainable_values):", len(trainable_values))
+    # print("len(event_ids):", len(event_ids))
     q = jnp.linspace(trim, 1.0 - trim, num_quantiles)
 
     # Replace invalid values with NaN to mask padded segments
@@ -461,7 +518,7 @@ def wasserstein_1d_loss(trainable_values, ref_quantiles, event_ids, num_quantile
     log_q_train = jnp.log(quantiles_train + eps)
     log_q_ref = jnp.log(quantiles_ref + eps)
     
-    return jnp.mean((log_q_train - log_q_ref)**2)
+    return jnp.mean((log_q_train - log_q_ref)**2), dict()
 
 def compute_tv_penalty(log_values, track_ids, event_ids):
     """Computes total variation penalty for smoothness along a track."""

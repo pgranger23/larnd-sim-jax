@@ -8,7 +8,7 @@ import pickle
 import numpy as np
 from .ranges import ranges
 from larndsim.sim_jax import get_size_history
-from larndsim.losses_jax import mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge, nll_loss, llhd_loss #, sinkhorn_loss
+from larndsim.losses_jax import mmd_adc, mmd_time, mmd_time_adc, sobolev_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge, nll_loss, llhd_loss, compute_tv_penalty, wasserstein_1d_loss #, sinkhorn_loss
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.detsim_jax import validate_event_ids_for_packing, validate_local_event_ids
 from larndsim.softdtw_jax import SoftDTW
@@ -214,11 +214,17 @@ class ParamFitter:
                  normalization_scheme="sigmoid",
                  normalization_scale_sigmoid=1.0,
                  normalization_scale_exp_log=1.0,
+                 mmd_sigma=1.0,
+                 nll_sigma=1.0,
+                 llhd_sigma=500.0,
+                 sobolev_sigma=1.0,
+                 sobolev_lambda_grad=0.1,
                  fit_segment_de=False,
                  segment_de_mode="segment-only",
                  segment_de_lr=1e-2,
                  segment_de_optimizer="SGD",
                  segment_reg_l2=0.0,
+                 segment_reg_track_total=0.0,
                  segment_reg_smooth=0.0,
                  sz_mini_bt=1, shuffle_bt=False, shuffle_seed=42, resume_from=None,
                  config = {}):
@@ -237,6 +243,11 @@ class ParamFitter:
         self.normalization_scheme = normalization_scheme
         self.normalization_scale_sigmoid = float(normalization_scale_sigmoid)
         self.normalization_scale_exp_log = float(normalization_scale_exp_log)
+        self.mmd_sigma = float(mmd_sigma)
+        self.nll_sigma = float(nll_sigma)
+        self.llhd_sigma = float(llhd_sigma)
+        self.sobolev_sigma = float(sobolev_sigma)
+        self.sobolev_lambda_grad = float(sobolev_lambda_grad)
         self.target_seed = target_seed
         self.target_fixed_range = target_fixed_range
         self.diffusion_in_current_sim = diffusion_in_current_sim
@@ -263,6 +274,7 @@ class ParamFitter:
         self.segment_de_lr = float(segment_de_lr)
         self.segment_de_optimizer = segment_de_optimizer
         self.segment_reg_l2 = float(segment_reg_l2)
+        self.segment_reg_track_total = float(segment_reg_track_total)
         self.segment_reg_smooth = float(segment_reg_smooth)
         self.segment_de_latents = None
         self.segment_opt_state = None
@@ -271,12 +283,10 @@ class ParamFitter:
             raise ValueError("segment_de_mode must be one of: segment-only, joint")
         if self.segment_de_lr <= 0:
             raise ValueError(f"segment_de_lr must be > 0, got {self.segment_de_lr}")
-        if self.segment_reg_l2 < 0 or self.segment_reg_smooth < 0:
+        if self.segment_reg_l2 < 0 or self.segment_reg_track_total < 0 or self.segment_reg_smooth < 0:
             raise ValueError("segment regularization weights must be >= 0")
         if self.segment_de_optimizer not in ("SGD", "Adam", "RMSprop"):
             raise ValueError(f"segment_de_optimizer must be one of: SGD, Adam, RMSprop, got {self.segment_de_optimizer}")
-        if self.fit_segment_de and self.segment_de_mode == "joint":
-            raise NotImplementedError("joint detector+segment fitting is not implemented yet; use segment-only")
 
         if self.normalization_scheme not in ("sigmoid", "exp_log", "divide"):
             raise ValueError(
@@ -288,10 +298,13 @@ class ParamFitter:
             raise ValueError(f"normalization_scale_sigmoid must be > 0, got {self.normalization_scale_sigmoid}")
         if self.normalization_scale_exp_log <= 0:
             raise ValueError(f"normalization_scale_exp_log must be > 0, got {self.normalization_scale_exp_log}")
-        if 'eventID' in self.sim_track_fields:
-            self.evt_id = 'eventID'
-        else:
-            self.evt_id = 'event_id'
+        # if 'eventID' in self.sim_track_fields:
+        #     self.evt_id = 'eventID'
+        # else:
+        #     self.evt_id = 'event_id'
+
+        self.evt_id = 'eventID'
+        self.trk_id = 'trackID'
 
         if type(relevant_params) == dict:
             self.relevant_params_list = list(relevant_params.keys())
@@ -326,21 +339,24 @@ class ParamFitter:
             self.make_target_sim()
 
         loss_functions = {
-            "mse_adc": (mse_adc, {}),
-            "mse_time": (mse_time, {}),
-            "mse_time_adc": (mse_time_adc, {'alpha': 0.5}),
+            "mmd_adc": (mmd_adc, {'sigma': self.mmd_sigma}),
+            "sobolev": (sobolev_adc, {'sigma': self.sobolev_sigma, 'lambda_grad': self.sobolev_lambda_grad}),
+            "mmd_time": (mmd_time, {}),
+            "mmd_time_adc": (mmd_time_adc, {'alpha': 0.5}),
             "chamfer_3d": (chamfer_3d, {'adc_norm': adc_norm, 'match_z': match_z}),
             "sdtw_adc": (sdtw_adc, {'gamma': 1.}),
             "sdtw_time": (sdtw_time, {'gamma': 1.}),
             "sdtw_time_adc": (sdtw_time_adc, {'gamma': 1., 'alpha': 0.5}),
-            "nll": (nll_loss, {'adc_norm': adc_norm, 'sigma': 1.0}),
-            "llhd": (llhd_loss, {}),
+            "nll": (nll_loss, {'adc_norm': adc_norm, 'sigma': self.nll_sigma}),
+            "llhd": (llhd_loss, {'sigma': self.llhd_sigma}),
+            "wasserstein_1d": (wasserstein_1d_loss, {}),
+            "sobolev_adc": (sobolev_adc, {'sigma': self.sobolev_sigma, 'lambda_grad': self.sobolev_lambda_grad}),
             #"sinkhorn_loss": (sinkhorn_loss, {})
         }
 
         # Set up loss function -- can pass in directly, or choose a named one
         if loss_fn is None or loss_fn == "space_match":
-            loss_fn = "mse_adc"
+            loss_fn = "mmd_adc"
         elif loss_fn == "SDTW":
             loss_fn = "sdtw_adc"
     
@@ -369,6 +385,10 @@ class ParamFitter:
             from .strategies import CollapsedProbabilisticLossStrategy
             self.loss_strategy = CollapsedProbabilisticLossStrategy(loss_fn=self.loss_fn, **self.loss_fn_kw)
             logger.info(f"Using CollapsedProbabilisticLossStrategy with {loss_fn}")
+        elif loss_fn == "wasserstein_1d":
+            from .strategies import Q1dLossStrategy
+            self.loss_strategy = Q1dLossStrategy(loss_fn=self.loss_fn, **self.loss_fn_kw)
+            logger.info(f"Using Q1dLossStrategy with {loss_fn}")
         else:
             self.loss_strategy = GenericLossStrategy(self.loss_fn, **self.loss_fn_kw)
 
@@ -821,35 +841,160 @@ class ParamFitter:
 
             batch_row_indices = jnp.asarray(batch_row_indices, dtype=jnp.int64)
 
+            def map_norm_to_physical(norm_params_input):
+                if self.normalization_scheme == "divide":
+                    new_phys = {
+                        key: getattr(norm_params_input, key) * getattr(self.params_normalization, key)
+                        for key in self.relevant_params_list
+                    }
+                else:
+                    new_phys = {
+                        key: map_norm_to_phys(getattr(norm_params_input, key), key, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme())
+                        for key in self.relevant_params_list
+                    }
+                return self.ref_params.replace(**new_phys)
+
             def seg_loss_wrapper(segment_latents):
                 tracks_mod, scales = self.apply_segment_de_latents_to_tracks(tracks, batch_row_indices, segment_latents)
                 prediction = self.sim_strategy.predict(self.current_params, tracks_mod, self.sim_track_fields, rngkey)
+                # print("Prediction: ", prediction)
+                # print("target_data: ", target_data)
                 data_loss, aux = self.loss_strategy.compute(self.current_params, prediction, target_data)
 
                 reg_l2 = self.segment_reg_l2 * jnp.mean((scales - 1.0) ** 2)
+                reg_track_total = jnp.array(0.0, dtype=jnp.float32)
+                if self.segment_reg_track_total > 0:
+                    # track_id_field = "trackID" if "trackID" in self.sim_track_fields else ("track_id" if "track_id" in self.sim_track_fields else None)
+                    # if track_id_field is None:
+                    #     raise ValueError(
+                    #         "segment_reg_track_total requires trackID or track_id in sim_track_fields"
+                    #     )
+
+                    evt_idx = self.sim_track_fields.index(self.evt_id)
+                    trk_idx = self.sim_track_fields.index(self.trk_id)
+                    dE_idx = self.sim_track_fields.index("dE")
+
+                    evt_track_pairs = jnp.stack(
+                        [
+                            tracks[:, evt_idx].astype(jnp.int64),
+                            tracks[:, trk_idx].astype(jnp.int64)
+                        ],
+                        axis=1
+                    )
+                    _, inverse_idx = jnp.unique(evt_track_pairs, axis=0, return_inverse=True)
+
+                    # Use an upper bound for num_segments, then mask empty segments.
+                    num_segments = tracks.shape[0]
+                    dE_orig = tracks[:, dE_idx]
+                    dE_mod = tracks_mod[:, dE_idx]
+                    sum_orig = jax.ops.segment_sum(dE_orig, inverse_idx, num_segments=num_segments)
+                    sum_mod = jax.ops.segment_sum(dE_mod, inverse_idx, num_segments=num_segments)
+                    counts = jax.ops.segment_sum(jnp.ones_like(dE_orig), inverse_idx, num_segments=num_segments)
+
+                    valid = counts > 0
+                    rel_sq_diff = ((sum_mod - sum_orig) ** 2) / jnp.maximum(sum_orig ** 2, 1e-12)
+                    reg_track_total = self.segment_reg_track_total * (
+                        jnp.sum(jnp.where(valid, rel_sq_diff, 0.0)) / jnp.maximum(jnp.sum(valid), 1)
+                    )
+
                 reg_smooth = jnp.array(0.0, dtype=jnp.float32)
                 if self.segment_reg_smooth > 0 and scales.shape[0] > 1:
                     ordered = scales[jnp.argsort(batch_row_indices)]
                     reg_smooth = self.segment_reg_smooth * jnp.mean((ordered[1:] - ordered[:-1]) ** 2)
 
-                loss = data_loss + reg_l2 + reg_smooth
+                # tv = compute_tv_penalty(log_values=scales,
+                #                         track_ids=evt_idx,
+                #                         event_ids=trk_idx)
+                # reg_smooth2 = self.segment_reg_smooth * tv
+
+                loss = data_loss + reg_l2 + reg_track_total + reg_smooth 
                 aux = dict(aux)
                 aux['segment_reg_l2'] = reg_l2
+                aux['segment_reg_track_total'] = reg_track_total
                 aux['segment_reg_smooth'] = reg_smooth
                 aux['segment_scale_mean'] = jnp.mean(scales)
                 aux['segment_scale_std'] = jnp.std(scales)
                 return loss, aux
 
-            if with_loss and with_grad:
-                (loss_val, aux), grads = value_and_grad(seg_loss_wrapper, has_aux=True)(self.segment_de_latents)
-            elif with_loss:
-                loss_val, aux = seg_loss_wrapper(self.segment_de_latents)
-                grads = None
-            elif with_grad:
-                grads, aux = grad(seg_loss_wrapper, has_aux=True)(self.segment_de_latents)
+            def seg_joint_loss_wrapper(norm_params_input, segment_latents):
+                physical_params = map_norm_to_physical(norm_params_input)
+                tracks_mod, scales = self.apply_segment_de_latents_to_tracks(tracks, batch_row_indices, segment_latents)
+                prediction = self.sim_strategy.predict(physical_params, tracks_mod, self.sim_track_fields, rngkey)
+                data_loss, aux = self.loss_strategy.compute(physical_params, prediction, target_data)
 
-            if grads is not None:
-                grads = grads[jnp.asarray(batch_row_indices, dtype=jnp.int32)]
+                reg_l2 = self.segment_reg_l2 * jnp.mean((scales - 1.0) ** 2)
+                reg_track_total = jnp.array(0.0, dtype=jnp.float32)
+                if self.segment_reg_track_total > 0:
+                    evt_idx = self.sim_track_fields.index(self.evt_id)
+                    trk_idx = self.sim_track_fields.index(self.trk_id)
+                    dE_idx = self.sim_track_fields.index("dE")
+
+                    evt_track_pairs = jnp.stack(
+                        [
+                            tracks[:, evt_idx].astype(jnp.int64),
+                            tracks[:, trk_idx].astype(jnp.int64)
+                        ],
+                        axis=1
+                    )
+                    _, inverse_idx = jnp.unique(evt_track_pairs, axis=0, return_inverse=True)
+
+                    num_segments = tracks.shape[0]
+                    dE_orig = tracks[:, dE_idx]
+                    dE_mod = tracks_mod[:, dE_idx]
+                    sum_orig = jax.ops.segment_sum(dE_orig, inverse_idx, num_segments=num_segments)
+                    sum_mod = jax.ops.segment_sum(dE_mod, inverse_idx, num_segments=num_segments)
+                    counts = jax.ops.segment_sum(jnp.ones_like(dE_orig), inverse_idx, num_segments=num_segments)
+
+                    valid = counts > 0
+                    rel_sq_diff = ((sum_mod - sum_orig) ** 2) / jnp.maximum(sum_orig ** 2, 1e-12)
+                    reg_track_total = self.segment_reg_track_total * (
+                        jnp.sum(jnp.where(valid, rel_sq_diff, 0.0)) / jnp.maximum(jnp.sum(valid), 1)
+                    )
+
+                reg_smooth = jnp.array(0.0, dtype=jnp.float32)
+                if self.segment_reg_smooth > 0 and scales.shape[0] > 1:
+                    ordered = scales[jnp.argsort(batch_row_indices)]
+                    reg_smooth = self.segment_reg_smooth * jnp.mean((ordered[1:] - ordered[:-1]) ** 2)
+
+                loss = data_loss + reg_l2 + reg_track_total + reg_smooth
+                aux = dict(aux)
+                aux['segment_reg_l2'] = reg_l2
+                aux['segment_reg_track_total'] = reg_track_total
+                aux['segment_reg_smooth'] = reg_smooth
+                aux['segment_scale_mean'] = jnp.mean(scales)
+                aux['segment_scale_std'] = jnp.std(scales)
+                return loss, aux
+
+            if self.segment_de_mode == "joint":
+                detector_grads, segment_grads = None, None
+                if with_loss and with_grad:
+                    (loss_val, aux), (detector_grads, segment_grads) = value_and_grad(
+                        seg_joint_loss_wrapper, argnums=(0, 1), has_aux=True
+                    )(self.norm_params, self.segment_de_latents)
+                elif with_loss:
+                    loss_val, aux = seg_joint_loss_wrapper(self.norm_params, self.segment_de_latents)
+                elif with_grad:
+                    (detector_grads, segment_grads), aux = grad(
+                        seg_joint_loss_wrapper, argnums=(0, 1), has_aux=True
+                    )(self.norm_params, self.segment_de_latents)
+
+                if segment_grads is not None:
+                    segment_grads = segment_grads[jnp.asarray(batch_row_indices, dtype=jnp.int32)]
+                grads = {
+                    "detector": detector_grads,
+                    "segment": segment_grads,
+                }
+            else:
+                if with_loss and with_grad:
+                    (loss_val, aux), grads = value_and_grad(seg_loss_wrapper, has_aux=True)(self.segment_de_latents)
+                elif with_loss:
+                    loss_val, aux = seg_loss_wrapper(self.segment_de_latents)
+                    grads = None
+                elif with_grad:
+                    grads, aux = grad(seg_loss_wrapper, has_aux=True)(self.segment_de_latents)
+
+                if grads is not None:
+                    grads = grads[jnp.asarray(batch_row_indices, dtype=jnp.int32)]
 
             if with_hess:
                 hess, aux_hess = None, None
@@ -1164,14 +1309,34 @@ class GradientDescentFitter(ParamFitter):
                         if grads is None:
                             raise RuntimeError("Expected segment gradients in fit_segment_de mode")
 
-                        self.apply_segment_de_updates(batch_row_indices, grads)
+                        if self.segment_de_mode == "joint":
+                            segment_grads = grads.get("segment")
+                            detector_grads = grads.get("detector")
+                            if segment_grads is None or detector_grads is None:
+                                raise RuntimeError("Expected both detector and segment gradients in joint segment_de_mode")
+
+                            self.apply_segment_de_updates(batch_row_indices, segment_grads)
+                            modified_grads = self.process_grads(detector_grads)
+                        else:
+                            segment_grads = grads
+                            self.apply_segment_de_updates(batch_row_indices, segment_grads)
+                            modified_grads = None
+
                         stop_time = time()
+
+                        if modified_grads is not None:
+                            for param in self.relevant_params_list:
+                                self.training_history[param+"_grad"].append(modified_grads[param].item())
+                                if type(getattr(self.current_params, param)) == float:
+                                    self.training_history[param + '_iter'].append(getattr(self.current_params, param))
+                                else:
+                                    self.training_history[param + '_iter'].append(getattr(self.current_params, param).item())
 
                         self.training_history['step_time'].append(stop_time - start_time)
                         self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
                         aux_serializable = {k: serialize_value(v) for k, v in aux.items()} if aux is not None else {}
                         self.training_history['aux_iter'].append(aux_serializable) # type: ignore
-                        self.training_history['segment_grad_norm_iter'].append(float(jnp.linalg.norm(grads)))
+                        self.training_history['segment_grad_norm_iter'].append(float(jnp.linalg.norm(segment_grads)))
                         self.training_history['segment_scale_mean_iter'].append(float(aux.get('segment_scale_mean', 1.0)))
                         self.training_history['segment_scale_std_iter'].append(float(aux.get('segment_scale_std', 0.0)))
 
