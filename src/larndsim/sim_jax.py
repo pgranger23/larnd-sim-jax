@@ -141,7 +141,7 @@ def simulate_drift(params, tracks, fields, rngkey):
 @jit
 def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template, 
                              nelectrons, long_diff, currents_idx, nelectrons_neigh, 
-                             pix_renumbering_neigh, t0_neigh, currents_idx_neigh):
+                             pix_renumbering_neigh, valid_neigh_mask, t0_neigh, currents_idx_neigh):
     
     Npixels = unique_pixels.shape[0]
     Nticks = int(params.time_interval[1] / params.t_sampling) + 1
@@ -150,8 +150,13 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
 
     # --- 1. PREPARE MAIN PIXEL DATA (DIFFERENTIABLE TIME SHIFT) ---
     pix_renum = jnp.searchsorted(unique_pixels, pixels.ravel(), method='sort')
-    mask = (unique_pixels[pix_renum] == pixels.ravel())
-    pix_renum = jnp.where(mask, pix_renum, -1) #Maybe a bit ugly but out of range indices should be properly ignored by jax in the sum
+    pix_in_bounds = pix_renum < unique_pixels.size
+    pix_renum_clipped = jnp.minimum(pix_renum, unique_pixels.size - 1)
+    pix_vals = pixels.ravel()
+    pix_match = unique_pixels[pix_renum_clipped] == pix_vals
+    valid_main_mask = pix_in_bounds & pix_match & (pix_vals >= 0)
+    # Keep indices in-bounds and mask out invalid contributions explicitly.
+    pix_renum = jnp.where(valid_main_mask, pix_renum, 0)
 
     # Extract continuous tick and fractional remainder for the gradient
     float_ticks_main = t0_after_diff / params.t_sampling
@@ -187,7 +192,7 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
         response_template.take(idx[:, None] * Nx * Ny * Nt + base_idx) * b[:, None] +
         response_template.take((idx - 1)[:, None] * Nx * Ny * Nt + base_idx) * a[:, None] +
         response_template.take((idx + 1)[:, None] * Nx * Ny * Nt + base_idx) * c[:, None]
-    ) * nelectrons[:, None]
+    ) * nelectrons[:, None] * valid_main_mask[:, None]
     
     # Weight the values by the sub-tick fraction
     main_vals_0 = (main_vals_2d * (1.0 - frac_main[:, None])).ravel()
@@ -198,6 +203,7 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     elec_ids_neigh = jnp.repeat(jnp.arange(nelectrons_neigh.shape[0]), npix_neigh)
     
     neigh_charge = jnp.take(nelectrons_neigh, elec_ids_neigh)
+    neigh_charge = jnp.where(valid_neigh_mask, neigh_charge, jnp.zeros_like(neigh_charge))
     neigh_t0 = jnp.take(t0_neigh, elec_ids_neigh)
     
     # Extract continuous tick and fractional remainder for neighbors
@@ -239,7 +245,7 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     val_cum_1 = response_cum.take(idx * Nx * Ny * Nt + base_curr + jnp.clip(cathode_ticks_main + 1, 0, Nt - 1))
     interp_cum = val_cum_0 * (1.0 - frac_main) + val_cum_1 * frac_main
     
-    diff_main_interp = (response_cum.take(idx * Nx * Ny * Nt + base_curr + Nt - sig_len) - interp_cum) * nelectrons
+    diff_main_interp = (response_cum.take(idx * Nx * Ny * Nt + base_curr + Nt - sig_len) - interp_cum) * nelectrons * valid_main_mask
     
     idx_corr_main_0 = jnp.where((start_ticks_0 <= 0) | (start_ticks_0 >= Nticks - 1), 0, start_ticks_0) + pix_renum * Nticks
     idx_corr_main_1 = jnp.where((start_ticks_1 <= 0) | (start_ticks_1 >= Nticks - 1), 0, start_ticks_1) + pix_renum * Nticks
@@ -716,16 +722,19 @@ def simulate_wfs(params, response_template, tracks, fields):
     ################################################
     ################################################
 
-    #Sorting the pixels and getting the unique ones
+    # Sorting the pixels and getting the unique ones.
     unique_pixels = jnp.unique(main_pixels.ravel())
     padded_unique = pad_size(unique_pixels.shape[0], "unique_pixels", 0.2)
 
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_unique - unique_pixels.shape[0]), mode='constant', constant_values=-1))
 
-    pix_renumbering_neigh= jnp.searchsorted(unique_pixels, pIDs_neigh.ravel(), method='sort')
-
-    mask = (pix_renumbering_neigh < unique_pixels.size) & (unique_pixels[pix_renumbering_neigh] == pIDs_neigh.ravel())
-    pix_renumbering_neigh = pix_renumbering_neigh.at[~mask].set(0) #ASSUMES THAT THERE IS ALWAYS A -1 PIXID
+    pix_renumbering_neigh = jnp.searchsorted(unique_pixels, pIDs_neigh.ravel(), method='sort')
+    neigh_in_bounds = pix_renumbering_neigh < unique_pixels.size
+    neigh_renum_clipped = jnp.minimum(pix_renumbering_neigh, unique_pixels.size - 1)
+    neigh_vals = pIDs_neigh.ravel()
+    neigh_match = unique_pixels[neigh_renum_clipped] == neigh_vals
+    valid_neigh_mask = neigh_in_bounds & neigh_match & (neigh_vals >= 0)
+    pix_renumbering_neigh = jnp.where(valid_neigh_mask, pix_renumbering_neigh, 0)
     # mask_indices = jnp.nonzero(mask)[0]
     # padded_size = pad_size(mask_indices.shape[0], "pix_renumbering", 0.2)
     # mask_indices = jnp.pad(mask_indices, (0, padded_mask - mask_indices.shape[0]), mode='constant', constant_values=-1)
@@ -733,8 +742,9 @@ def simulate_wfs(params, response_template, tracks, fields):
     ###############################################
     ###############################################
 
-    wfs = simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, t0_neigh, currents_idx_neigh)
-
+    wfs = simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_template, nelectrons, long_diff, currents_idx, nelectrons_neigh, pix_renumbering_neigh, valid_neigh_mask, t0_neigh, currents_idx_neigh)
+    # Hard guard: never propagate garbage/padded rows into waveform outputs.
+    wfs = jnp.where((unique_pixels >= 0)[:, None], wfs, 0)
 
     return wfs[:, 1:], unique_pixels
 
