@@ -4,6 +4,6 @@ eField: 0.1
 tran_diff: 0.1
 long_diff: 0.1
 lifetime: 0.1
-#shift_x: 5e-3
-#shift_y: 5e-3
-#shift_z: 5e-3
+shift_x: 0.1
+shift_y: 0.1
+shift_z: 0.1
