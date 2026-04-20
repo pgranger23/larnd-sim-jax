@@ -73,25 +73,32 @@ def asciihist(it, bins=10, minmax=None, str_tag='',
     ret = '\n'.join(ret)
     return ret
 
-
 def load_results(fname):
     with h5py.File(fname, 'r') as f:
-        if 'pixels' in f.keys():
-            pixels = np.array(f['pixels'])
-            if 'adc_clean' in f.keys():
-                adc = np.array(f['adc_clean'])
+        data = {'eventID': [], 'adc_clean': [], 'pixels': [], 'ticks': []}
+        for batch_idx in f.keys():
+            group = f[batch_idx]
+            if 'pixels' in group.keys():
+                data['eventID'].append(group['eventID'][:])
+                data['pixels'].append(group['pixels'][:])
+                data['adc_clean'].append(group['adc_clean'][:])
+                data['ticks'].append(group['ticks'][:])
             else:
-                adc = np.array(f['adc'])
-            ticks = np.array(f['ticks'])
-        else:
-            for key in f.keys():
-                pixels = np.array(f[key]['pixels'])
-                if 'adc_clean' in f[key].keys():
-                    adc = np.array(f[key]['adc_clean'])
-                else:
-                    adc = np.array(f[key]['adc'])
-                ticks = np.array(f[key]['ticks'])
-                break
+                for event_key in group.keys():
+                    event_group = group[event_key]
+                    data['eventID'].append(event_group['eventID'][:])
+                    data['pixels'].append(event_group['pixels'][:])
+                    data['adc_clean'].append(event_group['adc_clean'][:])
+                    data['ticks'].append(event_group['ticks'][:])
+    data['eventID'] = np.concatenate(data['eventID'])
+    data['pixels'] = np.concatenate(data['pixels'])
+    data['adc_clean'] = np.concatenate(data['adc_clean'])
+    data['ticks'] = np.concatenate(data['ticks'])
+
+    return data
+
+
+     
     return pixels, adc, ticks
 
 def make_grids(pixels, adcs, ref_params):
@@ -118,18 +125,31 @@ def compare(config):
     nb_not_both_activated = 0
 
     for i in range(config.n_files):
-        pixels_ref, adcs_ref, _ = load_results(f"{config.ref_output}{i}.h5")
-        grids_ref = make_grids(pixels_ref, adcs_ref, ref_params)
+        data_ref = load_results(f"{config.ref_output}{i}.h5")
+    
+        data_new = load_results(f"{config.output}{i}.h5")
+        eventIDs = np.unique(np.concatenate([data_ref['eventID'], data_new['eventID']]))
 
-        pixels_new, adcs_new, _ = load_results(f"{config.output}{i}.h5")
-        grids_new = make_grids(pixels_new, adcs_new, ref_params)
+        for eid in eventIDs:
+            mask_ref = data_ref['eventID'] == eid
+            mask_new = data_new['eventID'] == eid
+            pixels_ref = data_ref['pixels'][mask_ref]
+            adcs_ref = data_ref['adc_clean'][mask_ref]
+            ticks_ref = data_ref['ticks'][mask_ref]
+
+            pixels_new = data_new['pixels'][mask_new]
+            adcs_new = data_new['adc_clean'][mask_new]
+            ticks_new = data_new['ticks'][mask_new]
+
+            grids_ref = make_grids(pixels_ref, adcs_ref, ref_params)
+            grids_new = make_grids(pixels_new, adcs_new, ref_params)
 
         
-        for grid_ref, grid_new in zip(grids_ref, grids_new):
-            mask = (grid_ref > 0) | (grid_new > 0)
-            diff = grid_new - grid_ref
-            all_diffs.append(diff[mask])
-            nb_not_both_activated += np.sum((grid_ref > 0) != (grid_new > 0))
+            for grid_ref, grid_new in zip(grids_ref, grids_new):
+                mask = (grid_ref > 0) | (grid_new > 0)
+                diff = grid_new - grid_ref
+                all_diffs.append(diff[mask])
+                nb_not_both_activated += np.sum((grid_ref > 0) != (grid_new > 0))
     all_diffs = np.concatenate(all_diffs)
     asciihist(all_diffs, minmax=None, bins=np.linspace(-10.5, 10.5, 22), str_tag='Distrib');
     print("Average deviation per active pixel:", np.mean(all_diffs))
