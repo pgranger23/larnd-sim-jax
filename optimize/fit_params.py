@@ -10,6 +10,7 @@ from .ranges import ranges
 from larndsim.sim_jax import get_size_history
 from larndsim.losses_jax import mse_adc, mse_time, mse_time_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge, nll_loss, llhd_loss #, sinkhorn_loss
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
+from larndsim.detsim_jax import validate_event_ids_for_packing, validate_local_event_ids
 from larndsim.softdtw_jax import SoftDTW
 from jax.flatten_util import ravel_pytree
 import logging
@@ -75,6 +76,14 @@ def serialize_value(v):
     else:
         # Already Python type
         return v
+
+def serialize_param_state(params, relevant):
+    """Serialize selected fields from params container into plain Python values."""
+    return {par: serialize_value(getattr(params, par)) for par in relevant}
+
+def restore_param_state(ref_params, state_dict):
+    """Restore params container from serialized field dictionary."""
+    return ref_params.replace(**{key: float(val) for key, val in state_dict.items()})
 
 
 def normalize_param(param_val, param_name, scheme="divide", undo_norm=False):
@@ -155,30 +164,39 @@ def remove_noise_from_params(params):
 #         sigma = (ranges[key]['up'] - ranges[key]['down']) / 2.0
 #         return (val - nom) / sigma
 
-# sigmoid parameter normalization mapping for all parameters, with hard min/max bounds from ranges.py and nominal value at sigmoid(0)
-def map_norm_to_phys(val, key):
-    """Map an unconstrained (normalised) value to physical space via sigmoid.
+# Parameter normalization mappings.
+def map_norm_to_phys(val, key, scheme="sigmoid", scale=1.0):
+    if scheme == "sigmoid":
+        low, high = ranges[key]['min'], ranges[key]['max']
+        return low + (high - low) * jax.nn.sigmoid(scale * val)
 
-    Physical = low + (high - low) * sigmoid(val)
+    if scheme == "exp_log":
+        nom = ranges[key]['nom']
+        if nom <= 0:
+            raise ValueError(f"exp_log normalization requires positive nominal value for '{key}', got {nom}")
+        return nom * jnp.exp(scale * val)
 
-    This keeps the physical parameter strictly inside [low, high] for any
-    finite *val*, making boundary handling implicit rather than explicit.
-    """
-    low, high = ranges[key]['min'], ranges[key]['max']
-    return low + (high - low) * jax.nn.sigmoid(val)
+    raise ValueError(f"Unsupported normalization scheme in map_norm_to_phys: {scheme}")
 
-def map_phys_to_norm(val, key):
-    """Inverse of :func:`map_norm_to_phys` — map a physical value to unconstrained space.
 
-    norm = logit((val - low) / (high - low))
+def map_phys_to_norm(val, key, scheme="sigmoid", scale=1.0):
+    if scale <= 0:
+        raise ValueError(f"Normalization scale must be > 0 for scheme '{scheme}', got {scale}")
 
-    Useful for initialising the optimiser from a known physical starting point.
-    The fraction is clamped to (eps, 1-eps) to avoid infinite results at the boundaries.
-    """
-    low, high = ranges[key]['min'], ranges[key]['max']
-    eps = jnp.finfo(jnp.float32).eps
-    frac = jnp.clip((val - low) / (high - low), eps, 1.0 - eps)
-    return jnp.log(frac / (1.0 - frac))
+    if scheme == "sigmoid":
+        low, high = ranges[key]['min'], ranges[key]['max']
+        eps = jnp.finfo(jnp.float32).eps
+        frac = jnp.clip((val - low) / (high - low), eps, 1.0 - eps)
+        return jnp.log(frac / (1.0 - frac)) / scale
+
+    if scheme == "exp_log":
+        nom = ranges[key]['nom']
+        if nom <= 0:
+            raise ValueError(f"exp_log normalization requires positive nominal value for '{key}', got {nom}")
+        eps = jnp.finfo(jnp.float32).tiny
+        return jnp.log(jnp.maximum(val, eps) / nom) / scale
+
+    raise ValueError(f"Unsupported normalization scheme in map_phys_to_norm: {scheme}")
 
 class ParamFitter:
     def __init__(self, relevant_params, set_init_params, sim_track_fields, tgt_track_fields,
@@ -193,7 +211,10 @@ class ParamFitter:
                  mc_diff = False,
                  read_target=False,
                  probabilistic_sim=False,
-                 sz_mini_bt=1, shuffle_bt=False, shuffle_seed=42,
+                 normalization_scheme="sigmoid",
+                 normalization_scale_sigmoid=1.0,
+                 normalization_scale_exp_log=1.0,
+                 sz_mini_bt=1, shuffle_bt=False, shuffle_seed=42, resume_from=None,
                  config = {}):
 
         self.read_target = read_target
@@ -201,9 +222,15 @@ class ParamFitter:
         self.set_params = set_params
         self.detector_props = detector_props
         self.pixel_layouts = pixel_layouts
+        self.resume_from = resume_from
+        self.resumed = False
+        self.total_iter = 0
         self.readout_noise_target = readout_noise_target
         self.readout_noise_guess = readout_noise_guess
         self.vary_init = vary_init
+        self.normalization_scheme = normalization_scheme
+        self.normalization_scale_sigmoid = float(normalization_scale_sigmoid)
+        self.normalization_scale_exp_log = float(normalization_scale_exp_log)
         self.target_seed = target_seed
         self.target_fixed_range = target_fixed_range
         self.diffusion_in_current_sim = diffusion_in_current_sim
@@ -225,6 +252,16 @@ class ParamFitter:
         self.sim_track_fields = sim_track_fields
         self.tgt_track_fields = tgt_track_fields
 
+        if self.normalization_scheme not in ("sigmoid", "exp_log", "divide"):
+            raise ValueError(
+                f"Unknown normalization_scheme '{self.normalization_scheme}'. "
+                "Use one of: sigmoid, exp_log, divide"
+            )
+
+        if self.normalization_scale_sigmoid <= 0:
+            raise ValueError(f"normalization_scale_sigmoid must be > 0, got {self.normalization_scale_sigmoid}")
+        if self.normalization_scale_exp_log <= 0:
+            raise ValueError(f"normalization_scale_exp_log must be > 0, got {self.normalization_scale_exp_log}")
         if 'eventID' in self.sim_track_fields:
             self.evt_id = 'eventID'
         else:
@@ -331,6 +368,13 @@ class ParamFitter:
         if keep_in_memory:
             self.targets = {}
 
+    def _norm_scale_for_scheme(self):
+        if self.normalization_scheme == "sigmoid":
+            return self.normalization_scale_sigmoid
+        if self.normalization_scheme == "exp_log":
+            return self.normalization_scale_exp_log
+        return 1.0
+
     def setup_params(self):
         Params = build_params_class(self.relevant_params_list)
         ref_params = load_detector_properties(Params, self.detector_props, self.pixel_layouts)
@@ -371,9 +415,16 @@ class ParamFitter:
         if self.vary_init:
             logger.info("Running with random initial guess")
             for param in self.relevant_params_list:
-                # based on the sigmoid mapping, the norm_val of 0 corresponds to the nominal value, and norm_val of ±3 corresponds to values close to the min/max bounds, so we sample in a wider range to allow for more variation in the initial parameters
-                norm_val = np.random.uniform(low=-3.0, high=3.0)
-                init_val = float(map_norm_to_phys(norm_val, param))
+                if self.normalization_scheme == "divide":
+                    init_val = float(np.random.uniform(low=ranges[param]['down'], high=ranges[param]['up']))
+                    norm_val = 1.0
+                elif self.normalization_scheme == "exp_log":
+                    norm_val = np.random.uniform(low=-1.0, high=1.0)
+                    init_val = float(map_norm_to_phys(norm_val, param, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme()))
+                else:
+                    # For sigmoid, ±3 is close to bounds but avoids hard saturation.
+                    norm_val = np.random.uniform(low=-3.0, high=3.0)
+                    init_val = float(map_norm_to_phys(norm_val, param, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme()))
                 initial_params[param] = init_val
                 logger.info(f"vary_init: {param} = {init_val:.4f} (norm={norm_val:.3f})")
 
@@ -390,14 +441,13 @@ class ParamFitter:
         self.ref_params = ref_params
 
         self.params_normalization = ref_params.replace(**{key: getattr(self.current_params, key) if getattr(self.current_params, key) != 0. else 1. for key in self.relevant_params_list})
-        # self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
-        # start in the middle of the range, to avoid starting with zero gradients for sigmoid mapping, ignoring the yaml specified initial params
-        self.norm_params = ref_params.replace(**{key: 0. for key in self.relevant_params_list})
-        # start at the yaml specified initial params, but mapped to norm space for sigmoid mapping (this is the default)
-        # self.norm_params = ref_params.replace(**{
-        #     key: float(map_phys_to_norm(getattr(self.current_params, key), key))
-        #     for key in self.relevant_params_list
-        # })
+        if self.normalization_scheme == "divide":
+            self.norm_params = ref_params.replace(**{key: 1. if getattr(self.current_params, key) != 0. else 0. for key in self.relevant_params_list})
+        else:
+            self.norm_params = ref_params.replace(**{
+                key: float(map_phys_to_norm(getattr(self.current_params, key), key, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme()))
+                for key in self.relevant_params_list
+            })
 
         #Only do it now to not inpact current_params (ref_params?)
         #FIXME It's a problem if the noise parameters are to be fitted
@@ -408,12 +458,17 @@ class ParamFitter:
             self.norm_params = remove_noise_from_params(self.norm_params)
 
     def update_params(self):
-        new_physical_params = {
-            key: map_norm_to_phys(getattr(self.norm_params, key), key)
-            for key in self.relevant_params_list
-        }
+        if self.normalization_scheme == "divide":
+            new_physical_params = {
+                key: getattr(self.norm_params, key) * getattr(self.params_normalization, key)
+                for key in self.relevant_params_list
+            }
+        else:
+            new_physical_params = {
+                key: map_norm_to_phys(getattr(self.norm_params, key), key, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme())
+                for key in self.relevant_params_list
+            }
         self.current_params = self.ref_params.replace(**new_physical_params)
-        # self.current_params = self.norm_params.replace(**{key: getattr(self.norm_params, key)*getattr(self.params_normalization, key) for key in self.relevant_params_list})
 
     def make_target_sim(self):
         np.random.seed(self.target_seed)
@@ -527,6 +582,88 @@ class ParamFitter:
 
         return ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id
 
+    def get_batch_global_event_ids(self, dataloader, batch_idx, selected_tracks=None):
+        dataset = getattr(dataloader, 'dataset', None)
+        if dataset is not None and hasattr(dataset, 'get_batch_global_event_ids'):
+            return jnp.asarray(dataset.get_batch_global_event_ids(batch_idx), dtype=jnp.int64)
+
+        if selected_tracks is None:
+            return jnp.empty((0,), dtype=jnp.int64)
+
+        evt_idx = self.sim_track_fields.index(self.evt_id)
+        return jnp.unique(selected_tracks[:, evt_idx]).astype(jnp.int64)
+
+    def validate_track_batch_event_ids(self, track_batch, track_fields, context):
+        evt_idx = track_fields.index(self.evt_id)
+        event_ids = np.asarray(track_batch[:, evt_idx], dtype=np.int64)
+        validate_local_event_ids(event_ids, context=context)
+        validate_event_ids_for_packing(self.current_params, event_ids, kind="pixel", context=context)
+        validate_event_ids_for_packing(self.current_params, event_ids, kind="bin", context=context)
+
+    def load_checkpoint(self, checkpoint_path):
+        with open(checkpoint_path, "rb") as f:
+            loaded = pickle.load(f)
+
+        if not isinstance(loaded, dict):
+            raise ValueError(f"Checkpoint {checkpoint_path} does not contain a history dict")
+
+        self.training_history = loaded
+        self.total_iter = int(loaded.get('total_iter', 0))
+        ckpt_norm_scheme = loaded.get('normalization_scheme')
+        if ckpt_norm_scheme is not None and ckpt_norm_scheme != self.normalization_scheme:
+            raise ValueError(
+                f"Checkpoint normalization_scheme ({ckpt_norm_scheme}) does not match current setting "
+                f"({self.normalization_scheme})"
+            )
+
+        norm_state = loaded.get('norm_params_state')
+        current_state = loaded.get('current_params_state')
+        opt_state = loaded.get('opt_state')
+
+        if norm_state is None:
+            raise ValueError(
+                f"Checkpoint {checkpoint_path} has no norm_params_state; "
+                "old history-only pickle cannot be resumed exactly"
+            )
+
+        self.norm_params = restore_param_state(self.ref_params, norm_state)
+
+        if current_state is not None:
+            self.current_params = restore_param_state(self.ref_params, current_state)
+        else:
+            self.update_params()
+
+        if opt_state is None:
+            raise ValueError(
+                f"Checkpoint {checkpoint_path} has no opt_state; "
+                "old history-only pickle cannot resume Adam/SGD state"
+            )
+
+        self.opt_state = opt_state
+        self.resumed = True
+
+    def save_checkpoint(self, total_iter):
+        """Persist history plus resume-critical optimizer/parameter state."""
+        self.total_iter = int(total_iter)
+        self.training_history['checkpoint_version'] = 1
+        self.training_history['total_iter'] = self.total_iter
+        self.training_history['normalization_scheme'] = self.normalization_scheme
+        self.training_history['normalization_scale_sigmoid'] = self.normalization_scale_sigmoid
+        self.training_history['normalization_scale_exp_log'] = self.normalization_scale_exp_log
+        self.training_history['norm_params_state'] = serialize_param_state(
+            self.norm_params, self.relevant_params_list
+        )
+        self.training_history['current_params_state'] = serialize_param_state(
+            self.current_params, self.relevant_params_list
+        )
+        if hasattr(self, 'opt_state'):
+            self.training_history['opt_state'] = self.opt_state
+        if self.resume_from is not None:
+            self.training_history['resumed_from'] = self.resume_from
+
+        with open(f'fit_result/{self.test_name}/history_iter{self.total_iter}_{self.out_label}.pkl', "wb") as f_history:
+            pickle.dump(self.training_history, f_history)
+
     def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True, with_hess=False, epoch=0, use_physical_params=False):
         if self.probabilistic_sim:
             rngkey = None
@@ -575,10 +712,16 @@ class ParamFitter:
         else:
             def loss_wrapper(norm_params_input):
                 # Map from unconstrained space to physical space internally
-                new_phys = {
-                    key: map_norm_to_phys(getattr(norm_params_input, key), key)
-                    for key in self.relevant_params_list
-                }
+                if self.normalization_scheme == "divide":
+                    new_phys = {
+                        key: getattr(norm_params_input, key) * getattr(self.params_normalization, key)
+                        for key in self.relevant_params_list
+                    }
+                else:
+                    new_phys = {
+                        key: map_norm_to_phys(getattr(norm_params_input, key), key, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme())
+                        for key in self.relevant_params_list
+                    }
                 physical_params = self.ref_params.replace(**new_phys)
                 prediction = self.sim_strategy.predict(physical_params, tracks, self.sim_track_fields, rngkey)
                 return self.loss_strategy.compute(physical_params, prediction, target_data)
@@ -599,13 +742,17 @@ class ParamFitter:
     
     def prepare_fit(self):
         # make a folder for the pixel target
-        if os.path.exists('target_' + self.out_label):
-            shutil.rmtree('target_' + self.out_label, ignore_errors=True)
-        os.makedirs('target_' + self.out_label)
 
-        # make a folder for the fit result
+        target_dir = 'target_' + self.out_label
+        if os.path.exists(target_dir):
+            shutil.rmtree(target_dir, ignore_errors=True)
+        os.makedirs(target_dir, exist_ok=True)
+
         if not os.path.exists(f'fit_result/{self.test_name}'):
             os.makedirs(f'fit_result/{self.test_name}')
+
+        if self.resume_from is not None and self.resumed:
+            return
 
         for param in self.relevant_params_list:
             self.training_history[param] = []
@@ -622,7 +769,7 @@ class ParamFitter:
                 if not self.read_target:
                     self.training_history[param+'_target'].append(getattr(self.target_params, param))
             if len(self.training_history[param+"_iter"]) == 0:
-                self.training_history[param+"_iter"].append(float(map_norm_to_phys(0., param)))
+                self.training_history[param+"_iter"].append(getattr(self.current_params, param))
         if not self.read_target:
             for param in self.shift_no_fit:
                 if len(self.training_history[param+'_target']) == 0:
@@ -630,7 +777,6 @@ class ParamFitter:
 
     def fit(self, *args, **kwargs):
         raise NotImplementedError("Fit method not implemented. Use a derived class")
-        
 
 class GradientDescentFitter(ParamFitter):
     def __init__(self, optimizer_fn="Adam", max_clip_norm_val=False, clip_from_range=False,
@@ -701,6 +847,10 @@ class GradientDescentFitter(ParamFitter):
     
         self.opt_state = self.optimizer.init(extract_relevant_params(self.norm_params, self.relevant_params_list))
 
+        if self.resume_from is not None:
+            logger.info(f"Resuming from checkpoint {self.resume_from}")
+            self.load_checkpoint(self.resume_from)
+
         self.training_history['optimizer_fn_name'] = self.optimizer_fn_name
 
     def clip_values(self, mini=0.01, maxi=100):
@@ -717,10 +867,6 @@ class GradientDescentFitter(ParamFitter):
         setattr(self, params, getattr(self, params).replace(**{key: getattr(getattr(self, params), key) + val for key, val in update.items()}))
 
     def process_grads(self, grads):
-        # REMOVE scaling by params_normalization. 
-        # With Sigmoid mapping, the gradient 'grads' is already the correct 
-        # derivative with respect to the unconstrained values.
-        
         # We extract only the relevant parameters to pass to the optimizer
         relevant_grads = extract_relevant_params(grads, self.relevant_params_list)
 
@@ -729,16 +875,20 @@ class GradientDescentFitter(ParamFitter):
             logger.warning("Got NaN gradients! Skipping update for this batch")
             return relevant_grads
 
+        if self.normalization_scheme == "divide":
+            relevant_grads = {
+                key: relevant_grads[key] * getattr(self.params_normalization, key)
+                for key in self.relevant_params_list
+            }
+
         # Update the optimizer state and get the updates for norm_params
         updates, self.opt_state = self.optimizer.update(relevant_grads, self.opt_state)
         
         # Apply the updates directly to the unconstrained norm_params
         self.apply_updates('norm_params', updates)
-        
-        # IMPORTANT: Disable manual range clipping. 
-        # The Sigmoid mapping in update_params() handles boundaries naturally.
-        # if self.clip_from_range:
-        #     self.clip_values_from_range()
+
+        if self.normalization_scheme == "divide" and self.clip_from_range:
+            self.clip_values_from_range()
 
         # Re-map unconstrained values to physical values for the next simulation step
         self.update_params()
@@ -768,10 +918,22 @@ class GradientDescentFitter(ParamFitter):
 
         self.prepare_fit()
 
+        start_iter = self.total_iter if self.resume_from is not None else 0
+
         if iterations is not None:
             pbar_total = iterations
         else:
             pbar_total = len(dataloader_sim) * epochs
+
+        total_iter = start_iter
+        target_iter = start_iter + iterations if iterations is not None else None
+
+        # self.prepare_fit()
+
+        # if iterations is not None:
+        #     pbar_total = iterations
+        # else:
+        #     pbar_total = len(dataloader_sim) * epochs
 
         if not self.read_target:
             # If explicit number of iterations, scale epochs accordingly
@@ -782,7 +944,7 @@ class GradientDescentFitter(ParamFitter):
             epochs = iterations // len(dataloader_sim) + 1
 
         # The training loop
-        total_iter = 0
+        # total_iter = 0
         terminate_fit = False
         with tqdm(total=pbar_total) as pbar:
             for epoch in range(epochs):
@@ -801,12 +963,14 @@ class GradientDescentFitter(ParamFitter):
 
                     # sim
                     selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+                    self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                    evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+                    evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
                     # target
                     if not self.read_target:
                         selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                        self.validate_track_batch_event_ids(selected_tracks_bt_tgt, self.tgt_track_fields, f"target batch {i}")
                         this_target = jax.device_put(selected_tracks_bt_tgt)
                     else:
                         this_target = target
@@ -889,19 +1053,18 @@ class GradientDescentFitter(ParamFitter):
                             
                     if iterations is not None:
                         if total_iter % save_freq == 0:
-                            with open(f'fit_result/{self.test_name}/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
-                                pickle.dump(self.training_history, f_history)
+                            self.save_checkpoint(total_iter)
 
                             if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
                                 os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
 
                     total_iter += 1
+                    self.total_iter = total_iter
                     pbar.update(1)
                     
-                    if iterations is not None:
-                        if total_iter >= iterations:
-                            with open(f'fit_result/{self.test_name}/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
-                                pickle.dump(self.training_history, f_history)
+                    if target_iter is not None:
+                        if total_iter >= target_iter:
+                            self.save_checkpoint(total_iter)
 
                             if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
                                 os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
@@ -912,8 +1075,7 @@ class GradientDescentFitter(ParamFitter):
                             terminate_fit = True
                             break
 
-            with open(f'fit_result/{self.test_name}/history_iter{total_iter}_{self.out_label}.pkl', "wb") as f_history:
-                pickle.dump(self.training_history, f_history)
+            self.save_checkpoint(total_iter)
 
             if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
                 os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
@@ -962,12 +1124,14 @@ class LikelihoodProfiler(ParamFitter):
 
             # sim
             selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+            self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
             selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-            evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+            evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
             # target
             if not self.read_target:
                 selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                self.validate_track_batch_event_ids(selected_tracks_bt_tgt, self.tgt_track_fields, f"target batch {i}")
                 this_target = jax.device_put(selected_tracks_bt_tgt)
             else:
                 this_target = target
@@ -1082,12 +1246,14 @@ class MinuitFitter(ParamFitter):
 
                 # sim
                 selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+                self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
                 selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+                evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
                 # target
                 if not self.read_target:
                     selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                    self.validate_track_batch_event_ids(selected_tracks_bt_tgt, self.tgt_track_fields, f"target batch {i}")
                     this_target = jax.device_put(selected_tracks_bt_tgt)
                 else:
                     this_target = target
@@ -1123,8 +1289,9 @@ class MinuitFitter(ParamFitter):
                 for i in range(len(dataloader_sim)):
                     # sim
                     selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+                    self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                    evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+                    evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
                     # target
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = get_target(self, i, evts_sim, target)
@@ -1142,8 +1309,9 @@ class MinuitFitter(ParamFitter):
                 for i in range(len(dataloader_sim)):
                     # sim
                     selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+                    self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
                     selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-                    evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+                    evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
                     # target
                     ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = get_target(self, i, evts_sim, target)
@@ -1182,12 +1350,14 @@ class HessianCalculator(ParamFitter):
 
             # sim
             selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+            self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
             selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
-            evts_sim = jnp.unique(selected_tracks_sim[:, self.sim_track_fields.index(self.evt_id)])
+            evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
 
             # target
             if not self.read_target:
                 selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                self.validate_track_batch_event_ids(selected_tracks_bt_tgt, self.tgt_track_fields, f"target batch {i}")
                 this_target = jax.device_put(selected_tracks_bt_tgt)
             else:
                 this_target = target

@@ -8,7 +8,7 @@ BATCH_SIZE=200
 ITERATIONS=200
 MAX_CLIP_NORM_VAL=1
 DATA_SEED=1
-LOSS=nll
+LOSS=llhd
 
 ### proton 5000 events
 INPUT_FILE_TGT=prepared_data/input_1.h5
@@ -65,7 +65,7 @@ if [ "$LUT" = TRUE ]; then
         --loss_fn ${LOSS} \
         --fit_type 'chain' \
         --cpu_only \
-        --mc_diff
+        --probabilistic_sim
         # --debug_nans
 else
     python3 -m optimize.example_run \
@@ -99,7 +99,7 @@ else
         --loss_fn ${LOSS} \
         --fit_type 'chain' \
         --cpu_only \
-        --mc_diff
+        --probabilistic_sim
 fi
     #--read_target
 # nsys profile --capture-range=cudaProfilerApi --cuda-graph-trace=node --capture-range-end=stop-shutdown python3 -m optimize.example_run \
