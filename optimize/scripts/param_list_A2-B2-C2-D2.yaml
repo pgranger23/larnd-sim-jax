@@ -1,0 +1,9 @@
+Ab: 0.03
+kb: 0.03
+eField: 0.01
+tran_diff: 0.01
+long_diff: 0.01
+lifetime: 0.01
+#shift_x: 5e-3
+#shift_y: 5e-3
+#shift_z: 5e-3
