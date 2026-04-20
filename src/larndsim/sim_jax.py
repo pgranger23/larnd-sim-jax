@@ -238,9 +238,8 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     # Use jnp.clip for safety on the +1 wrap boundary
     val_cum_1 = response_cum.take(idx * Nx * Ny * Nt + base_curr + jnp.clip(cathode_ticks_main + 1, 0, Nt - 1))
     interp_cum = val_cum_0 * (1.0 - frac_main) + val_cum_1 * frac_main
-    
     diff_main_interp = (response_cum.take(idx * Nx * Ny * Nt + base_curr + Nt - sig_len) - interp_cum) * nelectrons
-    
+
     idx_corr_main_0 = jnp.where((start_ticks_0 <= 0) | (start_ticks_0 >= Nticks - 1), 0, start_ticks_0) + pix_renum * Nticks
     idx_corr_main_1 = jnp.where((start_ticks_1 <= 0) | (start_ticks_1 >= Nticks - 1), 0, start_ticks_1) + pix_renum * Nticks
     
@@ -718,10 +717,10 @@ def simulate_wfs(params, response_template, tracks, fields):
 
     #Sorting the pixels and getting the unique ones
     unique_pixels = jnp.unique(main_pixels.ravel())
+    unique_pixels = jnp.append(unique_pixels, -1)
     padded_unique = pad_size(unique_pixels.shape[0], "unique_pixels", 0.2)
 
     unique_pixels = jnp.sort(jnp.pad(unique_pixels, (0, padded_unique - unique_pixels.shape[0]), mode='constant', constant_values=-1))
-
     pix_renumbering_neigh= jnp.searchsorted(unique_pixels, pIDs_neigh.ravel(), method='sort')
 
     mask = (pix_renumbering_neigh < unique_pixels.size) & (unique_pixels[pix_renumbering_neigh] == pIDs_neigh.ravel())
