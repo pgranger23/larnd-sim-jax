@@ -1,6 +1,5 @@
-alpha: 0.1
-beta: 0.1
-R_param: 0.1
+Ab: 0.1
+kb: 0.1
 eField: 0.1
 tran_diff: 0.1
 long_diff: 0.1

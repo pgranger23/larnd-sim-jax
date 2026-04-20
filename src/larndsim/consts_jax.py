@@ -253,7 +253,7 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "shift_x": 0.,
         "shift_y": 0.,
         "shift_z": 0.,
-        "recombination_mode": RecombinationMode.ELLIPSOID,
+        "recombination_mode": RecombinationMode.BIRKS,
         "lArDensity": 1.38,
         "alpha": 0.93,
         "beta": 0.212,
