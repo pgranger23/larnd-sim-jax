@@ -123,7 +123,7 @@ class LUTProbabilisticSimulation(SimulationStrategy):
         # We return the raw distributions for the ProbabilisticLossStrategy
         return {
             'adcs_distrib': adcs_distrib, # (Npix, Nvalues, Nticks)
-            'ticks_prob': ticks_prob,     # (Npix, Nvalues, Nticks)
+            'hit_prob': ticks_prob,     # (Npix, Nvalues, Nticks)
             'pixel_x': pixel_x,
             'pixel_y': pixel_y,
             'pixel_plane': pixel_plane,   # Needed for z-coordinate calculation
@@ -223,7 +223,7 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
     def _generate_distribution_hits(self, params, output):
         # This function can be used to prepare the probabilistic output for loss computation
         # For example, it can compute expected values or filter out low-probability hits
-        ticks_prob = output['ticks_prob']
+        ticks_prob = output['hit_prob']
         adcs_distrib = output['adcs_distrib']
         pixel_x = output['pixel_x']
         pixel_y = output['pixel_y']
@@ -263,7 +263,7 @@ class CollapsedProbabilisticLossStrategy(LossStrategy):
     def _prepare_probabilistic_output(self, params, output):
         # This function can be used to prepare the probabilistic output for loss computation
         # For example, it can compute expected values or filter out low-probability hits
-        ticks_prob = output['ticks_prob']
+        ticks_prob = output['hit_prob']
         adcs_distrib = output['adcs_distrib']
         pixel_x = output['pixel_x']
         pixel_y = output['pixel_y']
@@ -383,7 +383,6 @@ class ProbabilisticLossStrategy(LossStrategy):
             - ticks: (Nhits,) - observed tick for each hit
             - adcs: (Nhits,) - observed ADC for each hit
         """
-        
         # Step 1: Match target hits to predicted pixel distributions
         target_pixel_ids = target['pixel_id']
         sim_unique_pixels = prediction['unique_pixels']
@@ -405,7 +404,7 @@ class ProbabilisticLossStrategy(LossStrategy):
         # ticks_prob shape: (Npix, Nvalues, Nticks)
         # We need P(tick, charge | pixel_id) for the observed (tick, charge) pairs
         
-        ticks_prob = prediction['ticks_prob']  # (Npix, Nvalues, Nticks)
+        ticks_prob = prediction['hit_prob']  # (Npix, Nvalues, Nticks)
         adcs_distrib = prediction['adcs_distrib']  # (Npix, Nvalues, Nticks)
         
         # Compute marginal probability P(tick | pixel) = sum_values P(tick, value | pixel)
