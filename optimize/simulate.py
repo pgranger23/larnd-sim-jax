@@ -86,12 +86,13 @@ def main(config):
         data_seed=config.seed if config.seed is not None else 42,
         max_batch_len=config.max_batch_len,
         print_input=False,
-        chopped=True,
+        chopped=config.chop,
         pad=False,
         electron_sampling_resolution=config.electron_sampling_resolution,
         live_selection=False,
     )
     fields = dataset.get_track_fields()
+    evt_col = fields.index("eventID")
 
     if config.out_np:
         l_adc, l_Q, l_ticks, l_eventID, l_pix_x, l_pix_y, l_pix_z, l_hit_prob = [], [], [], [], [], [], [], []
@@ -99,10 +100,11 @@ def main(config):
     # libcudart.cudaProfilerStart()
     for ibatch in tqdm(range(len(dataset)), desc="Loading tracks", total=len(dataset)):
         batch = dataset[ibatch]
-        size = batch.shape[0]
-        size = pad_size(size, "batch_size", 0.5)
-        batch = np.pad(batch, ((0, size - batch.shape[0]), (0, 0)), mode='constant', constant_values=0)
-        evt_col = fields.index("eventID")
+        size = pad_size(batch.shape[0], "batch_size", 0.5)
+        batch = dataset.pad_batch(batch, size, ibatch)
+
+        global_event_ids = dataset.get_batch_global_event_ids(ibatch)
+
         event_ids = batch[:, evt_col].astype(np.int64)
 
         # Validate local event ID namespace before overflow checks
@@ -111,14 +113,15 @@ def main(config):
         validate_event_ids_for_packing(ref_params, event_ids, kind="bin", context=f"simulate batch {ibatch}")
 
         # Get mapping from local event IDs back to global IDs
-        global_event_ids = dataset.get_batch_global_event_ids(ibatch)
         local_to_global = {i: int(gid) for i, gid in enumerate(global_event_ids)}
 
         tracks = jax.device_put(batch)
-        rngseed = config.seed if config.seed is not None else 0
+        rngseed = ibatch if config.seed is None else config.seed
         if config.mode == 'lut':
             wfs, unique_pixels = simulate_wfs(ref_params, response, tracks, fields)
             adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, hit_pixels = simulate_stochastic(ref_params, wfs, unique_pixels, rngseed=rngseed)
+            print("Unique pixels:", unique_pixels)
+            print("Hit pixels:", hit_pixels)
         else:
             
             adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, hit_pixels = simulate_parametrized(ref_params, tracks, fields, rngseed=rngseed)
@@ -160,8 +163,8 @@ def main(config):
                             event_group.create_dataset(f'jac_{par}_adc', data=getattr(jac_res, par)[:, :, 0].flatten()[mask][event_mask])
                             event_group.create_dataset(f'jac_{par}_ticks', data=getattr(jac_res, par)[:, :, 1].flatten()[mask][event_mask])
 
-                if config.save_wfs:
-                    batch_group.create_dataset('wfs', data=wfs)
+                    if config.save_wfs:
+                        event_group.create_dataset('wfs', data=wfs)
 
 
         else:
@@ -195,7 +198,7 @@ if __name__ == '__main__':
                         default="src/larndsim/pixel_layouts/multi_tile_layout-2.4.16_v4.yaml",
                         help="Path to pixel layouts YAML file")
     parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
-    parser.add_argument('--electron_sampling_resolution', type=float, required=True, help='Electron sampling resolution')
+    parser.add_argument('--electron_sampling_resolution', type=float, required=True, default=0.1, help='Electron sampling resolution')
     parser.add_argument('--number_pix_neighbors', type=int, required=True, help='Number of pixel neighbors')
     parser.add_argument('--signal_length', type=int, required=True, help='Signal length')
     parser.add_argument('--lut_file', type=str, required=False, default="", help='Path to the LUT file')
@@ -210,6 +213,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_events', type=int, default=-1, help='Number of events to be simulated')
     parser.add_argument('--out_np', action='store_true', default=False, help='store target-like output in npz')
     parser.add_argument('--max_batch_len', type=float, default=50., help='Maximum trajectory length budget used while preparing tracks')
+    parser.add_argument('--chop', action='store_true', default=False, help='Enable segment chopping in data loading (default: disabled)')
 
     try:
         args = parser.parse_args()
