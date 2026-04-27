@@ -71,6 +71,17 @@ def compute_folder_signature(files):
             signature.append((f, 0, 0))
     return tuple(sorted(signature))
 
+def student_t_pdf(x_arr, nu, loc, scale):
+    """Evaluate the Student-t PDF (pure numpy / stdlib math)."""
+    import math
+    z = (x_arr - loc) / scale
+    log_norm = (math.lgamma((nu + 1) / 2)
+                - math.lgamma(nu / 2)
+                - 0.5 * math.log(nu * math.pi)
+                - math.log(abs(scale)))
+    return np.exp(log_norm + (-(nu + 1) / 2) * np.log(1.0 + z ** 2 / nu))
+
+
 def prepare_log_values(values):
     arr = np.asarray(values, dtype=float)
     positive = arr > 0
@@ -239,7 +250,7 @@ def render_scan_mode(all_data, plot_all, export_list):
             fig.update_xaxes(title_text=p_name, **AXIS_STYLE)
             fig.update_yaxes(title_text="Gradient", title_font=dict(color="#1f77b4"), tickfont=dict(color="#1f77b4"), secondary_y=False, **AXIS_STYLE)
             fig.update_yaxes(title_text="Loss", title_font=dict(color="#2ca02c"), tickfont=dict(color="#2ca02c"), secondary_y=True, **AXIS_STYLE)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', key=f"scan_grad_loss_{filepath}")
             export_list.append((f"{p_name} - Gradient & Loss", fig))
 
         with cols[1]:
@@ -262,7 +273,7 @@ def render_scan_mode(all_data, plot_all, export_list):
                 fig.update_layout(title="Sub-loss terms", xaxis_title=p_name, yaxis_title="Sub-loss values", hovermode="closest")
                 fig.update_xaxes(**AXIS_STYLE)
                 fig.update_yaxes(**AXIS_STYLE)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, width='stretch', key=f"scan_aux_{filepath}")
                 export_list.append((f"{p_name} - Sub-losses", fig))
             else:
                 st.info("No auxiliary data")
@@ -275,7 +286,7 @@ def render_scan_mode(all_data, plot_all, export_list):
                 fig.update_layout(title="Time per iteration", xaxis_title="Iteration", yaxis_title="Time (s)")
                 fig.update_xaxes(**AXIS_STYLE)
                 fig.update_yaxes(**AXIS_STYLE)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, width='stretch', key=f"scan_time_{filepath}")
                 export_list.append((f"{p_name} - Time", fig))
         
         st.markdown("---")
@@ -308,7 +319,7 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
         fig.update_layout(title="Loss Evolution", xaxis_title="Iteration", yaxis_title="Loss")
         fig.update_xaxes(**AXIS_STYLE)
         fig.update_yaxes(type="log" if has_positive else "linear", **AXIS_STYLE)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, width='stretch', key="global_loss_evolution")
         export_list.append(("Global - Loss Evolution", fig))
 
     with global_cols[1]:
@@ -323,7 +334,7 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
         fig.update_layout(title="Step Time vs Iteration", xaxis_title="Iteration", yaxis_title="Time (s)")
         fig.update_xaxes(**AXIS_STYLE)
         fig.update_yaxes(**AXIS_STYLE)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, width='stretch', key="global_step_time")
         export_list.append(("Global - Step Time", fig))
 
     with global_cols[2]:
@@ -339,12 +350,195 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
             fig.update_layout(title="Step Time Distribution", barmode='overlay', xaxis_title="Time (s)", yaxis_title="Frequency", hovermode="closest")
             fig.update_xaxes(**AXIS_STYLE)
             fig.update_yaxes(**AXIS_STYLE)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', key="global_time_dist")
             export_list.append(("Global - Time Distribution", fig))
         else:
             st.info("No step_time data.")
 
     st.markdown("---")
+
+    # -- dEdx fitting diagnostics (only shown when fit_dedx=True data present) --
+    has_dedx = any('dedx_cache' in d for d in all_data.values())
+    has_dedx_history = any('dedx_prior_iter' in d for d in all_data.values())
+
+    if has_dedx_history:
+        st.subheader("Per-segment dEdx Fit Diagnostics")
+        dedx_diag_cols = st.columns(2)
+
+        with dedx_diag_cols[0]:
+            fig = go.Figure()
+            for idx, (fp, d) in enumerate(all_data.items()):
+                name = os.path.splitext(os.path.basename(fp))[0]
+                c = COLORS[idx % len(COLORS)]
+                if 'dedx_prior_iter' in d and len(d['dedx_prior_iter']) > 0:
+                    y_smooth = smooth_data(d['dedx_prior_iter'], smoothing_window)
+                    fig.add_trace(go.Scatter(y=y_smooth, mode='lines', name=name,
+                                            line=dict(color=c, width=2)))
+            fig.update_layout(**COMMON_LAYOUT)
+            fig.update_layout(title="dEdx Prior (Student-t NLL)",
+                              xaxis_title="Iteration", yaxis_title="Prior loss")
+            fig.update_xaxes(**AXIS_STYLE)
+            fig.update_yaxes(**AXIS_STYLE)
+            st.plotly_chart(fig, width='stretch', key="dedx_prior_nll")
+            export_list.append(("dEdx - Prior NLL", fig))
+
+        with dedx_diag_cols[1]:
+            fig = go.Figure()
+            for idx, (fp, d) in enumerate(all_data.items()):
+                name = os.path.splitext(os.path.basename(fp))[0]
+                c = COLORS[idx % len(COLORS)]
+                if 'dedx_mae_iter' in d and len(d['dedx_mae_iter']) > 0:
+                    y_smooth = smooth_data(d['dedx_mae_iter'], smoothing_window)
+                    fig.add_trace(go.Scatter(y=y_smooth, mode='lines', name=name,
+                                            line=dict(color=c, width=2)))
+            fig.update_layout(**COMMON_LAYOUT)
+            fig.update_layout(title="dEdx MAE from prior loc",
+                              xaxis_title="Iteration", yaxis_title="MAE (MeV/cm)")
+            fig.update_xaxes(**AXIS_STYLE)
+            fig.update_yaxes(**AXIS_STYLE)
+            st.plotly_chart(fig, width='stretch', key="dedx_mae")
+            export_list.append(("dEdx - MAE from prior", fig))
+
+        # One hexbin per run that has dedx_cache
+        if has_dedx:
+            st.markdown("**Fitted vs True dEdx — per run**")
+            runs_with_dedx = [(fp, d) for fp, d in all_data.items() if 'dedx_cache' in d]
+            ncols = min(3, len(runs_with_dedx))
+            hex_cols = st.columns(ncols) if ncols > 0 else []
+
+            for col_idx, (fp, d) in enumerate(runs_with_dedx):
+                name = os.path.splitext(os.path.basename(fp))[0]
+                # ... (rest of data prep)
+                cache = d['dedx_cache']
+                true_cache = d.get('true_dedx_cache', {})
+
+                all_true, all_fitted = [], []
+                for batch_idx in sorted(cache.keys()):
+                    entry = cache[batch_idx]
+                    log_dedx = entry.get('log_dedx')
+                    if log_dedx is None:
+                        continue
+                    try:
+                        fitted_vals = np.exp(np.asarray(log_dedx, dtype=float).ravel())
+                    except Exception:
+                        continue
+                    # Guard against key type mismatch (int vs numpy.int*) after pickle
+                    true_vals = true_cache.get(batch_idx)
+                    if true_vals is None:
+                        true_vals = true_cache.get(int(batch_idx))
+                    if true_vals is not None:
+                        true_vals = np.asarray(true_vals, dtype=float).ravel()
+                        n = min(len(true_vals), len(fitted_vals))
+                        all_true.extend(true_vals[:n].tolist())
+                        all_fitted.extend(fitted_vals[:n].tolist())
+
+                DEDX_LO, DEDX_HI, DEDX_BINS = 0.5, 4.0, 40
+                fig = go.Figure()
+                if all_true:
+                    fig.add_trace(go.Histogram2d(
+                        x=all_true,
+                        y=all_fitted,
+                        colorscale='Viridis',
+                        xbins=dict(start=DEDX_LO, end=DEDX_HI, size=(DEDX_HI - DEDX_LO) / DEDX_BINS),
+                        ybins=dict(start=DEDX_LO, end=DEDX_HI, size=(DEDX_HI - DEDX_LO) / DEDX_BINS),
+                        colorbar=dict(title='Counts', thickness=12),
+                        histnorm='',
+                    ))
+                    lim = [DEDX_LO, DEDX_HI]
+                    fig.add_trace(go.Scatter(
+                        x=lim, y=lim, mode='lines',
+                        line=dict(color='red', dash='dash', width=1.5),
+                        name='y = x', showlegend=True,
+                    ))
+                    no_data_msg = None
+                else:
+                    no_data_msg = "No true_dedx_cache — re-run from scratch to capture true dEdx."
+
+                short_name = name[:40] + "…" if len(name) > 40 else name
+                fig.update_layout(**COMMON_LAYOUT)
+                fig.update_layout(
+                    title=f"{short_name}",
+                    xaxis_title="True dEdx (MeV/cm)",
+                    yaxis_title="Fitted dEdx (MeV/cm)",
+                    hovermode="closest",
+                )
+                fig.update_xaxes(**AXIS_STYLE, range=[DEDX_LO, DEDX_HI])
+                fig.update_yaxes(**AXIS_STYLE, range=[DEDX_LO, DEDX_HI])
+
+                with hex_cols[col_idx % ncols]:
+                    if no_data_msg:
+                        st.info(no_data_msg)
+                    else:
+                        st.plotly_chart(fig, width='stretch', key=f"dedx_hexbin_{col_idx}_{name}")
+                export_list.append((f"dEdx hexbin - {name}", fig))
+
+        # 1-D fitted dEdx distribution vs Student-t prior — one panel per run
+        st.markdown("**Fitted dEdx distribution vs Student-t prior — per run**")
+        dist_runs = [(fp, d) for fp, d in all_data.items() if 'dedx_cache' in d]
+        dist_ncols = min(3, len(dist_runs))
+        dist_cols = st.columns(dist_ncols) if dist_ncols > 0 else []
+
+        for col_idx, (fp, d) in enumerate(dist_runs):
+            # ... (data prep)
+            name = os.path.splitext(os.path.basename(fp))[0]
+            cache = d['dedx_cache']
+
+            # Collect all fitted dEdx values across batches
+            all_fitted = []
+            for batch_idx in sorted(cache.keys()):
+                entry = cache[batch_idx]
+                log_dedx = entry.get('log_dedx')
+                if log_dedx is None:
+                    continue
+                try:
+                    all_fitted.extend(np.exp(np.asarray(log_dedx, dtype=float).ravel()).tolist())
+                except Exception:
+                    continue
+
+            fig = go.Figure()
+            if all_fitted:
+                arr = np.array(all_fitted)
+                fig.add_trace(go.Histogram(
+                    x=arr,
+                    histnorm='probability density',
+                    name='Fitted dEdx',
+                    marker_color='steelblue',
+                    opacity=0.7,
+                    xbins=dict(
+                        start=0,
+                        end=4,
+                        size=0.1
+                    )
+                ))
+
+                # Overlay Student-t prior
+                nu    = float(d.get('dedx_student_nu',    3.0))
+                loc   = float(d.get('dedx_student_loc',   2.0))
+                scale = float(d.get('dedx_student_scale', 0.5))
+                x_pdf = np.linspace(0, 4, 400)
+                y_pdf = student_t_pdf(x_pdf, nu, loc, scale)
+                fig.add_trace(go.Scatter(
+                    x=x_pdf, y=y_pdf, mode='lines',
+                    name=f'Student-t (ν={nu}, μ={loc}, σ={scale})',
+                    line=dict(color='red', width=2),
+                ))
+
+            short_name = name[:40] + '…' if len(name) > 40 else name
+            fig.update_layout(**COMMON_LAYOUT)
+            fig.update_layout(
+                title=short_name,
+                xaxis_title='Fitted dEdx (MeV/cm)',
+                yaxis_title='Density',
+                hovermode='x unified',
+            )
+            fig.update_xaxes(**AXIS_STYLE)
+            fig.update_yaxes(**AXIS_STYLE)
+
+            with dist_cols[col_idx % dist_ncols]:
+                st.plotly_chart(fig, width='stretch', key=f"dedx_dist_{col_idx}_{name}")
+            export_list.append((f'dEdx distribution - {name}', fig))
+
+        st.markdown("---")
 
     for par in params:
         st.subheader(f"Parameter: {par}")
@@ -368,7 +562,7 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
             fig.update_layout(title=f"{par} Evolution", xaxis_title="Iteration", yaxis_title=par)
             fig.update_xaxes(**AXIS_STYLE)
             fig.update_yaxes(**AXIS_STYLE)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', key=f"{par}_evolution")
             export_list.append((f"{par} - Evolution", fig))
             
         with par_cols[1]:
@@ -390,7 +584,7 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
             fig.update_layout(title="Absolute Gradient", xaxis_title="Iteration", yaxis_title="|Gradient|")
             fig.update_xaxes(**AXIS_STYLE)
             fig.update_yaxes(type="log" if has_positive else "linear", **AXIS_STYLE)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', key=f"{par}_gradient")
             export_list.append((f"{par} - Gradient", fig))
 
         with par_cols[2]:
@@ -421,7 +615,7 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
                 fig.update_layout(title="Phase Plot", xaxis_title="Parameter Value", yaxis_title="Gradient", hovermode="closest")
                 fig.update_xaxes(**AXIS_STYLE)
                 fig.update_yaxes(**AXIS_STYLE)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, width='stretch', key=f"{par}_phase")
                 export_list.append((f"{par} - Phase Plot", fig))
 
 
