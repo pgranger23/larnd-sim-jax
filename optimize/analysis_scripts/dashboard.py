@@ -42,6 +42,7 @@ def get_available_folders():
     all_pkls = glob.glob("**/*.pkl", recursive=True)
     folders = list(set([os.path.dirname(p) for p in all_pkls]))
     folders = [f if f != "" else "." for f in folders]
+    folders = [f for f in folders if "cache" not in f.lower()]
     try:
         folders.sort(key=lambda x: os.path.getmtime(x), reverse=True)
     except OSError:
