@@ -457,6 +457,30 @@ def wasserstein_1d_loss(trainable_values, ref_quantiles, event_ids, num_quantile
     
     return jnp.mean((log_q_train - log_q_ref)**2)
 
+def weighted_wasserstein_1d(samples, weights, ref_samples, ref_weights, num_quantiles=100):
+    """
+    Computes the 1D 2-Wasserstein distance between two weighted samples.
+    Uses interpolation of the weighted CDF to compute quantiles.
+    """
+    def get_quantiles(s, w):
+        # Sort samples and corresponding weights
+        idx = jnp.argsort(s)
+        s_sorted = s[idx]
+        w_sorted = w[idx]
+        
+        # Compute cumulative weights
+        cum_w = jnp.cumsum(w_sorted)
+        cum_w /= cum_w[-1] # Normalize to [0, 1]
+        
+        # Interpolate to find values at specified quantiles
+        q = jnp.linspace(0.0, 1.0, num_quantiles)
+        return jnp.interp(q, cum_w, s_sorted)
+
+    q_samples = get_quantiles(samples, weights)
+    q_ref = get_quantiles(ref_samples, ref_weights)
+    
+    return jnp.mean((q_samples - q_ref)**2)
+
 def compute_tv_penalty(log_values, track_ids, event_ids):
     """Computes total variation penalty for smoothness along a track."""
     diffs = jnp.diff(log_values) 

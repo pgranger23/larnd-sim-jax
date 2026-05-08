@@ -217,7 +217,9 @@ def generate_html_report(figs_to_export, config_data):
 def render_scan_mode(all_data, plot_all, export_list):
     st.header("Gradient Scan Results")
 
-    for filepath, results in all_data.items():
+    sorted_filepaths = sorted(all_data.keys())
+    for idx, filepath in enumerate(sorted_filepaths):
+        results = all_data[filepath]
         config = results.get('config')
         p_vals, grads, losses, aux, p_name, target = extract_scan_data(results, config, filepath)
         
@@ -295,8 +297,10 @@ def render_scan_mode(all_data, plot_all, export_list):
 def render_optimization_mode(all_data, smoothing_window, export_list):
     st.header("Optimization Monitoring")
     
+    sorted_filepaths = sorted(all_data.keys())
     params_set = set()
-    for data in all_data.values():
+    for filepath in sorted_filepaths:
+        data = all_data[filepath]
         params_set.update([k.replace('_target', '') for k in data.keys() if '_target' in k])
     params = sorted(list(params_set))
 
@@ -306,7 +310,8 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
     with global_cols[0]:
         fig = go.Figure()
         has_positive = False
-        for idx, (fp, d) in enumerate(all_data.items()):
+        for idx, fp in enumerate(sorted_filepaths):
+            d = all_data[fp]
             name = os.path.splitext(os.path.basename(fp))[0]
             if 'losses_iter' in d:
                 y_smooth = smooth_data(d['losses_iter'], smoothing_window)
@@ -325,7 +330,8 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
 
     with global_cols[1]:
         fig = go.Figure()
-        for idx, (fp, d) in enumerate(all_data.items()):
+        for idx, fp in enumerate(sorted_filepaths):
+            d = all_data[fp]
             name = os.path.splitext(os.path.basename(fp))[0]
             if 'step_time' in d:
                 y_smooth = smooth_data(d['step_time'], smoothing_window)
@@ -341,7 +347,8 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
     with global_cols[2]:
         fig = go.Figure()
         has_time = False
-        for idx, (fp, d) in enumerate(all_data.items()):
+        for idx, fp in enumerate(sorted_filepaths):
+            d = all_data[fp]
             name = os.path.splitext(os.path.basename(fp))[0]
             if 'step_time' in d and len(d['step_time']) > 0:
                 has_time = True
@@ -368,7 +375,8 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
 
         with dedx_diag_cols[0]:
             fig = go.Figure()
-            for idx, (fp, d) in enumerate(all_data.items()):
+            for idx, fp in enumerate(sorted_filepaths):
+                d = all_data[fp]
                 name = os.path.splitext(os.path.basename(fp))[0]
                 c = COLORS[idx % len(COLORS)]
                 if 'dedx_prior_iter' in d and len(d['dedx_prior_iter']) > 0:
@@ -385,7 +393,8 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
 
         with dedx_diag_cols[1]:
             fig = go.Figure()
-            for idx, (fp, d) in enumerate(all_data.items()):
+            for idx, fp in enumerate(sorted_filepaths):
+                d = all_data[fp]
                 name = os.path.splitext(os.path.basename(fp))[0]
                 c = COLORS[idx % len(COLORS)]
                 if 'dedx_mae_iter' in d and len(d['dedx_mae_iter']) > 0:
@@ -403,11 +412,12 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
         # One hexbin per run that has dedx_cache
         if has_dedx:
             st.markdown("**Fitted vs True dEdx — per run**")
-            runs_with_dedx = [(fp, d) for fp, d in all_data.items() if 'dedx_cache' in d]
-            ncols = min(3, len(runs_with_dedx))
+            sorted_runs_with_dedx = [fp for fp in sorted_filepaths if 'dedx_cache' in all_data[fp]]
+            ncols = min(3, len(sorted_runs_with_dedx))
             hex_cols = st.columns(ncols) if ncols > 0 else []
 
-            for col_idx, (fp, d) in enumerate(runs_with_dedx):
+            for col_idx, fp in enumerate(sorted_runs_with_dedx):
+                d = all_data[fp]
                 name = os.path.splitext(os.path.basename(fp))[0]
                 # ... (rest of data prep)
                 cache = d['dedx_cache']
@@ -473,14 +483,80 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
                         st.plotly_chart(fig, width='stretch', key=f"dedx_hexbin_{col_idx}_{name}")
                 export_list.append((f"dEdx hexbin - {name}", fig))
 
+        # Residuals distribution (Fitted - True)
+        st.markdown("**dEdx Residuals (Fitted - True) — per run**")
+        res_ncols = min(3, len(sorted_runs_with_dedx))
+        res_cols = st.columns(res_ncols) if res_ncols > 0 else []
+
+        for col_idx, fp in enumerate(sorted_runs_with_dedx):
+            d = all_data[fp]
+            name = os.path.splitext(os.path.basename(fp))[0]
+            cache = d['dedx_cache']
+            true_cache = d.get('true_dedx_cache', {})
+
+            residuals = []
+            for batch_idx in sorted(cache.keys()):
+                entry = cache[batch_idx]
+                log_dedx = entry.get('log_dedx')
+                if log_dedx is None: continue
+                try:
+                    fitted_vals = np.exp(np.asarray(log_dedx, dtype=float).ravel())
+                except Exception: continue
+                
+                true_vals = true_cache.get(batch_idx, true_cache.get(int(batch_idx)))
+                if true_vals is not None:
+                    true_vals = np.asarray(true_vals, dtype=float).ravel()
+                    n = min(len(true_vals), len(fitted_vals))
+                    res_batch = fitted_vals[:n] - true_vals[:n]
+                    residuals.extend(res_batch.tolist())
+
+            fig = go.Figure()
+            if residuals:
+                arr = np.array(residuals)
+                mean_res = np.mean(arr)
+                std_res = np.std(arr)
+                fig.add_trace(go.Histogram(
+                    x=arr,
+                    histnorm='probability density',
+                    name='Residuals',
+                    marker_color='orange',
+                    opacity=0.7,
+                    xbins=dict(start=-2, end=2, size=0.05)
+                ))
+                fig.add_vline(x=0, line_dash="dash", line_color="white", opacity=0.5)
+                fig.add_vline(x=mean_res, line_color="red", line_width=2, 
+                              annotation_text=f"Mean: {mean_res:.3f}", annotation_position="top left")
+                
+                msg = None
+            else:
+                msg = "No truth data matched for residuals."
+
+            short_name = name[:40] + "…" if len(name) > 40 else name
+            fig.update_layout(**COMMON_LAYOUT)
+            fig.update_layout(
+                title=f"Residuals: {short_name}",
+                xaxis_title="Fitted - True dEdx (MeV/cm)",
+                yaxis_title="Density",
+                hovermode="x unified",
+            )
+            fig.update_xaxes(**AXIS_STYLE, range=[-1.5, 1.5])
+            fig.update_yaxes(**AXIS_STYLE)
+
+            with res_cols[col_idx % res_ncols]:
+                if msg:
+                    st.info(msg)
+                else:
+                    st.plotly_chart(fig, width='stretch', key=f"dedx_resid_{col_idx}_{name}")
+            export_list.append((f"dEdx residuals - {name}", fig))
+
         # 1-D fitted dEdx distribution vs Student-t prior — one panel per run
         st.markdown("**Fitted dEdx distribution vs Student-t prior — per run**")
-        dist_runs = [(fp, d) for fp, d in all_data.items() if 'dedx_cache' in d]
-        dist_ncols = min(3, len(dist_runs))
+        sorted_dist_runs = [fp for fp in sorted_filepaths if 'dedx_cache' in all_data[fp]]
+        dist_ncols = min(3, len(sorted_dist_runs))
         dist_cols = st.columns(dist_ncols) if dist_ncols > 0 else []
 
-        for col_idx, (fp, d) in enumerate(dist_runs):
-            # ... (data prep)
+        for col_idx, fp in enumerate(sorted_dist_runs):
+            d = all_data[fp]
             name = os.path.splitext(os.path.basename(fp))[0]
             cache = d['dedx_cache']
 
@@ -547,7 +623,8 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
         
         with par_cols[0]:
             fig = go.Figure()
-            for idx, (fp, d) in enumerate(all_data.items()):
+            for idx, fp in enumerate(sorted_filepaths):
+                d = all_data[fp]
                 name = os.path.splitext(os.path.basename(fp))[0]
                 c = COLORS[idx % len(COLORS)]
                 if f'{par}_iter' in d:
@@ -569,7 +646,8 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
         with par_cols[1]:
             fig = go.Figure()
             has_positive = False
-            for idx, (fp, d) in enumerate(all_data.items()):
+            for idx, fp in enumerate(sorted_filepaths):
+                d = all_data[fp]
                 name = os.path.splitext(os.path.basename(fp))[0]
                 c = COLORS[idx % len(COLORS)]
                 if f'{par}_grad' in d:
@@ -591,7 +669,8 @@ def render_optimization_mode(all_data, smoothing_window, export_list):
         with par_cols[2]:
             fig = go.Figure()
             has_phase = False
-            for idx, (fp, d) in enumerate(all_data.items()):
+            for idx, fp in enumerate(sorted_filepaths):
+                d = all_data[fp]
                 name = os.path.splitext(os.path.basename(fp))[0]
                 c = COLORS[idx % len(COLORS)]
                 if f'{par}_iter' in d and f'{par}_grad' in d:

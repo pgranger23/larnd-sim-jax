@@ -125,11 +125,15 @@ def main(config):
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 probabilistic_sim=config.probabilistic_sim,
+                                probabilistic_sampling_sim=config.probabilistic_sampling_sim,
+                                probabilistic_sampling_target=config.probabilistic_sampling_target,
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
                                 normalization_scale_exp_log=config.normalization_scale_exp_log,
                                 sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt, shuffle_seed=config.shuffle_seed,
-                                resume_from=config.resume_from)
+                                resume_from=config.resume_from,
+                                fit_dedx=config.fit_dedx, dedx_prior_weight=config.dedx_prior_weight, dedx_lr=config.dedx_lr,
+                                dedx_start_iter=config.dedx_start_iter, dedx_freeze_iter=config.dedx_freeze_iter)
     elif config.fit_type == "scan":
         param_fit = LikelihoodProfiler(relevant_params=param_list,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
@@ -145,6 +149,8 @@ def main(config):
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 scan_tgt_nom=config.scan_tgt_nom, probabilistic_sim=config.probabilistic_sim,
+                                probabilistic_sampling_sim=config.probabilistic_sampling_sim,
+                                probabilistic_sampling_target=config.probabilistic_sampling_target,
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
                                 normalization_scale_exp_log=config.normalization_scale_exp_log)
@@ -163,6 +169,8 @@ def main(config):
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 minimizer_strategy=config.minimizer_strategy, minimizer_tol=config.minimizer_tol, separate_fits=config.separate_fits, probabilistic_sim=config.probabilistic_sim,
+                                probabilistic_sampling_sim=config.probabilistic_sampling_sim,
+                                probabilistic_sampling_target=config.probabilistic_sampling_target,
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
                                 normalization_scale_exp_log=config.normalization_scale_exp_log)
@@ -182,6 +190,8 @@ def main(config):
                                 adc_norm=config.chamfer_adc_norm, match_z=config.chamfer_match_z,
                                 sim_seed_strategy=config.sim_seed_strategy, target_seed=config.seed, target_fixed_range = config.fixed_range, read_target=config.read_target,
                                 probabilistic_sim=config.probabilistic_sim,
+                                probabilistic_sampling_sim=config.probabilistic_sampling_sim,
+                                probabilistic_sampling_target=config.probabilistic_sampling_target,
                                 normalization_scheme=config.normalization_scheme,
                                 normalization_scale_sigmoid=config.normalization_scale_sigmoid,
                                 normalization_scale_exp_log=config.normalization_scale_exp_log,
@@ -296,7 +306,10 @@ if __name__ == '__main__':
     parser.add_argument("--iterations", dest="iterations", default=None, type=int,
                         help="Number of iterations to run. Overrides epochs.")
     parser.add_argument("--loss_fn", dest="loss_fn", default=None,
-                        help="Loss function to use. Named options are SDTW and space_match.")
+                        help="Loss function to use. Named options are SDTW, space_match, distribution and markov_llhd.")
+    parser.add_argument("--dist_feature", dest="dist_feature", default='charge',
+                        choices=['charge', 'time', 'x', 'y', 'pix_counts'],
+                        help="Feature to use for distribution loss.")
     parser.add_argument("--loss_fn_kw", dest="loss_fn_kw", default=None, type=json.loads,
                         help="Loss function keyword arguments.")
     parser.add_argument("--max_batch_len", dest="max_batch_len", default=None, type=float,
@@ -313,7 +326,7 @@ if __name__ == '__main__':
                         help="Init parameter values. Syntax is <param1> <val1> <param2> <val2>...")
     parser.add_argument("--scan_tgt_nom", dest="scan_tgt_nom", default=False, action="store_true",
                         help="Set the gradient and loss scan target to the parameter nominal value, otherwise there will be a target throw.")
-    parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized'], default='lut')
+    parser.add_argument('--mode', type=str, help='Mode used to simulate the induced current on the pixels', choices=['lut', 'parametrized', 'markov'], default='lut')
     parser.add_argument('--electron_sampling_resolution', type=float, required=True, help='Electron sampling resolution')
     parser.add_argument('--number_pix_neighbors', type=int, required=True, help='Number of pixel neighbors')
     parser.add_argument('--signal_length', type=int, required=True, help='Signal length')
@@ -336,6 +349,18 @@ if __name__ == '__main__':
     parser.add_argument('--live_selection', default=False, action="store_true", help='Whether to run live selection or not')
     parser.add_argument('--read_target', default=False, action="store_true", help='read data(-like) target')
     parser.add_argument('--probabilistic_sim', '--probabilistic-sim', default=False, action="store_true", help='Use probabilistic sim')
+    parser.add_argument('--probabilistic_sampling_sim', '--probabilistic-sampling-sim',
+                        default=False, action="store_true",
+                        help='Draw stochastic hits from the probabilistic distribution (fake-stochastic '
+                             'mode). Output format matches real stochastic. '
+                             'Mutually exclusive with --probabilistic_sim.')
+    parser.add_argument('--probabilistic_sampling_target', '--probabilistic-sampling-target',
+                        default=False, action="store_true",
+                        help='When used together with --probabilistic_sim, draw the *target* from the '
+                             'probabilistic distribution (via LUTProbabilisticSamplingSimulation) '
+                             'instead of the real stochastic simulator. The guess remains the full '
+                             'probabilistic distribution, keeping gradients differentiable. '
+                             'Requires --probabilistic_sim. Mutually exclusive with --probabilistic_sampling_sim.')
     parser.add_argument('--shuffle_bt', default=False, action="store_true", help='shuffle the batch order within an epoch')
     parser.add_argument('--sz_mini_bt', type=int, default=1, help='Number of mini-batch for one update')
     parser.add_argument('--normalization_scheme', type=str, default='sigmoid', choices=['sigmoid', 'exp_log', 'divide'],
@@ -348,6 +373,16 @@ if __name__ == '__main__':
     parser.add_argument('--no_chop', default=False, action='store_true', help='Disable chopping in data loading')
     parser.add_argument('--no_pad', default=False, action='store_true', help='Disable padding in data loading')
     parser.add_argument("--resume_from", dest="resume_from", default=None, type=str, help="Resume chain fit from a saved history_iter*.pkl checkpoint")
+    parser.add_argument("--fit_dedx", dest="fit_dedx", default=False, action="store_true",
+                        help="Jointly optimise per-segment dEdx together with global physics params (chain fit only)")
+    parser.add_argument("--dedx_prior_weight", dest="dedx_prior_weight", default=0.1, type=float,
+                        help="Weight of Student-t NLL prior on per-segment dEdx values")
+    parser.add_argument("--dedx_lr", dest="dedx_lr", default=None, type=float,
+                        help="Learning rate for per-segment dEdx Adam optimiser (defaults to global --lr)")
+    parser.add_argument("--dedx_start_iter", dest="dedx_start_iter", default=0, type=int,
+                        help="Iteration at which to start dEdx fitting (0 = from the beginning). Use e.g. 200 to let calibration params warm up first.")
+    parser.add_argument("--dedx_freeze_iter", dest="dedx_freeze_iter", default=None, type=int,
+                        help="Iteration at which to freeze the per-segment dEdx values and only fine-tune the calibration parameter(s). Default: None (never freeze).")
 
     try:
         args = parser.parse_args()

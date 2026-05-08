@@ -8,10 +8,10 @@ import logging
 # from jax.experimental import checkify
 
 # from larndsim.consts_jax import consts
-from larndsim.detsim_jax import generate_electrons, get_pixels, id2pixel, accumulate_signals, accumulate_signals_parametrized, current_lut, get_pixel_coordinates, current_mc, apply_tran_diff, get_hit_z, pixel2id, get_bin_shifts, density_2d
+from larndsim.detsim_jax import generate_electrons, get_pixels, id2pixel, accumulate_signals, accumulate_signals_parametrized, current_lut, get_pixel_coordinates, current_mc, apply_tran_diff, get_hit_z, pixel2id, get_bin_shifts, density_2d, smear_remainders
 from larndsim.quenching_jax import quench
 from larndsim.drifting_jax import drift
-from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise_vmap
+from larndsim.fee_jax import get_adc_values, digitize, get_adc_values_average_noise_vmap, get_adc_values_markov
 from optimize.dataio import chop_tracks
 from larndsim.consts_jax import get_vdrift
 
@@ -264,16 +264,12 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
     # We now concatenate the _0 and _1 variants to smoothly accumulate both
     all_indices = jnp.concatenate([
         main_flat_indices_0, main_flat_indices_1, 
-        neigh_flat_indices_0, neigh_flat_indices_1, 
-        idx_corr_main_0, idx_corr_main_1, 
-        idx_corr_neigh_0, idx_corr_neigh_1
+        neigh_flat_indices_0, neigh_flat_indices_1
     ])
     
     all_values = jnp.concatenate([
         main_vals_0, main_vals_1, 
-        neigh_vals_0, neigh_vals_1, 
-        diff_main_0, diff_main_1, 
-        diff_neigh_0, diff_neigh_1
+        neigh_vals_0, neigh_vals_1
     ])
 
     wfs_flat = jax.ops.segment_sum(
@@ -282,8 +278,32 @@ def simulate_signals(params, unique_pixels, pixels, t0_after_diff, response_temp
         num_segments=Npixels * Nticks,
         indices_are_sorted=False
     )
-
-    return wfs_flat.reshape(Npixels, Nticks)
+    
+    wfs = wfs_flat.reshape(Npixels, Nticks)
+    
+    # --- 5. SMEAR BOUNDARY REMAINDERS ---
+    # Accumulate remainders into a separate array and apply smearing
+    diff_indices = jnp.concatenate([
+        idx_corr_main_0, idx_corr_main_1, 
+        idx_corr_neigh_0, idx_corr_neigh_1
+    ])
+    
+    diff_values = jnp.concatenate([
+        diff_main_0, diff_main_1, 
+        diff_neigh_0, diff_neigh_1
+    ])
+    
+    R_flat = jax.ops.segment_sum(
+        diff_values,
+        diff_indices,
+        num_segments=Npixels * Nticks,
+        indices_are_sorted=False
+    )
+    
+    R = R_flat.reshape(Npixels, Nticks)
+    smeared = smear_remainders(R)
+    
+    return wfs + smeared
 
 
 @partial(jit, static_argnames=['fields'])
@@ -598,9 +618,14 @@ def simulate_signals_new(params, unique_pixels, pixels, t0_after_diff, response_
     difference = (integrated_start - real_start)*nelectrons
 
     start_ticks = jnp.where((start_ticks <= 0 ) | (start_ticks >= Nticks - 1), 0, start_ticks) + pix_renumbering * Nticks
-    wfs = wfs.at[start_ticks].add(difference)
-
-    wfs = wfs.reshape((Npixels, Nticks))
+    
+    R_flat = jnp.zeros_like(wfs)
+    R_flat = R_flat.at[start_ticks].add(difference)
+    R = R_flat.reshape((Npixels, Nticks))
+    
+    smeared = smear_remainders(R)
+    
+    wfs = wfs.reshape((Npixels, Nticks)) + smeared
 
     # Optimize neighbor pixel processing
     npix = (2*params.number_pix_neighbors + 1)**2
@@ -767,6 +792,18 @@ def simulate_stochastic(params, wfs, unique_pixels, rngseed):
     adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, hit_pixels, nb_valid = parse_output(params, adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, unique_pixels)
 
     return adcs[:nb_valid], pixel_x[:nb_valid], pixel_y[:nb_valid], pixel_z[:nb_valid], ticks[:nb_valid], hit_prob[:nb_valid], event[:nb_valid], hit_pixels[:nb_valid]
+
+@jit
+def simulate_markov(params, wfs, unique_pixels):
+    """
+    Simulates the hit-finding process using Markov transition matrices.
+    """
+    log_p1, log_T, expected_Q, log_p_none, Q1, log_p_none_at_zero = get_adc_values_markov(params, wfs)
+    
+    # We also need pixel coordinates for the loss function
+    pixel_x, pixel_y, pixel_plane, event = id2pixel(params, unique_pixels)
+    
+    return log_p1, log_T, expected_Q, log_p_none, Q1, log_p_none_at_zero, pixel_x, pixel_y, pixel_plane, event
 
 @jit
 def simulate_probabilistic(params, wfs, unique_pixels):

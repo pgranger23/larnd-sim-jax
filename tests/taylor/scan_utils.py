@@ -121,15 +121,13 @@ def compute_event_all_params(
         wfs, unique_pixels = simulate_wfs(params, response, tracks, fields)
         log_prob, charge = get_adc_values_average_noise_vmap(params, wfs)
         adcs_distrib = digitize(params, charge)
-        ticks_prob = jnp.exp(log_prob)
-        _, expected_adcs, _ = get_average_hit_values(ticks_prob, adcs_distrib)
+        _, expected_adcs, _ = get_average_hit_values(log_prob, adcs_distrib)
         return expected_adcs[:, 0]
 
     def pipeline_original(params):
         wfs, unique_pixels = simulate_wfs(params, response, tracks, fields)
         adcs_distrib, _, _, log_tp, _ = simulate_probabilistic(params, wfs, unique_pixels)
-        ticks_prob = jnp.exp(log_tp)
-        _, expected_adcs, _ = get_average_hit_values(ticks_prob, adcs_distrib)
+        _, expected_adcs, _ = get_average_hit_values(log_tp, adcs_distrib)
         return expected_adcs[:, 0]
 
     def pipeline_scalar(params):

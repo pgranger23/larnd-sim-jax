@@ -13,6 +13,7 @@ from jax.scipy.stats import norm
 from functools import partial
 from larndsim.consts_jax import get_vdrift
 from jax.scipy.special import erfc, erf
+import jax
 
 import logging
 
@@ -151,6 +152,28 @@ def validate_local_event_ids(event_ids, context=""):
             f"Found unique IDs: {unique_valid_ids.tolist()}, expected: {expected_ids.tolist()}"
         )
 
+@jit
+def smear_remainders(R):
+    """
+    Distributes remainder charges evenly across all preceding time ticks.
+    R: (Npixels, Nticks) array of remainders
+    """
+    Npixels, Nticks = R.shape
+    R_0 = R[:, 0]
+    ticks = jnp.arange(Nticks)
+    
+    # S[p, t] = R[p, t] / t for t > 0
+    S = jnp.where(ticks > 0, R / jnp.maximum(1, ticks), 0)
+    
+    # C[p, t] = sum_{k >= t} S[p, k]
+    C = jnp.cumsum(S[:, ::-1], axis=-1)[:, ::-1]
+    
+    # Shift by 1 tick: smeared[p, t] = C[p, t+1]
+    smeared_charge = jnp.pad(C[:, 1:], ((0, 0), (0, 1)), mode='constant')
+    smeared_charge = smeared_charge.at[:, 0].add(R_0)
+    return smeared_charge
+
+
 
 @annotate_function
 @partial(jit, static_argnames='signal_length')
@@ -200,9 +223,16 @@ def accumulate_signals(wfs, currents_idx, charge, response, response_cum, pixID,
     difference = (integrated_start - real_start)*charge
 
     start_ticks = jnp.where((start_ticks <= 0 ) | (start_ticks >= Nticks - 1), 0, start_ticks) + pixID * Nticks
-    wfs = wfs.at[start_ticks].add(difference)
+    
+    R_flat = jnp.zeros_like(wfs)
+    R_flat = R_flat.at[start_ticks].add(difference)
+    R = R_flat.reshape((Npixels, Nticks))
+    
+    smeared = smear_remainders(R)
+    
+    wfs = wfs.reshape((Npixels, Nticks)) + smeared
 
-    return wfs.reshape((Npixels, Nticks))
+    return wfs
 
 @annotate_function
 @jit
