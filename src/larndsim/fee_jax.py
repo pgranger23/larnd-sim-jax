@@ -471,7 +471,8 @@ def get_adc_values_average_noise_vmap(params, wfs, stop_threshold=1e-9):
     #     charge_distrib = charge_distrib.at[:, _, :].set(charge_step)
 
 
-    return jnp.moveaxis(log_prob_distrib, 0, 1), jnp.moveaxis(charge_distrib, 0, 1)
+    prob_distrib = jnp.exp(jnp.clip(log_prob_distrib, -1000.0, 0.0))
+    return jnp.moveaxis(prob_distrib, 0, 1), jnp.moveaxis(charge_distrib, 0, 1)
 
 @jit
 def get_average_hit_values(ticks_prob, adcs_distrib):

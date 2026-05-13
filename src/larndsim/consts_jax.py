@@ -141,6 +141,13 @@ class Params_template:
     shift_y: float = struct.field(pytree_node=False)
     shift_z: float = struct.field(pytree_node=False)
     size_margin: float = struct.field(pytree_node=False)
+    # Optional per-track positional shifts keyed by track ID.
+    # When enabled, these are added to global shift_x/y/z before applying to segments.
+    track_shift_track_ids: jax.Array = struct.field(pytree_node=False, default=None)
+    track_shift_x: jax.Array = struct.field(pytree_node=False, default=None)
+    track_shift_y: jax.Array = struct.field(pytree_node=False, default=None)
+    track_shift_z: jax.Array = struct.field(pytree_node=False, default=None)
+    use_track_shifts: bool = struct.field(pytree_node=False, default=False)
     diffusion_in_current_sim: bool = struct.field(pytree_node=False, default=True)
     mc_diff: bool = struct.field(pytree_node=False, default=False)
     nb_sampling_bins_per_pixel: int = struct.field(pytree_node=False, default=10)
@@ -152,6 +159,10 @@ class Params_template:
     nb_tran_diff_bins: int = struct.field(pytree_node=False, default=5)
     hit_prob_threshold: float = struct.field(pytree_node=False, default=1e-5)  # Threshold for hit probability
     tran_diff_bin_edges: jax.Array = struct.field(pytree_node=False, default=None) # Bin edges for transverse diffusion
+    # Draft matching controls: `grid` keeps hard boundaries, `soft` enables weighted neighborhoods.
+    sim_match_mode: str = struct.field(pytree_node=False, default="soft")
+    time_boundary_softness: float = struct.field(pytree_node=False, default=2.0)
+
 
 def build_params_class(params_with_grad):
     """
@@ -211,7 +222,7 @@ def get_vdrift(params):
     #return params.eField
 
 
-def load_detector_properties(params_cls, detprop_file, pixel_file):
+def load_detector_properties(params_cls, detprop_file, pixel_file, soft_xy_sigma_override=None):
     """
     Loads detector properties and pixel geometry from YAML files and initializes a parameter class.
     This function reads detector and pixel layout properties from the provided YAML files,
@@ -247,6 +258,12 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "shift_x": 0.,
         "shift_y": 0.,
         "shift_z": 0.,
+        "track_shift_track_ids": None,
+        "track_shift_x": None,
+        "track_shift_y": None,
+        "track_shift_z": None,
+        "use_track_shifts": False,
+        "soft_bound_tpc_shifts": False,
         "box": 1,
         "birks": 2,
         "lArDensity": 1.38,
@@ -286,6 +303,12 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
         "tpc_centers": jnp.array([[0, 0, 0], [0, 0, 0]]), # Placeholder for TPC centers,
         "response_full_drift_t": 190.61638,
         "nb_tran_diff_bins": 5,
+        "sim_match_mode": "soft",
+        "time_boundary_softness": 2.0,
+        "num_pix_xy_neighbors": 1,
+        "neighbor_xy_pid": None,
+        "pixel_neighbor_weight_dict": None,
+        "neighbor_xy_weight": None,
         "nb_sampling_bins_per_pixel": 10, # Number of sampling bins per pixel
         "long_diff_template": jnp.linspace(0.001, 10, 100), # Placeholder for long diffusion template
         "long_diff_extent": 20
@@ -374,6 +397,9 @@ def load_detector_properties(params_cls, detprop_file, pixel_file):
     params_dict['n_pixels_per_tile'] = len(np.unique(params_dict['xs'])), len(np.unique(params_dict['ys']))
 
     params_dict['tile_map'] = ((7,5,3,1),(8,6,4,2)),((16,14,12,10),(15,13,11,9))
+
+    
+
     params_dict['tpc_borders'] = jnp.asarray(params_dict['tpc_borders'])
     filtered_dict = {key: value for key, value in params_dict.items() if key in params_cls.__match_args__}
     return params_cls(**filtered_dict)

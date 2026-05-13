@@ -13,7 +13,7 @@ if '--gpu' not in sys.argv:
     os.environ['JAX_PLATFORMS'] = 'cpu'
 
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
-from larndsim.sim_jax import simulate_stochastic, simulate_parametrized, simulate_wfs
+from larndsim.sim_jax import simulate_stochastic, simulate_parametrized, simulate_wfs, simulate_probabilistic
 from larndsim.losses_jax import get_hits_space_coords
 from larndsim.detsim_jax import validate_event_ids_for_packing, validate_local_event_ids
 from pprint import pprint
@@ -96,6 +96,14 @@ def main(config):
 
     if config.out_np:
         l_adc, l_Q, l_ticks, l_eventID, l_pix_x, l_pix_y, l_pix_z, l_hit_prob = [], [], [], [], [], [], [], []
+        if config.save_probabilistic_output:
+            l_prob_ticks_prob = []
+            l_prob_adcs_distrib = []
+            l_prob_pixel_x = []
+            l_prob_pixel_y = []
+            l_prob_event = []
+            l_prob_unique_pixels = []
+            l_prob_batch = []
 
     # libcudart.cudaProfilerStart()
     for ibatch in tqdm(range(len(dataset)), desc="Loading tracks", total=len(dataset)):
@@ -116,7 +124,7 @@ def main(config):
         local_to_global = {i: int(gid) for i, gid in enumerate(global_event_ids)}
 
         tracks = jax.device_put(batch)
-        rngseed = ibatch if config.seed is None else config.seed
+        rngseed = ibatch + 1 if config.seed is None else config.seed
         if config.mode == 'lut':
             wfs, unique_pixels = simulate_wfs(ref_params, response, tracks, fields)
             adcs, pixel_x, pixel_y, pixel_z, ticks, hit_prob, event, hit_pixels = simulate_stochastic(ref_params, wfs, unique_pixels, rngseed=rngseed)
@@ -134,6 +142,20 @@ def main(config):
         mask = (adcs_clean.flatten() != 0) & (event.flatten() != -1)
         Q = adc2charge(adcs.flatten()[mask], ref_params)
 
+        prob_out = None
+        if config.save_probabilistic_output:
+            if config.mode != 'lut':
+                raise ValueError("--save_probabilistic_output currently supports only --mode lut")
+            adcs_distrib, prob_pixel_x, prob_pixel_y, ticks_prob, prob_event = simulate_probabilistic(ref_params, wfs, unique_pixels)
+            prob_out = {
+                'ticks_prob': ticks_prob,
+                'adcs_distrib': adcs_distrib,
+                'pixel_x': prob_pixel_x,
+                'pixel_y': prob_pixel_y,
+                'event': prob_event,
+                'unique_pixels': unique_pixels,
+            }
+
         if not config.out_np:
             with h5py.File(output_filename, 'a') as f:
                 batch_group = f.create_group(f"batch_{ibatch}")
@@ -148,15 +170,26 @@ def main(config):
 
                     # Create per-event subgroup
                     event_group = batch_group.create_group(f"event_{global_event_id}")
-                    event_group.create_dataset('adc_clean', data=adcs_clean.flatten()[mask][event_mask])
-                    event_group.create_dataset('adc', data=adcs.flatten()[mask][event_mask])
-                    event_group.create_dataset('Q', data=Q[event_mask])
-                    event_group.create_dataset('pixels', data=hit_pixels[mask][event_mask])
-                    event_group.create_dataset('ticks', data=ticks.flatten()[mask][event_mask])
-                    event_group.create_dataset('eventID', data=np.full(event_mask.sum(), global_event_id, dtype=np.int64))
-                    event_group.create_dataset('pix_x', data=pixel_x[mask][event_mask])
-                    event_group.create_dataset('pix_y', data=pixel_y[mask][event_mask])
-                    event_group.create_dataset('pix_z', data=pixel_z.flatten()[mask][event_mask])
+
+                    stoc_group = event_group.create_group(f"stochastic")
+                    stoc_group.create_dataset('adc_clean', data=adcs_clean.flatten()[mask][event_mask])
+                    stoc_group.create_dataset('adc', data=adcs.flatten()[mask][event_mask])
+                    stoc_group.create_dataset('Q', data=Q[event_mask])
+                    stoc_group.create_dataset('pixels', data=hit_pixels[mask][event_mask])
+                    stoc_group.create_dataset('ticks', data=ticks.flatten()[mask][event_mask])
+                    stoc_group.create_dataset('event', data=np.full(event_mask.sum(), global_event_id, dtype=np.int64))
+                    stoc_group.create_dataset('pix_x', data=pixel_x[mask][event_mask])
+                    stoc_group.create_dataset('pix_y', data=pixel_y[mask][event_mask])
+                    stoc_group.create_dataset('pix_z', data=pixel_z.flatten()[mask][event_mask])
+
+                    if prob_out is not None:
+                        prob_group = event_group.create_group('probabilistic')
+                        prob_group.create_dataset('ticks_prob', data=np.asarray(prob_out['ticks_prob']))
+                        prob_group.create_dataset('adcs_distrib', data=np.asarray(prob_out['adcs_distrib']))
+                        prob_group.create_dataset('pixel_x', data=np.asarray(prob_out['pixel_x']))
+                        prob_group.create_dataset('pixel_y', data=np.asarray(prob_out['pixel_y']))
+                        prob_group.create_dataset('event', data=np.asarray(prob_out['event']))
+                        prob_group.create_dataset('unique_pixels', data=np.asarray(prob_out['unique_pixels']))
 
                     if config.jac:
                         for par in pars:
@@ -165,7 +198,6 @@ def main(config):
 
                     if config.save_wfs:
                         event_group.create_dataset('wfs', data=wfs)
-
 
         else:
             l_adc.append(adcs.flatten()[mask])
@@ -176,9 +208,38 @@ def main(config):
             l_pix_y.append(pixel_y.flatten()[mask])
             l_pix_z.append(pixel_z.flatten()[mask])
             l_hit_prob.append(hit_prob.flatten()[mask])
+            if prob_out is not None:
+                npix = int(np.asarray(prob_out['pixel_x']).shape[0])
+                l_prob_ticks_prob.append(np.asarray(prob_out['ticks_prob']))
+                l_prob_adcs_distrib.append(np.asarray(prob_out['adcs_distrib']))
+                l_prob_pixel_x.append(np.asarray(prob_out['pixel_x']))
+                l_prob_pixel_y.append(np.asarray(prob_out['pixel_y']))
+                l_prob_event.append(np.asarray(prob_out['event']))
+                l_prob_unique_pixels.append(np.asarray(prob_out['unique_pixels']))
+                l_prob_batch.append(np.full(npix, ibatch, dtype=np.int32))
 
     if config.out_np:
-        jnp.savez(config.output_file, adcs=np.concatenate(l_adc), Q=np.concatenate(l_Q), x=np.concatenate(l_pix_x), y=np.concatenate(l_pix_y), z=np.concatenate(l_pix_z), ticks=np.concatenate(l_ticks), hit_prob=np.concatenate(l_hit_prob), event_id=np.concatenate(l_eventID))
+        output_dict = {
+            'adcs': np.concatenate(l_adc),
+            'Q': np.concatenate(l_Q),
+            'x': np.concatenate(l_pix_x),
+            'y': np.concatenate(l_pix_y),
+            'z': np.concatenate(l_pix_z),
+            'ticks': np.concatenate(l_ticks),
+            'hit_prob': np.concatenate(l_hit_prob),
+            'event_id': np.concatenate(l_eventID),
+        }
+        if config.save_probabilistic_output and len(l_prob_ticks_prob) > 0:
+            output_dict.update({
+                'prob_ticks_prob': np.concatenate(l_prob_ticks_prob, axis=0),
+                'prob_adcs_distrib': np.concatenate(l_prob_adcs_distrib, axis=0),
+                'prob_pixel_x': np.concatenate(l_prob_pixel_x),
+                'prob_pixel_y': np.concatenate(l_prob_pixel_y),
+                'prob_event': np.concatenate(l_prob_event),
+                'prob_unique_pixels': np.concatenate(l_prob_unique_pixels),
+                'prob_batch': np.concatenate(l_prob_batch),
+            })
+        np.savez(config.output_file, **output_dict)
 
     # libcudart.cudaProfilerStop()
     return 0, 'Success'
@@ -214,6 +275,8 @@ if __name__ == '__main__':
     parser.add_argument('--out_np', action='store_true', default=False, help='store target-like output in npz')
     parser.add_argument('--max_batch_len', type=float, default=50., help='Maximum trajectory length budget used while preparing tracks')
     parser.add_argument('--chop', action='store_true', default=False, help='Enable segment chopping in data loading (default: disabled)')
+    parser.add_argument('--save_probabilistic_output', action='store_true', default=False,
+                        help='Also save probabilistic simulation output in the same H5/NPZ output flow (LUT mode only).')
 
     try:
         args = parser.parse_args()

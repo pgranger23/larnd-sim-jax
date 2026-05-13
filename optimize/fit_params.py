@@ -7,7 +7,7 @@ import shutil
 import pickle
 import numpy as np
 from .ranges import ranges
-from larndsim.sim_jax import get_size_history
+from larndsim.sim_jax import get_size_history, compute_smooth_safe_displacements
 from larndsim.losses_jax import mmd_adc, mmd_time, mmd_time_adc, sobolev_adc, chamfer_3d, sdtw_adc, sdtw_time, sdtw_time_adc, adc2charge, nll_loss, llhd_loss, compute_tv_penalty, wasserstein_1d_loss #, sinkhorn_loss
 from larndsim.consts_jax import build_params_class, load_detector_properties, load_lut
 from larndsim.detsim_jax import validate_event_ids_for_packing, validate_local_event_ids
@@ -61,21 +61,52 @@ def value_and_grad_fwd(f, argnums=0, has_aux=False):
             
     return val_and_grad_fn
 
+# def serialize_value(v):
+#     if hasattr(v, 'shape'):
+#         # Check if it's a scalar (0-dimensional) or multi-dimensional
+#         if len(v.shape) == 0 or (len(v.shape) == 1 and v.shape[0] == 1):
+#             # Scalar JAX array -> Python float
+#             return float(v)
+#         else:
+#             # Multi-dimensional JAX array -> numpy array
+#             return np.array(v)
+#     elif hasattr(v, 'item'):
+#         # Fallback for other array-like objects with item()
+#         return float(v)
+#     else:
+#         # Already Python type
+#         return v
+    
 def serialize_value(v):
-    if hasattr(v, 'shape'):
-        # Check if it's a scalar (0-dimensional) or multi-dimensional
-        if len(v.shape) == 0 or (len(v.shape) == 1 and v.shape[0] == 1):
-            # Scalar JAX array -> Python float
-            return float(v)
-        else:
-            # Multi-dimensional JAX array -> numpy array
-            return np.array(v)
-    elif hasattr(v, 'item'):
-        # Fallback for other array-like objects with item()
-        return float(v)
-    else:
-        # Already Python type
+    # Recursively handle nested aux structures.
+    if isinstance(v, dict):
+        return {k: serialize_value(val) for k, val in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [serialize_value(val) for val in v]
+    if isinstance(v, (str, bytes)):
         return v
+
+    # Handle array-like values (JAX/NumPy/Python scalars).
+    arr = np.asarray(v)
+    if arr.ndim == 0:
+        scalar = arr.item()
+        if isinstance(scalar, (str, bytes, bool)):
+            return scalar
+        if isinstance(scalar, (int, float, np.integer, np.floating)):
+            return float(scalar)
+        return scalar
+
+    # Size-1 vectors/matrices should still serialize as scalar.
+    if arr.size == 1:
+        scalar = arr.reshape(-1)[0].item() if hasattr(arr.reshape(-1)[0], 'item') else arr.reshape(-1)[0]
+        if isinstance(scalar, (str, bytes, bool)):
+            return scalar
+        if isinstance(scalar, (int, float, np.integer, np.floating)):
+            return float(scalar)
+        return scalar
+
+    # Keep non-scalar arrays as NumPy arrays for pickle.
+    return arr
 
 def serialize_param_state(params, relevant):
     """Serialize selected fields from params container into plain Python values."""
@@ -222,10 +253,20 @@ class ParamFitter:
                  fit_segment_de=False,
                  segment_de_mode="segment-only",
                  segment_de_lr=1e-2,
-                 segment_de_optimizer="SGD",
+                 segment_de_optimizer="Adam",
                  segment_reg_l2=0.0,
                  segment_reg_track_total=0.0,
                  segment_reg_smooth=0.0,
+                 fit_segment_shift_xyz=False,
+                 segment_shift_mode="segment-only",
+                 segment_shift_lr=1e-2,
+                 segment_shift_optimizer="Adam",
+                 segment_shift_reg_l2=0.0,
+                 fit_track_shift_xyz=False,
+                 track_shift_mode="segment-only",
+                 track_shift_lr=1e-2,
+                 track_shift_optimizer="Adam",
+                 track_shift_reg_l2=0.0,
                  sz_mini_bt=1, shuffle_bt=False, shuffle_seed=42, resume_from=None,
                  config = {}):
 
@@ -279,6 +320,26 @@ class ParamFitter:
         self.segment_de_latents = None
         self.segment_opt_state = None
 
+        self.fit_segment_shift_xyz = bool(fit_segment_shift_xyz)
+        self.segment_shift_mode = segment_shift_mode
+        self.segment_shift_lr = float(segment_shift_lr)
+        self.segment_shift_optimizer = segment_shift_optimizer
+        self.segment_shift_reg_l2 = float(segment_shift_reg_l2)
+        self.segment_shift_latents = None
+        self.segment_shift_opt_state = None
+
+        # Track-level shift xyz fitting (similar to segment-level but per-track)
+        self.fit_track_shift_xyz = bool(fit_track_shift_xyz)
+        self.track_shift_mode = track_shift_mode
+        self.track_shift_lr = float(track_shift_lr)
+        self.track_shift_optimizer = track_shift_optimizer
+        self.track_shift_reg_l2 = float(track_shift_reg_l2)
+        self.track_shift_latents = None
+        self.track_shift_opt_state = None
+        self.track_shift_track_key_codes = None
+        self.track_shift_track_keys = None
+        self.track_shift_optimizer_obj = None
+
         if self.segment_de_mode not in ("segment-only", "joint"):
             raise ValueError("segment_de_mode must be one of: segment-only, joint")
         if self.segment_de_lr <= 0:
@@ -287,6 +348,27 @@ class ParamFitter:
             raise ValueError("segment regularization weights must be >= 0")
         if self.segment_de_optimizer not in ("SGD", "Adam", "RMSprop"):
             raise ValueError(f"segment_de_optimizer must be one of: SGD, Adam, RMSprop, got {self.segment_de_optimizer}")
+        if self.segment_shift_mode not in ("segment-only", "joint"):
+            raise ValueError("segment_shift_mode must be one of: segment-only, joint")
+        if self.segment_shift_lr <= 0:
+            raise ValueError(f"segment_shift_lr must be > 0, got {self.segment_shift_lr}")
+        if self.segment_shift_reg_l2 < 0:
+            raise ValueError("segment_shift_reg_l2 must be >= 0")
+        if self.segment_shift_optimizer not in ("SGD", "Adam", "RMSprop"):
+            raise ValueError(f"segment_shift_optimizer must be one of: SGD, Adam, RMSprop, got {self.segment_shift_optimizer}")
+        if self.fit_segment_de and self.fit_segment_shift_xyz:
+            raise ValueError("fit_segment_de and fit_segment_shift_xyz are mutually exclusive")
+
+        if self.track_shift_mode not in ("segment-only", "joint"):
+            raise ValueError("track_shift_mode must be one of: segment-only, joint")
+        if self.track_shift_lr <= 0:
+            raise ValueError(f"track_shift_lr must be > 0, got {self.track_shift_lr}")
+        if self.track_shift_reg_l2 < 0:
+            raise ValueError("track_shift_reg_l2 must be >= 0")
+        if self.track_shift_optimizer not in ("SGD", "Adam", "RMSprop"):
+            raise ValueError(f"track_shift_optimizer must be one of: SGD, Adam, RMSprop, got {self.track_shift_optimizer}")
+        if self.fit_track_shift_xyz and (self.fit_segment_de or self.fit_segment_shift_xyz):
+            raise ValueError("fit_track_shift_xyz is mutually exclusive with fit_segment_de and fit_segment_shift_xyz")
 
         if self.normalization_scheme not in ("sigmoid", "exp_log", "divide"):
             raise ValueError(
@@ -379,7 +461,7 @@ class ParamFitter:
         # Set up loss strategy based on loss function and simulation type
         if loss_fn == 'llhd':
             from .strategies import ProbabilisticLossStrategy
-            self.loss_strategy = ProbabilisticLossStrategy(loss_fn=llhd_loss, **self.loss_fn_kw)
+            self.loss_strategy = ProbabilisticLossStrategy(**self.loss_fn_kw)
         elif self.probabilistic_sim:
             # Use CollapsedProbabilisticLossStrategy for probabilistic simulation with deterministic losses
             from .strategies import CollapsedProbabilisticLossStrategy
@@ -423,7 +505,11 @@ class ParamFitter:
 
     def setup_params(self):
         Params = build_params_class(self.relevant_params_list)
-        ref_params = load_detector_properties(Params, self.detector_props, self.pixel_layouts)
+        ref_params = load_detector_properties(
+            Params,
+            self.detector_props,
+            self.pixel_layouts
+        )
 
         if self.set_params:
             logger.info(f"Applying global parameter overrides: {self.set_params}")
@@ -440,7 +526,7 @@ class ParamFitter:
         
         params_to_apply = [
             "diffusion_in_current_sim",
-            "mc_diff"
+            "mc_diff",
         ]
 
         ref_params = ref_params.replace(**{key: getattr(self, key) for key in params_to_apply})
@@ -646,6 +732,24 @@ class ParamFitter:
 
         return jnp.arange(n_rows_fallback, dtype=jnp.int64)
 
+    def _get_rngkey(self, i, epoch=0):
+        if self.probabilistic_sim:
+            return None
+
+        if self.sim_seed_strategy == "same":
+            # return i
+            return i + 1
+        if self.sim_seed_strategy == "different":
+            return -i - 1
+        if self.sim_seed_strategy == "different_epoch":
+            return -i - 1 - epoch * 10000
+        if self.sim_seed_strategy == "random":
+            return np.random.randint(0, 1000000)
+        if self.sim_seed_strategy == "constant":
+            return 0
+        raise ValueError("Unknown sim_seed_strategy. Must be same, different, different_epoch, random or constant")
+
+
     def initialize_segment_de_latents(self, dataloader):
         if self.segment_de_latents is not None:
             return
@@ -717,6 +821,233 @@ class ParamFitter:
         batch_updates = updates[batch_row_indices]
         self.segment_de_latents = self.segment_de_latents.at[batch_row_indices].add(batch_updates)
 
+    def initialize_segment_shift_latents(self, dataloader):
+        if self.segment_shift_latents is not None:
+            return
+
+        dataset = getattr(dataloader, 'dataset', None)
+        if dataset is None or not hasattr(dataset, 'tracks_struct'):
+            raise ValueError("fit_segment_shift_xyz requires a dataloader dataset exposing tracks_struct")
+
+        n_rows = int(dataset.tracks_struct.shape[0])
+        self.segment_shift_latents = jnp.zeros((n_rows, 3), dtype=jnp.float32)
+        logger.info(f"Initialized per-segment xyz shift latent matrix with shape ({n_rows}, 3)")
+
+        if self.segment_shift_optimizer == "SGD":
+            segment_shift_optimizer_fn = optax.sgd(self.segment_shift_lr)
+        elif self.segment_shift_optimizer == "Adam":
+            segment_shift_optimizer_fn = optax.adam(self.segment_shift_lr)
+        elif self.segment_shift_optimizer == "RMSprop":
+            segment_shift_optimizer_fn = optax.rmsprop(self.segment_shift_lr)
+        else:
+            raise ValueError(f"Unknown segment_shift_optimizer: {self.segment_shift_optimizer}")
+
+        self.segment_shift_optimizer_obj = segment_shift_optimizer_fn
+        self.segment_shift_opt_state = self.segment_shift_optimizer_obj.init(self.segment_shift_latents)
+        logger.info(f"Initialized segment xyz optimizer: {self.segment_shift_optimizer} with lr={self.segment_shift_lr}")
+
+    def apply_segment_shift_latents_to_tracks(self, tracks, batch_row_indices, segment_shift_latents):
+        x_idx = self.sim_track_fields.index("x")
+        y_idx = self.sim_track_fields.index("y")
+        z_idx = self.sim_track_fields.index("z")
+
+        batch_latents = segment_shift_latents[jnp.asarray(batch_row_indices, dtype=jnp.int32)]
+        # if bool(getattr(self.current_params, "soft_bound_tpc_shifts", False)):
+        #     safe_dx, safe_dy, safe_dz = compute_smooth_safe_displacements(
+        #         self.current_params,
+        #         tracks,
+        #         self.sim_track_fields,
+        #         batch_latents[:, 0],
+        #         batch_latents[:, 1],
+        #         batch_latents[:, 2],
+        #         include_endpoints=False,
+        #     )
+        # else:
+        #     safe_dx, safe_dy, safe_dz = batch_latents[:, 0], batch_latents[:, 1], batch_latents[:, 2]
+        safe_dx, safe_dy, safe_dz = batch_latents[:, 0], batch_latents[:, 1], batch_latents[:, 2]
+        safe_latents = jnp.stack([safe_dx, safe_dy, safe_dz], axis=1)
+
+        # Draft mode: intentionally shift only segment centers (x/y/z), not start/end coordinates.
+        tracks_mod = tracks.at[:, x_idx].set(tracks[:, x_idx] + safe_latents[:, 0])
+        tracks_mod = tracks_mod.at[:, y_idx].set(tracks[:, y_idx] + safe_latents[:, 1])
+        tracks_mod = tracks_mod.at[:, z_idx].set(tracks[:, z_idx] + safe_latents[:, 2])
+        return tracks_mod, safe_latents
+
+    def apply_segment_shift_updates(self, batch_row_indices, batch_grads):
+        if self.segment_shift_latents is None:
+            raise RuntimeError("segment_shift_latents not initialized")
+        if self.segment_shift_opt_state is None:
+            raise RuntimeError("segment shift optimizer state not initialized")
+
+        batch_row_indices = jnp.asarray(batch_row_indices, dtype=jnp.int32)
+        batch_grads = jnp.asarray(batch_grads, dtype=jnp.float32)
+
+        if jnp.isnan(batch_grads).any():
+            logger.warning("Got NaN gradients in segment xyz updates! Skipping this batch.")
+            return
+
+        full_grads = jnp.zeros_like(self.segment_shift_latents)
+        full_grads = full_grads.at[batch_row_indices].set(batch_grads)
+
+        updates, self.segment_shift_opt_state = self.segment_shift_optimizer_obj.update(full_grads, self.segment_shift_opt_state)
+        batch_updates = updates[batch_row_indices]
+        self.segment_shift_latents = self.segment_shift_latents.at[batch_row_indices].add(batch_updates)
+
+    def initialize_track_shift_latents(self, dataloader):
+        """Initialize track-level xyz shift latents from unique (eventID, trackID) keys."""
+        if self.track_shift_latents is not None:
+            return
+
+        dataset = getattr(dataloader, 'dataset', None)
+        if dataset is None or not hasattr(dataset, 'tracks_struct'):
+            raise ValueError("fit_track_shift_xyz requires a dataloader dataset exposing tracks_struct")
+
+        if self.evt_id not in self.sim_track_fields or self.trk_id not in self.sim_track_fields:
+            raise RuntimeError(f"'{self.evt_id}'/'{self.trk_id}' not found in sim_track_fields")
+
+        tracks_data = np.asarray(dataset.tracks_struct)
+
+        # Support both structured arrays (named fields) and plain 2D arrays.
+        if getattr(tracks_data.dtype, "names", None) is not None:
+            if self.evt_id not in tracks_data.dtype.names or self.trk_id not in tracks_data.dtype.names:
+                raise RuntimeError(
+                    f"'{self.evt_id}'/'{self.trk_id}' not found in dataset.tracks_struct dtype names"
+                )
+            event_ids_all = np.asarray(tracks_data[self.evt_id])
+            track_ids_all = np.asarray(tracks_data[self.trk_id])
+        else:
+            event_id_idx = self.sim_track_fields.index(self.evt_id)
+            track_id_idx = self.sim_track_fields.index(self.trk_id)
+            if tracks_data.ndim == 1:
+                raise ValueError(
+                    "tracks_struct is 1D non-structured; cannot extract (eventID, trackID) keys safely"
+                )
+            elif tracks_data.ndim >= 2:
+                event_ids_all = tracks_data[:, event_id_idx]
+                track_ids_all = tracks_data[:, track_id_idx]
+            else:
+                raise ValueError(
+                    f"Unexpected tracks_struct shape {tracks_data.shape} for track shift initialization"
+                )
+
+        event_ids_all = np.asarray(event_ids_all, dtype=np.int64)
+        track_ids_all = np.asarray(track_ids_all, dtype=np.int64)
+
+        # Pack (eventID, trackID) into a sortable uint64 code for fast lookup.
+        key_codes = (event_ids_all.astype(np.uint32).astype(np.uint64) << np.uint64(32)) | track_ids_all.astype(np.uint32).astype(np.uint64)
+        sort_idx = np.argsort(key_codes)
+        key_codes_sorted = key_codes[sort_idx]
+        pair_keys_sorted = np.stack([event_ids_all[sort_idx], track_ids_all[sort_idx]], axis=1)
+        unique_mask = np.concatenate(([True], key_codes_sorted[1:] != key_codes_sorted[:-1]))
+        unique_key_codes = key_codes_sorted[unique_mask]
+        unique_pair_keys = pair_keys_sorted[unique_mask]
+        n_tracks = len(unique_key_codes)
+
+        # Store sorted key codes for searchsorted lookup and pair keys for checkpoint readability.
+        self.track_shift_track_key_codes = jnp.asarray(unique_key_codes, dtype=jnp.uint64)
+        self.track_shift_track_keys = jnp.asarray(unique_pair_keys, dtype=jnp.int64)
+
+        # Initialize latents (3 dimensions: x, y, z shifts)
+        self.track_shift_latents = jnp.zeros((n_tracks, 3), dtype=jnp.float32)
+        logger.info(f"Initialized per-track xyz shift latent matrix with shape ({n_tracks}, 3)")
+
+        # Initialize optimizer
+        if self.track_shift_optimizer == "SGD":
+            track_shift_optimizer_fn = optax.sgd(self.track_shift_lr)
+        elif self.track_shift_optimizer == "Adam":
+            track_shift_optimizer_fn = optax.adam(self.track_shift_lr)
+        elif self.track_shift_optimizer == "RMSprop":
+            track_shift_optimizer_fn = optax.rmsprop(self.track_shift_lr)
+        else:
+            raise ValueError(f"Unknown track_shift_optimizer: {self.track_shift_optimizer}")
+
+        self.track_shift_optimizer_obj = track_shift_optimizer_fn
+        self.track_shift_opt_state = self.track_shift_optimizer_obj.init(self.track_shift_latents)
+        logger.info(f"Initialized track xyz optimizer: {self.track_shift_optimizer} with lr={self.track_shift_lr}")
+
+    def apply_track_shift_latents_to_tracks(self, tracks, track_shift_latents):
+        """Apply per-track xyz shifts to all segments using (eventID, trackID) keys."""
+        x_idx = self.sim_track_fields.index("x")
+        y_idx = self.sim_track_fields.index("y")
+        z_idx = self.sim_track_fields.index("z")
+        event_id_idx = self.sim_track_fields.index(self.evt_id)
+        track_id_idx = self.sim_track_fields.index(self.trk_id)
+
+        # Extract (eventID, trackID) keys for all segments in batch.
+        event_ids = tracks[:, event_id_idx].astype(jnp.uint32)
+        track_ids = tracks[:, track_id_idx].astype(jnp.uint32)
+        track_key_codes = (event_ids.astype(jnp.uint64) << jnp.uint64(32)) | track_ids.astype(jnp.uint64)
+
+        if self.track_shift_track_key_codes is None:
+            raise RuntimeError("track_shift_track_key_codes not initialized")
+
+        # Sorted list of key codes that have latent shifts.
+        shift_key_codes = self.track_shift_track_key_codes
+
+        # Binary search to find indices in shift_key_codes for each segment in batch.
+        found_idx = jnp.searchsorted(shift_key_codes, track_key_codes)
+
+        # Check bounds and handle unmatched tracks
+        in_bounds = found_idx < shift_key_codes.shape[0]
+        found_idx_safe = jnp.where(in_bounds, found_idx, 0)
+        matched = shift_key_codes[found_idx_safe] == track_key_codes
+        valid = in_bounds & matched
+
+        # Get shifts for each segment based on its track ID
+        shifts_per_segment = jnp.where(
+            valid[:, None],  # Broadcast mask to (n_segments, 1)
+            track_shift_latents[found_idx_safe],  # (n_segments, 3)
+            jnp.zeros((3,), dtype=jnp.float32)  # Default if not found
+        )
+
+        if bool(getattr(self.current_params, "soft_bound_tpc_shifts", False)):
+            safe_dx, safe_dy, safe_dz = compute_smooth_safe_displacements(
+                self.current_params,
+                tracks,
+                self.sim_track_fields,
+                shifts_per_segment[:, 0],
+                shifts_per_segment[:, 1],
+                shifts_per_segment[:, 2],
+                include_endpoints=False,
+            )
+        else:
+            safe_dx, safe_dy, safe_dz = (
+                shifts_per_segment[:, 0],
+                shifts_per_segment[:, 1],
+                shifts_per_segment[:, 2],
+            )
+        safe_shifts_per_segment = jnp.stack([safe_dx, safe_dy, safe_dz], axis=1)
+
+        # Apply shifts to segment centers
+        tracks_mod = tracks.at[:, x_idx].add(safe_shifts_per_segment[:, 0])
+        tracks_mod = tracks_mod.at[:, y_idx].add(safe_shifts_per_segment[:, 1])
+        tracks_mod = tracks_mod.at[:, z_idx].add(safe_shifts_per_segment[:, 2])
+
+        track_keys = jnp.stack([
+            event_ids.astype(jnp.int64),
+            track_ids.astype(jnp.int64)
+        ], axis=1)
+        return tracks_mod, safe_shifts_per_segment, track_keys
+
+    def apply_track_shift_updates(self, track_gradients_full):
+        """Apply optimizer updates to track shift latents."""
+        if self.track_shift_latents is None:
+            raise RuntimeError("track_shift_latents not initialized")
+        if self.track_shift_opt_state is None:
+            raise RuntimeError("track shift optimizer state not initialized")
+
+        track_gradients = jnp.asarray(track_gradients_full, dtype=jnp.float32)
+
+        if jnp.isnan(track_gradients).any():
+            logger.warning("Got NaN gradients in track xyz updates! Skipping this batch.")
+            return
+
+        # Update track shifts using optimizer
+        updates, self.track_shift_opt_state = self.track_shift_optimizer_obj.update(
+            track_gradients, self.track_shift_opt_state
+        )
+        self.track_shift_latents = self.track_shift_latents + updates
+
     def validate_track_batch_event_ids(self, track_batch, track_fields, context):
         evt_idx = track_fields.index(self.evt_id)
         event_ids = np.asarray(track_batch[:, evt_idx], dtype=np.int64)
@@ -743,7 +1074,8 @@ class ParamFitter:
         norm_state = loaded.get('norm_params_state')
         current_state = loaded.get('current_params_state')
         opt_state = loaded.get('opt_state')
-        segment_state = loaded.get('segment_de_latents')
+        segment_state = loaded.get('segment_de_latents_state', loaded.get('segment_de_latents'))
+        segment_shift_state = loaded.get('segment_shift_latents_state', loaded.get('segment_shift_latents'))
 
         if norm_state is None:
             raise ValueError(
@@ -773,6 +1105,49 @@ class ParamFitter:
             else:
                 # Re-initialize optimizer state if not saved (for backward compatibility)
                 self.segment_opt_state = None
+        if self.fit_segment_shift_xyz and segment_shift_state is not None:
+            self.segment_shift_latents = jnp.asarray(segment_shift_state, dtype=jnp.float32)
+            segment_shift_opt_state = loaded.get('segment_shift_opt_state')
+            if segment_shift_opt_state is not None:
+                self.segment_shift_opt_state = segment_shift_opt_state
+            else:
+                self.segment_shift_opt_state = None
+        track_shift_state = loaded.get('track_shift_latents_state', loaded.get('track_shift_latents'))
+        self.track_shift_latents = jnp.asarray(track_shift_state, dtype=jnp.float32) if track_shift_state is not None else None
+        track_shift_key_codes = loaded.get('track_shift_track_key_codes')
+        if track_shift_key_codes is not None:
+            self.track_shift_track_key_codes = jnp.asarray(track_shift_key_codes, dtype=jnp.uint64)
+        else:
+            # Backward compatibility for older checkpoints keyed only by trackID.
+            legacy_track_ids = loaded.get('track_shift_track_ids')
+            if legacy_track_ids is not None:
+                logger.warning(
+                    "Loaded legacy track_shift_track_ids checkpoint without eventID; "
+                    "assuming trackID-only uniqueness for compatibility."
+                )
+                self.track_shift_track_key_codes = jnp.asarray(legacy_track_ids, dtype=jnp.uint32).astype(jnp.uint64)
+            else:
+                self.track_shift_track_key_codes = None
+        self.track_shift_track_keys = jnp.asarray(loaded.get('track_shift_track_keys', None), dtype=jnp.int64) if loaded.get('track_shift_track_keys') is not None else None
+        track_shift_opt_state = loaded.get('track_shift_opt_state')
+        if track_shift_opt_state is not None:
+            self.track_shift_opt_state = track_shift_opt_state
+        else:
+            self.track_shift_opt_state = None
+        
+        # Validate and restore history list integrity after loading checkpoint.
+        # This guards against corrupted checkpoints where state arrays overwrote history lists.
+        for key in ['segment_de_latents', 'segment_shift_latents', 'track_shift_latents',
+                       'segment_de_latents_state', 'segment_shift_latents_state']:
+            if key in self.training_history:
+                val = self.training_history[key]
+                if not isinstance(val, list):
+                    logger.warning(
+                        f"History key '{key}' was corrupted (type={type(val).__name__}, not list). "
+                        f"Restoring as empty list to ensure training loop integrity."
+                    )
+                    self.training_history[key] = []
+        
         self.resumed = True
 
     def save_checkpoint(self, total_iter):
@@ -792,10 +1167,24 @@ class ParamFitter:
         if hasattr(self, 'opt_state'):
             self.training_history['opt_state'] = self.opt_state
         if self.fit_segment_de and self.segment_de_latents is not None:
-            self.training_history['segment_de_latents'] = np.asarray(self.segment_de_latents)
+            self.training_history['segment_de_latents_state'] = np.asarray(self.segment_de_latents)
             self.training_history['segment_de_optimizer'] = self.segment_de_optimizer
             if self.segment_opt_state is not None:
                 self.training_history['segment_opt_state'] = self.segment_opt_state
+        if self.fit_segment_shift_xyz and self.segment_shift_latents is not None:
+            self.training_history['segment_shift_latents_state'] = np.asarray(self.segment_shift_latents)
+            self.training_history['segment_shift_optimizer'] = self.segment_shift_optimizer
+            if self.segment_shift_opt_state is not None:
+                self.training_history['segment_shift_opt_state'] = self.segment_shift_opt_state
+        if self.fit_track_shift_xyz and self.track_shift_latents is not None:
+            self.training_history['track_shift_latents_state'] = np.asarray(self.track_shift_latents)
+            if self.track_shift_track_key_codes is not None:
+                self.training_history['track_shift_track_key_codes'] = np.asarray(self.track_shift_track_key_codes)
+            if self.track_shift_track_keys is not None:
+                self.training_history['track_shift_track_keys'] = np.asarray(self.track_shift_track_keys)
+            self.training_history['track_shift_optimizer'] = self.track_shift_optimizer
+            if self.track_shift_opt_state is not None:
+                self.training_history['track_shift_opt_state'] = self.track_shift_opt_state
         if self.resume_from is not None:
             self.training_history['resumed_from'] = self.resume_from
 
@@ -803,21 +1192,7 @@ class ParamFitter:
             pickle.dump(self.training_history, f_history)
 
     def compute_loss(self, tracks, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, with_loss=True, with_grad=True, with_hess=False, epoch=0, use_physical_params=False, batch_row_indices=None):
-        if self.probabilistic_sim:
-            rngkey = None
-        else:
-            if self.sim_seed_strategy == "same":
-                rngkey = i + 1
-            elif self.sim_seed_strategy == "different":
-                rngkey = -i - 1 #Need some offset otherwise batch 0 has same seed
-            elif self.sim_seed_strategy == "different_epoch":
-                rngkey = -i - 1 - epoch * 10000
-            elif self.sim_seed_strategy == "random":
-                rngkey = np.random.randint(0, 1000000)
-            elif self.sim_seed_strategy == "constant":
-                rngkey = 0
-            else:
-                raise ValueError("Unknown sim_seed_strategy. Must be same, different or random")
+        rngkey = self._get_rngkey(i, epoch)
 
         assert(with_loss or with_grad)
         loss_val, grads, aux, hess, aux_hess = None, None, None, None, None
@@ -832,6 +1207,165 @@ class ParamFitter:
             'event': ref_event,
             'pixel_id': ref_pixel_id
         }
+
+        if self.fit_segment_shift_xyz:
+            if batch_row_indices is None:
+                raise ValueError("batch_row_indices are required when fit_segment_shift_xyz is enabled")
+            if self.segment_shift_latents is None:
+                raise RuntimeError("segment_shift_latents are not initialized")
+
+            batch_row_indices = jnp.asarray(batch_row_indices, dtype=jnp.int64)
+
+            def map_norm_to_physical(norm_params_input):
+                if self.normalization_scheme == "divide":
+                    new_phys = {
+                        key: getattr(norm_params_input, key) * getattr(self.params_normalization, key)
+                        for key in self.relevant_params_list
+                    }
+                else:
+                    new_phys = {
+                        key: map_norm_to_phys(getattr(norm_params_input, key), key, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme())
+                        for key in self.relevant_params_list
+                    }
+                return self.ref_params.replace(**new_phys)
+
+            def seg_shift_loss_wrapper(segment_shift_latents):
+                tracks_mod, shifts = self.apply_segment_shift_latents_to_tracks(tracks, batch_row_indices, segment_shift_latents)
+                prediction = self.sim_strategy.predict(self.current_params, tracks_mod, self.sim_track_fields, rngkey)
+                data_loss, aux = self.loss_strategy.compute(self.current_params, prediction, target_data)
+
+                reg_l2 = self.segment_shift_reg_l2 * jnp.mean(shifts ** 2)
+                loss = data_loss + reg_l2
+                aux = dict(aux)
+                aux['segment_shift_reg_l2'] = reg_l2
+                aux['segment_shift_abs_mean'] = jnp.mean(jnp.abs(shifts))
+                aux['segment_shift_rms'] = jnp.sqrt(jnp.mean(shifts ** 2))
+                return loss, aux
+
+            def seg_shift_joint_loss_wrapper(norm_params_input, segment_shift_latents):
+                physical_params = map_norm_to_physical(norm_params_input)
+                tracks_mod, shifts = self.apply_segment_shift_latents_to_tracks(tracks, batch_row_indices, segment_shift_latents)
+                prediction = self.sim_strategy.predict(physical_params, tracks_mod, self.sim_track_fields, rngkey)
+                data_loss, aux = self.loss_strategy.compute(physical_params, prediction, target_data)
+
+                reg_l2 = self.segment_shift_reg_l2 * jnp.mean(shifts ** 2)
+                loss = data_loss + reg_l2
+                aux = dict(aux)
+                aux['segment_shift_reg_l2'] = reg_l2
+                aux['segment_shift_abs_mean'] = jnp.mean(jnp.abs(shifts))
+                aux['segment_shift_rms'] = jnp.sqrt(jnp.mean(shifts ** 2))
+                return loss, aux
+
+            if self.segment_shift_mode == "joint":
+                detector_grads, segment_grads = None, None
+                if with_loss and with_grad:
+                    (loss_val, aux), (detector_grads, segment_grads) = value_and_grad(
+                        seg_shift_joint_loss_wrapper, argnums=(0, 1), has_aux=True
+                    )(self.norm_params, self.segment_shift_latents)
+                elif with_loss:
+                    loss_val, aux = seg_shift_joint_loss_wrapper(self.norm_params, self.segment_shift_latents)
+                elif with_grad:
+                    (detector_grads, segment_grads), aux = grad(
+                        seg_shift_joint_loss_wrapper, argnums=(0, 1), has_aux=True
+                    )(self.norm_params, self.segment_shift_latents)
+
+                if segment_grads is not None:
+                    segment_grads = segment_grads[jnp.asarray(batch_row_indices, dtype=jnp.int32)]
+                grads = {
+                    "detector": detector_grads,
+                    "segment": segment_grads,
+                }
+            else:
+                if with_loss and with_grad:
+                    (loss_val, aux), grads = value_and_grad(seg_shift_loss_wrapper, has_aux=True)(self.segment_shift_latents)
+                elif with_loss:
+                    loss_val, aux = seg_shift_loss_wrapper(self.segment_shift_latents)
+                    grads = None
+                elif with_grad:
+                    grads, aux = grad(seg_shift_loss_wrapper, has_aux=True)(self.segment_shift_latents)
+
+                if grads is not None:
+                    grads = grads[jnp.asarray(batch_row_indices, dtype=jnp.int32)]
+
+            if with_hess:
+                hess, aux_hess = None, None
+
+            return loss_val, grads, aux, hess, aux_hess
+
+        if self.fit_track_shift_xyz:
+            if self.track_shift_latents is None:
+                raise RuntimeError("track_shift_latents are not initialized")
+
+            def map_norm_to_physical(norm_params_input):
+                if self.normalization_scheme == "divide":
+                    new_phys = {
+                        key: getattr(norm_params_input, key) * getattr(self.params_normalization, key)
+                        for key in self.relevant_params_list
+                    }
+                else:
+                    new_phys = {
+                        key: map_norm_to_phys(getattr(norm_params_input, key), key, scheme=self.normalization_scheme, scale=self._norm_scale_for_scheme())
+                        for key in self.relevant_params_list
+                    }
+                return self.ref_params.replace(**new_phys)
+
+            def trk_shift_loss_wrapper(track_shift_latents):
+                tracks_mod, shifts_applied, _ = self.apply_track_shift_latents_to_tracks(tracks, track_shift_latents)
+                prediction = self.sim_strategy.predict(self.current_params, tracks_mod, self.sim_track_fields, rngkey)
+                data_loss, aux = self.loss_strategy.compute(self.current_params, prediction, target_data)
+
+                reg_l2 = self.track_shift_reg_l2 * jnp.mean(shifts_applied ** 2)
+                loss = data_loss + reg_l2
+                aux = dict(aux)
+                aux['track_shift_reg_l2'] = reg_l2
+                aux['track_shift_abs_mean'] = jnp.mean(jnp.abs(shifts_applied))
+                aux['track_shift_rms'] = jnp.sqrt(jnp.mean(shifts_applied ** 2))
+                return loss, aux
+
+            def trk_shift_joint_loss_wrapper(norm_params_input, track_shift_latents):
+                physical_params = map_norm_to_physical(norm_params_input)
+                tracks_mod, shifts_applied, _ = self.apply_track_shift_latents_to_tracks(tracks, track_shift_latents)
+                prediction = self.sim_strategy.predict(physical_params, tracks_mod, self.sim_track_fields, rngkey)
+                data_loss, aux = self.loss_strategy.compute(physical_params, prediction, target_data)
+
+                reg_l2 = self.track_shift_reg_l2 * jnp.mean(shifts_applied ** 2)
+                loss = data_loss + reg_l2
+                aux = dict(aux)
+                aux['track_shift_reg_l2'] = reg_l2
+                aux['track_shift_abs_mean'] = jnp.mean(jnp.abs(shifts_applied))
+                aux['track_shift_rms'] = jnp.sqrt(jnp.mean(shifts_applied ** 2))
+                return loss, aux
+
+            if self.track_shift_mode == "joint":
+                detector_grads, track_grads = None, None
+                if with_loss and with_grad:
+                    (loss_val, aux), (detector_grads, track_grads) = value_and_grad(
+                        trk_shift_joint_loss_wrapper, argnums=(0, 1), has_aux=True
+                    )(self.norm_params, self.track_shift_latents)
+                elif with_loss:
+                    loss_val, aux = trk_shift_joint_loss_wrapper(self.norm_params, self.track_shift_latents)
+                elif with_grad:
+                    (detector_grads, track_grads), aux = grad(
+                        trk_shift_joint_loss_wrapper, argnums=(0, 1), has_aux=True
+                    )(self.norm_params, self.track_shift_latents)
+
+                grads = {
+                    "detector": detector_grads,
+                    "track": track_grads,
+                }
+            else:  # segment-only mode
+                if with_loss and with_grad:
+                    (loss_val, aux), grads = value_and_grad(trk_shift_loss_wrapper, has_aux=True)(self.track_shift_latents)
+                elif with_loss:
+                    loss_val, aux = trk_shift_loss_wrapper(self.track_shift_latents)
+                    grads = None
+                elif with_grad:
+                    grads, aux = grad(trk_shift_loss_wrapper, has_aux=True)(self.track_shift_latents)
+
+            if with_hess:
+                hess, aux_hess = None, None
+
+            return loss_val, grads, aux, hess, aux_hess
 
         if self.fit_segment_de:
             if batch_row_indices is None:
@@ -1072,6 +1606,19 @@ class ParamFitter:
             self.training_history['segment_scale_mean_iter'] = []
             self.training_history['segment_scale_std_iter'] = []
             self.training_history['segment_de_latents'] = []
+        if self.fit_segment_shift_xyz:
+            self.training_history['segment_shift_grad_norm_iter'] = []
+            self.training_history['segment_shift_abs_mean_iter'] = []
+            self.training_history['segment_shift_rms_iter'] = []
+            self.training_history['segment_shift_latents'] = []
+        if self.fit_track_shift_xyz:
+            self.training_history['track_shift_grad_norm_iter'] = []
+            self.training_history['track_shift_grad_norm_x_iter'] = []
+            self.training_history['track_shift_grad_norm_y_iter'] = []
+            self.training_history['track_shift_grad_norm_z_iter'] = []
+            self.training_history['track_shift_abs_mean_iter'] = []
+            self.training_history['track_shift_rms_iter'] = []
+            self.training_history['track_shift_latents'] = []
 
         # Include initial value in training history (if haven't loaded a checkpoint)
         for param in self.relevant_params_list:
@@ -1264,6 +1811,30 @@ class GradientDescentFitter(ParamFitter):
                 else:
                     raise ValueError(f"Unknown segment_de_optimizer: {self.segment_de_optimizer}")
                 self.segment_opt_state = self.segment_optimizer.init(self.segment_de_latents)
+        if self.fit_segment_shift_xyz:
+            self.initialize_segment_shift_latents(dataloader_sim)
+            if self.segment_shift_optimizer == "SGD":
+                self.segment_shift_optimizer_obj = optax.sgd(self.segment_shift_lr)
+            elif self.segment_shift_optimizer == "Adam":
+                self.segment_shift_optimizer_obj = optax.adam(self.segment_shift_lr)
+            elif self.segment_shift_optimizer == "RMSprop":
+                self.segment_shift_optimizer_obj = optax.rmsprop(self.segment_shift_lr)
+            else:
+                raise ValueError(f"Unknown segment_shift_optimizer: {self.segment_shift_optimizer}")
+            if self.segment_shift_opt_state is None:
+                self.segment_shift_opt_state = self.segment_shift_optimizer_obj.init(self.segment_shift_latents)
+        if self.fit_track_shift_xyz:
+            self.initialize_track_shift_latents(dataloader_sim)
+            if self.track_shift_optimizer == "SGD":
+                self.track_shift_optimizer_obj = optax.sgd(self.track_shift_lr)
+            elif self.track_shift_optimizer == "Adam":
+                self.track_shift_optimizer_obj = optax.adam(self.track_shift_lr)
+            elif self.track_shift_optimizer == "RMSprop":
+                self.track_shift_optimizer_obj = optax.rmsprop(self.track_shift_lr)
+            else:
+                raise ValueError(f"Unknown track_shift_optimizer: {self.track_shift_optimizer}")
+            if self.track_shift_opt_state is None:
+                self.track_shift_opt_state = self.track_shift_optimizer_obj.init(self.track_shift_latents)
 
         if iterations is not None:
             epochs = iterations // len(dataloader_sim) + 1
@@ -1304,6 +1875,150 @@ class GradientDescentFitter(ParamFitter):
 
                     # loss
                     loss_val, grads, aux, _, _ = self.compute_loss(selected_tracks_sim, i, ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id, epoch=epoch, with_loss=True, with_grad=True, batch_row_indices=batch_row_indices)
+
+                    if aux is not None and hasattr(self.loss_strategy, 'auto_reweight'):
+                        aux = dict(aux)
+                        reweight_info = self.loss_strategy.auto_reweight(aux, total_iter)
+                        aux['auto_reweight_applied'] = 1.0 if reweight_info else 0.0
+                        aux['auto_reweight_iteration'] = float(total_iter)
+                        if hasattr(self.loss_strategy, 'auto_reweight_every'):
+                            aux['auto_reweight_every'] = float(getattr(self.loss_strategy, 'auto_reweight_every'))
+                        for w_name in (
+                            'w_log_likelihood_tick',
+                            'w_log_likelihood_charge',
+                            'w_no_match_penalty',
+                            'w_unmatched_distance',
+                            'w_pixel_count',
+                            'w_time_distance',
+                        ):
+                            if hasattr(self.loss_strategy, w_name):
+                                aux[f'auto_reweight_{w_name}'] = float(getattr(self.loss_strategy, w_name))
+                        if reweight_info:
+                            for key, value in reweight_info.items():
+                                aux[f'auto_reweight_{key}'] = value
+
+                    if self.fit_segment_shift_xyz:
+                        if grads is None:
+                            raise RuntimeError("Expected segment xyz gradients in fit_segment_shift_xyz mode")
+
+                        if self.segment_shift_mode == "joint":
+                            segment_grads = grads.get("segment")
+                            detector_grads = grads.get("detector")
+                            if segment_grads is None or detector_grads is None:
+                                raise RuntimeError("Expected both detector and segment gradients in joint segment_shift_mode")
+
+                            self.apply_segment_shift_updates(batch_row_indices, segment_grads)
+                            modified_grads = self.process_grads(detector_grads)
+                        else:
+                            segment_grads = grads
+                            self.apply_segment_shift_updates(batch_row_indices, segment_grads)
+                            modified_grads = None
+
+                        stop_time = time()
+
+                        if modified_grads is not None:
+                            for param in self.relevant_params_list:
+                                self.training_history[param+"_grad"].append(modified_grads[param].item())
+                                if type(getattr(self.current_params, param)) == float:
+                                    self.training_history[param + '_iter'].append(getattr(self.current_params, param))
+                                else:
+                                    self.training_history[param + '_iter'].append(getattr(self.current_params, param).item())
+
+                        self.training_history['step_time'].append(stop_time - start_time)
+                        self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
+                        aux_serializable = {k: serialize_value(v) for k, v in aux.items()} if aux is not None else {}
+                        self.training_history['aux_iter'].append(aux_serializable) # type: ignore
+                        self.training_history['segment_shift_grad_norm_iter'].append(float(jnp.linalg.norm(segment_grads)))
+                        self.training_history['segment_shift_abs_mean_iter'].append(float(aux.get('segment_shift_abs_mean', 0.0)))
+                        self.training_history['segment_shift_rms_iter'].append(float(aux.get('segment_shift_rms', 0.0)))
+
+                        self.training_history['size_history'].append(get_size_history())
+                        if jax.devices()[0].platform == 'gpu':
+                            self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
+
+                        if iterations is not None and total_iter % save_freq == 0:
+                            self.save_checkpoint(total_iter)
+                            if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
+                                os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
+
+                        total_iter += 1
+                        self.total_iter = total_iter
+                        pbar.update(1)
+
+                        if target_iter is not None and total_iter >= target_iter:
+                            self.save_checkpoint(total_iter)
+                            if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
+                                os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
+                            if os.path.exists('target_' + self.out_label):
+                                shutil.rmtree('target_' + self.out_label, ignore_errors=True)
+                            terminate_fit = True
+                            break
+
+                        continue
+
+                    if self.fit_track_shift_xyz:
+                        if grads is None:
+                            raise RuntimeError("Expected track xyz gradients in fit_track_shift_xyz mode")
+
+                        if self.track_shift_mode == "joint":
+                            track_grads = grads.get("track")
+                            detector_grads = grads.get("detector")
+                            if track_grads is None or detector_grads is None:
+                                raise RuntimeError("Expected both detector and track gradients in joint track_shift_mode")
+
+                            self.apply_track_shift_updates(track_grads)
+                            modified_grads = self.process_grads(detector_grads)
+                        else:  # segment-only mode
+                            track_grads = grads
+                            self.apply_track_shift_updates(track_grads)
+                            modified_grads = None
+
+                        stop_time = time()
+
+                        if modified_grads is not None:
+                            for param in self.relevant_params_list:
+                                self.training_history[param+"_grad"].append(modified_grads[param].item())
+                                if type(getattr(self.current_params, param)) == float:
+                                    self.training_history[param + '_iter'].append(getattr(self.current_params, param))
+                                else:
+                                    self.training_history[param + '_iter'].append(getattr(self.current_params, param).item())
+
+                        self.training_history['step_time'].append(stop_time - start_time)
+                        self.training_history['losses_iter'].append(loss_val.item()) # type: ignore
+                        aux_serializable = {k: serialize_value(v) for k, v in aux.items()} if aux is not None else {}
+                        self.training_history['aux_iter'].append(aux_serializable) # type: ignore
+                        _tg = track_grads if isinstance(track_grads, jnp.ndarray) else grads.get("track")
+                        self.training_history['track_shift_grad_norm_iter'].append(float(jnp.linalg.norm(_tg)))
+                        self.training_history['track_shift_grad_norm_x_iter'].append(float(jnp.linalg.norm(_tg[:, 0])))
+                        self.training_history['track_shift_grad_norm_y_iter'].append(float(jnp.linalg.norm(_tg[:, 1])))
+                        self.training_history['track_shift_grad_norm_z_iter'].append(float(jnp.linalg.norm(_tg[:, 2])))
+                        self.training_history['track_shift_abs_mean_iter'].append(float(aux.get('track_shift_abs_mean', 0.0)))
+                        self.training_history['track_shift_rms_iter'].append(float(aux.get('track_shift_rms', 0.0)))
+                        self.training_history['track_shift_latents'].append(np.asarray(self.track_shift_latents))
+
+                        self.training_history['size_history'].append(get_size_history())
+                        if jax.devices()[0].platform == 'gpu':
+                            self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
+
+                        if iterations is not None and total_iter % save_freq == 0:
+                            self.save_checkpoint(total_iter)
+                            if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
+                                os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
+
+                        total_iter += 1
+                        self.total_iter = total_iter
+                        pbar.update(1)
+
+                        if target_iter is not None and total_iter >= target_iter:
+                            self.save_checkpoint(total_iter)
+                            if os.path.exists(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl'):
+                                os.remove(f'fit_result/{self.test_name}/history_iter{total_iter-save_freq}_{self.out_label}.pkl')
+                            if os.path.exists('target_' + self.out_label):
+                                shutil.rmtree('target_' + self.out_label, ignore_errors=True)
+                            terminate_fit = True
+                            break
+
+                        continue
 
                     if self.fit_segment_de:
                         if grads is None:
@@ -1557,6 +2272,123 @@ class LikelihoodProfiler(ParamFitter):
                     pickle.dump(self.training_history, f_history)
                 if os.path.exists(f'fit_result/{self.test_name}/history_{param}_batch{i-1}_{self.out_label}.pkl'):
                     os.remove(f'fit_result/{self.test_name}/history_{param}_batch{i-1}_{self.out_label}.pkl')
+
+        if os.path.exists('target_' + self.out_label):
+            shutil.rmtree('target_' + self.out_label, ignore_errors=True)
+
+    def fit_segment_de_scan(self, dataloader_sim, target, iterations=50,
+                            latent_low=-2.0, latent_high=2.0, **kwargs):
+        """Scan the segment dE latent uniformly over a regular grid.
+
+        For each batch, all segment latents corresponding to the batch rows are
+        set to the same scan value.  The physical dE scale at each grid point is
+        ``exp(clip(latent, -5, 5))``.
+
+        Recorded per batch in ``training_history['segment_latent_scan_batch{i}']``:
+          - ``latent``          : scanned latent value
+          - ``scale``           : corresponding physical dE scale
+          - ``loss``            : scalar loss at this grid point
+          - ``grad_mean``       : mean gradient over batch segments
+          - ``grad_per_segment``: per-segment gradient list
+          - ``aux``             : serialized auxiliary dict from the loss strategy
+          - ``step_time``       : wall-clock seconds per step
+        """
+        self.prepare_fit()
+
+        if not self.fit_segment_de:
+            raise ValueError("fit_segment_de_scan requires fit_segment_de=True")
+
+        self.initialize_segment_de_latents(dataloader_sim)
+
+        logger.info("Scanning segment dE latent on a regular grid.")
+        logger.warning(f"Arguments {kwargs} are ignored in this mode.")
+
+        nb_steps = iterations
+        latent_step = (latent_high - latent_low) / max(nb_steps - 1, 1)
+        latent_grid = [latent_low + s * latent_step for s in range(nb_steps)]
+
+        for i in range(len(dataloader_sim)):
+            logger.info(f"Batch {i}/{len(dataloader_sim)}")
+
+            # --- sim tracks ---
+            selected_tracks_bt_sim = dataloader_sim[i].reshape(-1, len(self.sim_track_fields))
+            self.validate_track_batch_event_ids(selected_tracks_bt_sim, self.sim_track_fields, f"sim batch {i}")
+            selected_tracks_sim = jax.device_put(selected_tracks_bt_sim)
+            evts_sim = self.get_batch_global_event_ids(dataloader_sim, i, selected_tracks_sim)
+            batch_row_indices = self.get_batch_row_indices(
+                dataloader_sim, i, n_rows_fallback=selected_tracks_bt_sim.shape[0]
+            )
+
+            # --- target ---
+            if not self.read_target:
+                selected_tracks_bt_tgt = target[i].reshape(-1, len(self.tgt_track_fields))
+                self.validate_track_batch_event_ids(selected_tracks_bt_tgt, self.tgt_track_fields, f"target batch {i}")
+                this_target = jax.device_put(selected_tracks_bt_tgt)
+            else:
+                this_target = target
+            ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z, ref_ticks, ref_hit_prob, ref_event, ref_pixel_id = \
+                self.get_simulated_target(this_target, i, evts_sim, regen=False)
+
+            scan_key = f'segment_latent_scan_batch{i}'
+            self.training_history[scan_key] = {
+                'latent': [],
+                'scale': [],
+                'loss': [],
+                'grad_mean': [],
+                'grad_per_segment': [],
+                'aux': [],
+                'step_time': [],
+            }
+
+            batch_indices_jnp = jnp.asarray(batch_row_indices, dtype=jnp.int32)
+
+            for latent_val in tqdm(latent_grid):
+                physical_scale = float(jnp.exp(jnp.clip(jnp.array(latent_val, dtype=jnp.float32), -5.0, 5.0)))
+
+                # Set all batch-local latents to the current scan value; leave the rest untouched.
+                self.segment_de_latents = self.segment_de_latents.at[batch_indices_jnp].set(
+                    jnp.full(batch_indices_jnp.shape, latent_val, dtype=jnp.float32)
+                )
+
+                start_time = time()
+                loss_val, grads, aux, _, _ = self.compute_loss(
+                    selected_tracks_sim, i,
+                    ref_adcs, ref_pixel_x, ref_pixel_y, ref_pixel_z,
+                    ref_ticks, ref_hit_prob, ref_event, ref_pixel_id,
+                    with_loss=True, with_grad=True,
+                    batch_row_indices=batch_row_indices,
+                )
+                stop_time = time()
+
+                # grads is either a [n_batch_segs] array (segment-only mode) or a
+                # dict {"detector": ..., "segment": [n_batch_segs]} (joint mode).
+                if isinstance(grads, dict):
+                    seg_grads = grads.get("segment")
+                else:
+                    seg_grads = grads
+                grad_arr = np.array(seg_grads) if seg_grads is not None else np.array([])
+
+                scan_hist = self.training_history[scan_key]
+                scan_hist['latent'].append(float(latent_val))
+                scan_hist['scale'].append(physical_scale)
+                scan_hist['loss'].append(float(loss_val))
+                scan_hist['grad_mean'].append(float(np.mean(grad_arr)) if grad_arr.size > 0 else None)
+                scan_hist['grad_per_segment'].append(grad_arr.tolist())
+                aux_serializable = {k: serialize_value(v) for k, v in aux.items()} if aux is not None else {}
+                scan_hist['aux'].append(aux_serializable)
+                scan_hist['step_time'].append(stop_time - start_time)
+
+                if jax.devices()[0].platform == 'gpu':
+                    self.training_history['memory'].append(jax.devices("gpu")[0].memory_stats())
+
+            # Reset batch latents to zero so they don't contaminate subsequent batches.
+            self.segment_de_latents = self.segment_de_latents.at[batch_indices_jnp].set(0.0)
+
+            with open(f'fit_result/{self.test_name}/history_segment_scan_batch{i}_{self.out_label}.pkl', "wb") as f_history:
+                pickle.dump(self.training_history, f_history)
+            prev = f'fit_result/{self.test_name}/history_segment_scan_batch{i-1}_{self.out_label}.pkl'
+            if os.path.exists(prev):
+                os.remove(prev)
 
         if os.path.exists('target_' + self.out_label):
             shutil.rmtree('target_' + self.out_label, ignore_errors=True)

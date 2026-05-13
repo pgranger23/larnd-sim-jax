@@ -36,6 +36,51 @@ def main(config):
     else:
         jax.config.update('jax_platform_name', 'gpu')
 
+        if config.loss_fn_kw is None:
+            config.loss_fn_kw = {}
+        if getattr(config, 'target_gaussian_3d_radius_cm', None) is not None:
+            config.loss_fn_kw['target_gaussian_3d_radius_cm'] = config.target_gaussian_3d_radius_cm
+        if getattr(config, 'target_gaussian_3d_sigma_cm', None) is not None:
+            config.loss_fn_kw['target_gaussian_3d_sigma_cm'] = config.target_gaussian_3d_sigma_cm
+        if getattr(config, 'nz_local', None) is not None:
+            config.loss_fn_kw['nz_local'] = config.nz_local
+        if getattr(config, 'max_events_per_batch', None) is not None:
+            config.loss_fn_kw['max_events_per_batch'] = config.max_events_per_batch
+        if getattr(config, 'eps', None) is not None:
+            config.loss_fn_kw['eps'] = config.eps
+        if getattr(config, 'w_sobolev_3d_grad', None) is not None:
+            config.loss_fn_kw['w_sobolev_3d_grad'] = config.w_sobolev_3d_grad
+        if getattr(config, 'w_sobolev_3d_grad_local', None) is not None:
+            config.loss_fn_kw['w_sobolev_3d_grad_local'] = config.w_sobolev_3d_grad_local
+        if getattr(config, 'w_sobolev_3d_grad_medium', None) is not None:
+            config.loss_fn_kw['w_sobolev_3d_grad_medium'] = config.w_sobolev_3d_grad_medium
+        if getattr(config, 'w_sobolev_3d_grad_global', None) is not None:
+            config.loss_fn_kw['w_sobolev_3d_grad_global'] = config.w_sobolev_3d_grad_global
+        if getattr(config, 'sobolev_pool_nbin_x_medium', None) is not None:
+            config.loss_fn_kw['sobolev_pool_nbin_x_medium'] = config.sobolev_pool_nbin_x_medium
+        if getattr(config, 'sobolev_pool_nbin_z_medium', None) is not None:
+            config.loss_fn_kw['sobolev_pool_nbin_z_medium'] = config.sobolev_pool_nbin_z_medium
+        if getattr(config, 'sobolev_pool_nbin_x_global', None) is not None:
+            config.loss_fn_kw['sobolev_pool_nbin_x_global'] = config.sobolev_pool_nbin_x_global
+        if getattr(config, 'sobolev_pool_nbin_z_global', None) is not None:
+            config.loss_fn_kw['sobolev_pool_nbin_z_global'] = config.sobolev_pool_nbin_z_global
+        if getattr(config, 'sobolev_pool_layer_balance', None) is not None:
+            config.loss_fn_kw['sobolev_pool_layer_balance'] = config.sobolev_pool_layer_balance
+        if getattr(config, 'sobolev_pool_running_decay', None) is not None:
+            config.loss_fn_kw['sobolev_pool_running_decay'] = config.sobolev_pool_running_decay
+        if getattr(config, 'sobolev_pool_weight_local', None) is not None:
+            config.loss_fn_kw['sobolev_pool_weight_local'] = config.sobolev_pool_weight_local
+        if getattr(config, 'sobolev_pool_weight_medium', None) is not None:
+            config.loss_fn_kw['sobolev_pool_weight_medium'] = config.sobolev_pool_weight_medium
+        if getattr(config, 'sobolev_pool_weight_global', None) is not None:
+            config.loss_fn_kw['sobolev_pool_weight_global'] = config.sobolev_pool_weight_global
+        if getattr(config, 'emit_sobolev_pool_report', None) is not None:
+            config.loss_fn_kw['emit_sobolev_pool_report'] = (
+                str(config.emit_sobolev_pool_report).lower() in ('1', 'true', 'yes', 'y', 'on')
+            )
+        if getattr(config, 'sobolev_norm_target_source', None) is not None:
+            config.loss_fn_kw['sobolev_norm_target_source'] = config.sobolev_norm_target_source
+
     if config.debug_nans:
         jax.config.update("jax_debug_nans", True)
     else:
@@ -64,14 +109,38 @@ def main(config):
             max_nbatch = iterations
 
     if config.fit_segment_de:
-        if config.fit_type != "chain":
-            raise ValueError("--fit_segment_de currently supports only --fit_type chain")
+        if config.fit_type not in ("chain", "scan"):
+            raise ValueError("--fit_segment_de currently supports only --fit_type chain or scan")
         if not config.no_chop:
             raise ValueError("--fit_segment_de currently requires --no_chop so segment identities remain stable")
         if not config.no_pad:
             raise ValueError("--fit_segment_de currently requires --no_pad so padded rows do not interfere with segment mapping")
         if config.sz_mini_bt != 1:
             raise ValueError("--fit_segment_de currently requires --sz_mini_bt 1")
+
+    if config.fit_segment_shift_xyz:
+        if config.fit_type != "chain":
+            raise ValueError("--fit_segment_shift_xyz currently supports only --fit_type chain")
+        if not config.no_chop:
+            raise ValueError("--fit_segment_shift_xyz currently requires --no_chop so segment identities remain stable")
+        if not config.no_pad:
+            raise ValueError("--fit_segment_shift_xyz currently requires --no_pad so padded rows do not interfere with segment mapping")
+        if config.sz_mini_bt != 1:
+            raise ValueError("--fit_segment_shift_xyz currently requires --sz_mini_bt 1")
+        if config.fit_segment_de:
+            raise ValueError("--fit_segment_shift_xyz and --fit_segment_de are mutually exclusive")
+
+    if config.fit_track_shift_xyz:
+        if config.fit_type != "chain":
+            raise ValueError("--fit_track_shift_xyz currently supports only --fit_type chain")
+        if not config.no_chop:
+            raise ValueError("--fit_track_shift_xyz currently requires --no_chop so track identities remain stable")
+        if not config.no_pad:
+            raise ValueError("--fit_track_shift_xyz currently requires --no_pad so padded rows do not interfere with track mapping")
+        if config.sz_mini_bt != 1:
+            raise ValueError("--fit_track_shift_xyz currently requires --sz_mini_bt 1")
+        if config.fit_segment_de or config.fit_segment_shift_xyz:
+            raise ValueError("--fit_track_shift_xyz and --fit_segment_de/--fit_segment_shift_xyz are mutually exclusive")
 
     dataset_sim = TracksDataset(filename=config.input_file_sim, nevents=config.data_sz, max_nbatch=max_nbatch, random_nevents=config.random_nevents, data_seed=config.data_seed,
                             track_len_sel=config.track_len_sel, max_abs_costheta_sel=config.max_abs_costheta_sel, min_abs_segz_sel=config.min_abs_segz_sel, track_z_bound=config.track_z_bound, max_batch_len=config.max_batch_len, print_input=config.print_input, chopped=(not config.no_chop), pad=(not config.no_pad), electron_sampling_resolution=config.electron_sampling_resolution, live_selection=config.live_selection)
@@ -150,6 +219,16 @@ def main(config):
                                 segment_reg_l2=config.segment_reg_l2,
                                 segment_reg_track_total=config.segment_reg_track_total,
                                 segment_reg_smooth=config.segment_reg_smooth,
+                                fit_segment_shift_xyz=config.fit_segment_shift_xyz,
+                                segment_shift_mode=config.segment_shift_mode,
+                                segment_shift_lr=config.segment_shift_lr,
+                                segment_shift_optimizer=config.segment_shift_optimizer,
+                                segment_shift_reg_l2=config.segment_shift_reg_l2,
+                                fit_track_shift_xyz=config.fit_track_shift_xyz,
+                                track_shift_mode=config.track_shift_mode,
+                                track_shift_lr=config.track_shift_lr,
+                                track_shift_optimizer=config.track_shift_optimizer,
+                                track_shift_reg_l2=config.track_shift_reg_l2,
                                 sz_mini_bt=config.sz_mini_bt, shuffle_bt=config.shuffle_bt, shuffle_seed=config.shuffle_seed,
                                 resume_from=config.resume_from)
     elif config.fit_type == "scan":
@@ -181,7 +260,17 @@ def main(config):
                                 segment_de_optimizer=config.segment_de_optimizer,
                                 segment_reg_l2=config.segment_reg_l2,
                                 segment_reg_track_total=config.segment_reg_track_total,
-                                segment_reg_smooth=config.segment_reg_smooth)
+                                segment_reg_smooth=config.segment_reg_smooth,
+                                fit_segment_shift_xyz=config.fit_segment_shift_xyz,
+                                segment_shift_mode=config.segment_shift_mode,
+                                segment_shift_lr=config.segment_shift_lr,
+                                segment_shift_optimizer=config.segment_shift_optimizer,
+                                segment_shift_reg_l2=config.segment_shift_reg_l2,
+                                fit_track_shift_xyz=config.fit_track_shift_xyz,
+                                track_shift_mode=config.track_shift_mode,
+                                track_shift_lr=config.track_shift_lr,
+                                track_shift_optimizer=config.track_shift_optimizer,
+                                track_shift_reg_l2=config.track_shift_reg_l2,)
     elif config.fit_type == "minuit":
         param_fit = MinuitFitter(relevant_params=param_list,
                                 sim_track_fields=sim_track_fields, tgt_track_fields=tgt_track_fields,
@@ -211,7 +300,17 @@ def main(config):
                                 segment_de_optimizer=config.segment_de_optimizer,
                                 segment_reg_l2=config.segment_reg_l2,
                                 segment_reg_track_total=config.segment_reg_track_total,
-                                segment_reg_smooth=config.segment_reg_smooth)
+                                segment_reg_smooth=config.segment_reg_smooth,
+                                fit_segment_shift_xyz=config.fit_segment_shift_xyz,
+                                segment_shift_mode=config.segment_shift_mode,
+                                segment_shift_lr=config.segment_shift_lr,
+                                segment_shift_optimizer=config.segment_shift_optimizer,
+                                segment_shift_reg_l2=config.segment_shift_reg_l2,
+                                fit_track_shift_xyz=config.fit_track_shift_xyz,
+                                track_shift_mode=config.track_shift_mode,
+                                track_shift_lr=config.track_shift_lr,
+                                track_shift_optimizer=config.track_shift_optimizer,
+                                track_shift_reg_l2=config.track_shift_reg_l2,)
 
     elif config.fit_type == "hess":
         param_fit = HessianCalculator(relevant_params=param_list, set_init_params=config.set_init_params,
@@ -243,6 +342,11 @@ def main(config):
                                 segment_reg_l2=config.segment_reg_l2,
                                 segment_reg_track_total=config.segment_reg_track_total,
                                 segment_reg_smooth=config.segment_reg_smooth,
+                                fit_segment_shift_xyz=config.fit_segment_shift_xyz,
+                                segment_shift_mode=config.segment_shift_mode,
+                                segment_shift_lr=config.segment_shift_lr,
+                                segment_shift_optimizer=config.segment_shift_optimizer,
+                                segment_shift_reg_l2=config.segment_shift_reg_l2,
                                 compute_target_hessian=True)
 
     else:
@@ -271,10 +375,23 @@ def main(config):
             trace_started = True
         jax.profiler.save_device_memory_profile("memory.prof")
 
-    if config.read_target:
-        param_fit.fit(tracks_dataloader_sim, config.input_file_tgt, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
+    fit_target = config.input_file_tgt if config.read_target else tracks_dataloader_target
+    if config.fit_type == "scan" and config.fit_segment_de:
+        param_fit.fit_segment_de_scan(
+            tracks_dataloader_sim,
+            fit_target,
+            iterations=iterations if iterations is not None else config.epochs,
+            epochs=config.epochs,
+            save_freq=config.save_freq,
+        )
     else:
-        param_fit.fit(tracks_dataloader_sim, tracks_dataloader_target, epochs=config.epochs, iterations=iterations, save_freq=config.save_freq)
+        param_fit.fit(
+            tracks_dataloader_sim,
+            fit_target,
+            epochs=config.epochs,
+            iterations=iterations,
+            save_freq=config.save_freq,
+        )
 
     
     if config.profile and trace_started:
@@ -357,6 +474,68 @@ if __name__ == '__main__':
                         help="Loss function to use. Named options: mmd (default), mmd_adc (alias), chamfer_3d, sobolev, nll, llhd, SDTW, sdtw_adc, sdtw_time, sdtw_time_adc, mmd_time, mmd_time_adc.")
     parser.add_argument("--loss_fn_kw", dest="loss_fn_kw", default=None, type=json.loads,
                         help="Loss function keyword arguments.")
+    parser.add_argument("--target_gaussian_3d_radius_cm", dest="target_gaussian_3d_radius_cm",
+                        default=0.3, type=float,
+                        help="Notebook-style Gaussian smear radius in cm for target field.")
+    parser.add_argument("--target_gaussian_3d_sigma_cm", dest="target_gaussian_3d_sigma_cm",
+                        default=0.1, type=float,
+                        help="Notebook-style Gaussian smear sigma in cm for target field.")
+    parser.add_argument("--nz_local", dest="nz_local",
+                        default=None, type=int,
+                        help="Fixed z-window size (number of ticks) for Sobolev grids. "
+                             "Smaller values reduce memory; the window is centred on the "
+                             "charge-weighted mean target tick. Default: 512.")
+    parser.add_argument("--max_events_per_batch", dest="max_events_per_batch",
+                        default=None, type=int,
+                        help="Maximum number of local events evaluated in one batch for event-wise probabilistic Sobolev loss.")
+    parser.add_argument("--eps", dest="eps",
+                        default=None, type=float,
+                        help="Epsilon threshold used by ProbabilisticLossStrategy masks.")
+    parser.add_argument("--w_sobolev_3d_grad", dest="w_sobolev_3d_grad",
+                        default=None, type=float,
+                        help="Gradient-term weight in ProbabilisticLossStrategy (fallback for all layers).")
+    parser.add_argument("--w_sobolev_3d_grad_local", dest="w_sobolev_3d_grad_local",
+                        default=None, type=float,
+                        help="Gradient-term weight for local Sobolev pooling layer.")
+    parser.add_argument("--w_sobolev_3d_grad_medium", dest="w_sobolev_3d_grad_medium",
+                        default=None, type=float,
+                        help="Gradient-term weight for medium Sobolev pooling layer.")
+    parser.add_argument("--w_sobolev_3d_grad_global", dest="w_sobolev_3d_grad_global",
+                        default=None, type=float,
+                        help="Gradient-term weight for global Sobolev pooling layer.")
+    parser.add_argument("--sobolev_pool_nbin_x_medium", dest="sobolev_pool_nbin_x_medium",
+                        default=None, type=int,
+                        help="Medium Sobolev pooling bins along x.")
+    parser.add_argument("--sobolev_pool_nbin_z_medium", dest="sobolev_pool_nbin_z_medium",
+                        default=None, type=int,
+                        help="Medium Sobolev pooling bins along z.")
+    parser.add_argument("--sobolev_pool_nbin_x_global", dest="sobolev_pool_nbin_x_global",
+                        default=None, type=int,
+                        help="Global Sobolev pooling bins along x.")
+    parser.add_argument("--sobolev_pool_nbin_z_global", dest="sobolev_pool_nbin_z_global",
+                        default=None, type=int,
+                        help="Global Sobolev pooling bins along z.")
+    parser.add_argument("--sobolev_pool_layer_balance", dest="sobolev_pool_layer_balance",
+                        default=None, choices=['running', 'weights', 'none'],
+                        help="Layer balancing mode for 3-layer Sobolev pooling.")
+    parser.add_argument("--sobolev_pool_running_decay", dest="sobolev_pool_running_decay",
+                        default=None, type=float,
+                        help="EMA decay used by running layer normalization in Sobolev pooling.")
+    parser.add_argument("--sobolev_pool_weight_local", dest="sobolev_pool_weight_local",
+                        default=None, type=float,
+                        help="Manual local-layer weight when using sobolev_pool_layer_balance=weights.")
+    parser.add_argument("--sobolev_pool_weight_medium", dest="sobolev_pool_weight_medium",
+                        default=None, type=float,
+                        help="Manual medium-layer weight when using sobolev_pool_layer_balance=weights.")
+    parser.add_argument("--sobolev_pool_weight_global", dest="sobolev_pool_weight_global",
+                        default=None, type=float,
+                        help="Manual global-layer weight when using sobolev_pool_layer_balance=weights.")
+    parser.add_argument("--emit_sobolev_pool_report", dest="emit_sobolev_pool_report",
+                        default=None, type=str,
+                        help="Whether to emit Sobolev pool report (true/false).")
+    parser.add_argument("--sobolev_norm_target_source", dest="sobolev_norm_target_source",
+                        default=None, choices=['smeared', 'non_smeared', 'unsmeared'],
+                        help="Normalization source for Sobolev term.")
     parser.add_argument("--mmd_sigma", dest="mmd_sigma", default=1.0, type=float,
                         help="RBF kernel bandwidth sigma for mmd (mmd_adc) loss.")
     parser.add_argument("--nll_sigma", dest="nll_sigma", default=1.0, type=float,
@@ -429,6 +608,28 @@ if __name__ == '__main__':
                         help='Regularization weight on relative change of total dE per track')
     parser.add_argument('--segment_reg_smooth', type=float, default=0.0,
                         help='Smoothness regularization weight on neighboring per-segment dE latents')
+    parser.add_argument('--fit_segment_shift_xyz', default=False, action='store_true',
+                        help='Draft mode: fit per-segment additive shifts on x/y/z segment centers only')
+    parser.add_argument('--segment_shift_mode', type=str, default='segment-only', choices=['segment-only', 'joint'],
+                        help='Optimization mode for per-segment xyz shift latents')
+    parser.add_argument('--segment_shift_lr', type=float, default=1e-2,
+                        help='Learning rate for per-segment xyz shift latent updates')
+    parser.add_argument('--segment_shift_optimizer', type=str, default='SGD', choices=['SGD', 'Adam', 'RMSprop'],
+                        help='Optimizer for per-segment xyz shift latent updates (SGD, Adam, or RMSprop)')
+    parser.add_argument('--segment_shift_reg_l2', type=float, default=0.0,
+                        help='L2 regularization weight on per-segment xyz shift latents')
+    parser.add_argument('--fit_track_shift_xyz', default=False, action='store_true',
+                        help='Draft mode: fit per-track additive shifts on x/y/z')
+    parser.add_argument('--track_shift_mode', type=str, default='segment-only',
+                        choices=['segment-only', 'joint'],
+                        help='Optimization mode for per-track xyz shift latents')
+    parser.add_argument('--track_shift_lr', type=float, default=1e-2,
+                        help='Learning rate for per-track xyz shift latent updates')
+    parser.add_argument('--track_shift_optimizer', type=str, default='Adam',
+                        choices=['SGD', 'Adam', 'RMSprop'],
+                        help='Optimizer for per-track xyz shift latent updates')
+    parser.add_argument('--track_shift_reg_l2', type=float, default=0.0,
+                        help='L2 regularization weight on per-track xyz shift latents')
     parser.add_argument("--resume_from", dest="resume_from", default=None, type=str, help="Resume chain fit from a saved history_iter*.pkl checkpoint")
 
     try:

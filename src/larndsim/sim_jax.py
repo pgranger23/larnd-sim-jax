@@ -20,6 +20,79 @@ logger.setLevel(logging.INFO)
 
 size_history_dict = {}
 
+
+def _as_segment_vector(val, n_segments, dtype):
+    vec = jnp.asarray(val, dtype=dtype)
+    if vec.ndim == 0:
+        return jnp.full((n_segments,), vec, dtype=dtype)
+    return jnp.broadcast_to(vec, (n_segments,)).astype(dtype)
+
+
+def _smooth_bounded_displacement(raw_disp, neg_limit, pos_limit, eps=1e-6):
+    pos_limit = jnp.maximum(pos_limit, 0.0)
+    neg_limit = jnp.maximum(neg_limit, 0.0)
+    safe_pos = jnp.maximum(pos_limit, eps)
+    safe_neg = jnp.maximum(neg_limit, eps)
+    pos_branch = pos_limit * jnp.tanh(raw_disp / safe_pos)
+    neg_branch = -neg_limit * jnp.tanh((-raw_disp) / safe_neg)
+    return jnp.where(raw_disp >= 0.0, pos_branch, neg_branch)
+
+
+def compute_smooth_safe_displacements(params, tracks, fields, disp_x, disp_y, disp_z, include_endpoints=True):
+    """
+    Smoothly project per-segment displacements to stay inside each segment's TPC bounds.
+    """
+    n_segments = tracks.shape[0]
+    dtype = tracks.dtype
+
+    x_idx = fields.index("x")
+    y_idx = fields.index("y")
+    z_idx = fields.index("z")
+    plane_idx = fields.index("pixel_plane")
+
+    plane = tracks[:, plane_idx].astype(jnp.int32)
+    borders = jnp.take(params.tpc_borders, plane, axis=0)
+
+    guard = float(getattr(params, "shift_boundary_guard", 0.0))
+
+    x_low = jnp.minimum(borders[:, 0, 0], borders[:, 0, 1]) + guard
+    x_high = jnp.maximum(borders[:, 0, 0], borders[:, 0, 1]) - guard
+    y_low = jnp.minimum(borders[:, 1, 0], borders[:, 1, 1]) + guard
+    y_high = jnp.maximum(borders[:, 1, 0], borders[:, 1, 1]) - guard
+    z_low = jnp.minimum(borders[:, 2, 0], borders[:, 2, 1]) + guard
+    z_high = jnp.maximum(borders[:, 2, 0], borders[:, 2, 1]) - guard
+
+    def _axis_coords(axis_name):
+        base = [tracks[:, fields.index(axis_name)]]
+        if include_endpoints:
+            start_name = f"{axis_name}_start"
+            end_name = f"{axis_name}_end"
+            if start_name in fields and end_name in fields:
+                base.append(tracks[:, fields.index(start_name)])
+                base.append(tracks[:, fields.index(end_name)])
+        return jnp.stack(base, axis=1)
+
+    x_coords = _axis_coords("x")
+    y_coords = _axis_coords("y")
+    z_coords = _axis_coords("z")
+
+    raw_x = _as_segment_vector(disp_x, n_segments, dtype)
+    raw_y = _as_segment_vector(disp_y, n_segments, dtype)
+    raw_z = _as_segment_vector(disp_z, n_segments, dtype)
+
+    x_pos_limit = jnp.min(x_high[:, None] - x_coords, axis=1)
+    x_neg_limit = jnp.min(x_coords - x_low[:, None], axis=1)
+    y_pos_limit = jnp.min(y_high[:, None] - y_coords, axis=1)
+    y_neg_limit = jnp.min(y_coords - y_low[:, None], axis=1)
+    z_pos_limit = jnp.min(z_high[:, None] - z_coords, axis=1)
+    z_neg_limit = jnp.min(z_coords - z_low[:, None], axis=1)
+
+    safe_x = _smooth_bounded_displacement(raw_x, x_neg_limit, x_pos_limit)
+    safe_y = _smooth_bounded_displacement(raw_y, y_neg_limit, y_pos_limit)
+    safe_z = _smooth_bounded_displacement(raw_z, z_neg_limit, z_pos_limit)
+
+    return safe_x, safe_y, safe_z
+
 def load_data(fname, invert_xz=True):
     import h5py
     with h5py.File(fname, 'r') as f:
@@ -107,15 +180,67 @@ def get_size_history():
 
 @partial(jit, static_argnames=['fields'])
 def shift_tracks(params, tracks, fields):
-    shifted_tracks = tracks.at[:, fields.index("x_start")].subtract(params.shift_x)
-    shifted_tracks = shifted_tracks.at[:, fields.index("x_end")].subtract(params.shift_x)
-    shifted_tracks = shifted_tracks.at[:, fields.index("x")].subtract(params.shift_x)
-    shifted_tracks = shifted_tracks.at[:, fields.index("y_start")].subtract(params.shift_y)
-    shifted_tracks = shifted_tracks.at[:, fields.index("y_end")].subtract(params.shift_y)
-    shifted_tracks = shifted_tracks.at[:, fields.index("y")].subtract(params.shift_y)
-    shifted_tracks = shifted_tracks.at[:, fields.index("z_start")].subtract(params.shift_z)
-    shifted_tracks = shifted_tracks.at[:, fields.index("z_end")].subtract(params.shift_z)
-    shifted_tracks = shifted_tracks.at[:, fields.index("z")].subtract(params.shift_z)
+    # Global shifts applied to all tracks; optional per-track offsets are added below.
+    dx = params.shift_x
+    dy = params.shift_y
+    dz = params.shift_z
+
+    # Optional per-track offsets keyed by trackID.
+    if (
+        params.use_track_shifts
+        and ('trackID' in fields)
+        and (params.track_shift_track_ids is not None)
+        and (params.track_shift_x is not None)
+        and (params.track_shift_y is not None)
+        and (params.track_shift_z is not None)
+    ):
+        trk_idx = fields.index("trackID")
+        trk_ids = tracks[:, trk_idx].astype(jnp.int32)
+
+        shift_ids = params.track_shift_track_ids.astype(jnp.int32)
+        order = jnp.argsort(shift_ids)
+        shift_ids_sorted = shift_ids[order]
+        shift_x_sorted = params.track_shift_x[order]
+        shift_y_sorted = params.track_shift_y[order]
+        shift_z_sorted = params.track_shift_z[order]
+
+        found_idx = jnp.searchsorted(shift_ids_sorted, trk_ids, method='sort')
+        in_bounds = found_idx < shift_ids_sorted.shape[0]
+        found_idx_safe = jnp.where(in_bounds, found_idx, 0)
+        matched = shift_ids_sorted[found_idx_safe] == trk_ids
+        valid = in_bounds & matched
+
+        dx = dx + jnp.where(valid, shift_x_sorted[found_idx_safe], 0.0)
+        dy = dy + jnp.where(valid, shift_y_sorted[found_idx_safe], 0.0)
+        dz = dz + jnp.where(valid, shift_z_sorted[found_idx_safe], 0.0)
+
+    # Convert historical subtract-shift convention into geometric displacements.
+    disp_x_raw = -dx
+    disp_y_raw = -dy
+    disp_z_raw = -dz
+
+    if bool(getattr(params, "soft_bound_tpc_shifts", False)):
+        safe_dx, safe_dy, safe_dz = compute_smooth_safe_displacements(
+            params,
+            tracks,
+            fields,
+            disp_x_raw,
+            disp_y_raw,
+            disp_z_raw,
+            include_endpoints=True,
+        )
+    else:
+        safe_dx, safe_dy, safe_dz = disp_x_raw, disp_y_raw, disp_z_raw
+
+    shifted_tracks = tracks.at[:, fields.index("x_start")].add(safe_dx)
+    shifted_tracks = shifted_tracks.at[:, fields.index("x_end")].add(safe_dx)
+    shifted_tracks = shifted_tracks.at[:, fields.index("x")].add(safe_dx)
+    shifted_tracks = shifted_tracks.at[:, fields.index("y_start")].add(safe_dy)
+    shifted_tracks = shifted_tracks.at[:, fields.index("y_end")].add(safe_dy)
+    shifted_tracks = shifted_tracks.at[:, fields.index("y")].add(safe_dy)
+    shifted_tracks = shifted_tracks.at[:, fields.index("z_start")].add(safe_dz)
+    shifted_tracks = shifted_tracks.at[:, fields.index("z_end")].add(safe_dz)
+    shifted_tracks = shifted_tracks.at[:, fields.index("z")].add(safe_dz)
     return shifted_tracks
 
 

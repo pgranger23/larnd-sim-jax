@@ -29,7 +29,7 @@ MAX_NBATCH=500
 ITERATIONS=10000
 MAX_CLIP_NORM_VAL=1
 DATA_SEED=1
-LOSS=mse_adc #nll #llhd #mse_adc
+LOSS=llhd #sobolev_adc #wasserstein_1d #nll #llhd #mmd_adc
 SEED_STRATEGY=different #random #different_epoch
 SAMPLING_STEP=0.01 # cm
 N_NEIGH=4
@@ -37,16 +37,38 @@ MODE="lut"  #"parametrized"
 LR_SCHEDULER=warmup_exponential_decay_schedule
 SIGNAL_LENGTH=200
 NORM=sigmoid #divide
-DE_LR=1e-4
-REG_L2=1e-2
+DE_LR=5e-4 #1e-4
+REG_L2=500 #2e-4 #1000 #2e-2
+REG_TOT=50 #2e-4 #100 #2e-2
+REG_SMOOTH=100
+SIGMA=500 #250 #500
 
-INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_884072/job_23771825_0000/output_23771825_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_range_0.05cm_ntrack_10.h5
-INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_884072/job_23771825_0000/output_23771825_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_reco_dE_range_0.05cm_ntrack_10.h5
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_884072/job_23771825_0000/output_23771825_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_range_0.05cm_ntrack_10.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_884072/job_23771825_0000/output_23771825_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_reco_dE_range_0.05cm_ntrack_10.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_884072/job_23771825_0000/output_23771825_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_range_0.05cm_ntrack_1_seg_0.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_884072/job_23771825_0000/output_23771825_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_reco_dE_range_0.05cm_ntrack_1_seg_0.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_884072/job_23771825_0000/output_23771825_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_range_0.05cm_ntrack_1_seg_200.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_884072/job_23771825_0000/output_23771825_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_reco_dE_range_0.05cm_ntrack_1_seg_200.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_884072/job_23771825_0000/output_23771825_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_range_0.05cm_ntrack_1.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_884072/job_23771825_0000/output_23771825_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_reco_dE_range_0.05cm_ntrack_1.h5
+
+# dx = 1mm, the rest are 0.1mm
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_2043327/job_25174367_0000/output_25174367_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_range_0.05cm.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_2043327/job_25174367_0000/output_25174367_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_reco_dE_range_0.05cm.h5
+
+INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_2043327/job_25174367_0000/output_25174367_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_range_0.05cm_ntrack_1.h5
+INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_2043327/job_25174367_0000/output_25174367_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_reco_dE_range_0.05cm_ntrack_1.h5
+
+#INPUT_FILE_TGT=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_2043327/job_25174367_0000/output_25174367_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_range_0.05cm_ntrack_1_seg_0.h5
+#INPUT_FILE_SIM=/sdf/data/neutrino/cyifan/dunend_train_prod/prod_mod0_mpvmpr/production_2043327/job_25174367_0000/output_25174367_0000-edepsim_lbl_trklen2cm_containment2cm_costheta0.966_reco_dE_range_0.05cm_ntrack_1_seg_0.h5
 
 SIF_FILE=/sdf/group/neutrino/pgranger/larnd-sim-jax.sif
 UUID=$(uuidgen)
 
-LABEL=r13_stopp_fit_dE_dx0.01_stoc_noise_tgtsim_seed_${SEED_STRATEGY}_n_neigh${N_NEIGH}_${MODE}_e_sampling_${SAMPLING_STEP}cm_signalL${SIGNAL_LENGTH}_gradclip${MAX_CLIP_NORM_VAL}_${LR_SCHEDULER}_bt${BATCH_SIZE}_nbtach${MAX_NBATCH}_dtsd${DATA_SEED}_Adam_${LOSS}_de_lr${DE_LR}_reg${REG_L2}_${NORM}
+LABEL=stopp_fit_dE_10per_noise_dx1mm_n_neigh${N_NEIGH}_${MODE}_e_sampling_${SAMPLING_STEP}cm_signalL${SIGNAL_LENGTH}_gradclip${MAX_CLIP_NORM_VAL}_${LR_SCHEDULER}_bt${BATCH_SIZE}_nbtach${MAX_NBATCH}_dtsd${DATA_SEED}_Adam_${LOSS}_sigma${SIGMA}_de_lr${DE_LR}_dEratioreg${REG_L2}_totdEreg${REG_TOT}_${NORM}
 
 nvidia-smi
 
@@ -83,6 +105,7 @@ python3 -m optimize.example_run \
     --mode ${MODE} \
     --lut_file ../Data_selection/response_44_v2a_full_tick.npz \
     --loss_fn ${LOSS} \
+    --mmd_sigma ${SIGMA} \
     --sim_seed_strategy ${SEED_STRATEGY} \
     --clip_from_range \
     --lr_scheduler ${LR_SCHEDULER} \
@@ -96,8 +119,10 @@ python3 -m optimize.example_run \
     --no_pad \
     --segment_de_lr ${DE_LR} \
     --segment_reg_l2 ${REG_L2} \
+    --segment_reg_track_total ${REG_TOT} \
     --set_target_vals Ab 0.8 kb 0.0486 eField 0.50 tran_diff 8.8e-6 long_diff 4.0e-6 lifetime 2200 \
-    #--probabilistic_sim \
+    --probabilistic_sim \
+    #--segment_reg_smooth ${REG_SMOOTH} \
     #--debug_nans \
     #--no_chop \
     #--profile \
